@@ -1,7 +1,9 @@
+import { Button } from "@/components/ui/button"
+
  const X = ()=>{
   return (
     <div>
-      Hello World
+      <Button>Click Me</Button>
     </div>
   )
 } 
