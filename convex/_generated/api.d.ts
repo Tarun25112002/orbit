@@ -9,7 +9,6 @@
  */
 
 import type * as placeholder from "../placeholder.js";
-import type * as tasks from "../tasks.js";
 
 import type {
   ApiFromModules,
@@ -19,7 +18,6 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   placeholder: typeof placeholder;
-  tasks: typeof tasks;
 }>;
 
 /**
