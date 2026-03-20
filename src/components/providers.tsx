@@ -9,7 +9,7 @@ import {
 import { ConvexProviderWithClerk } from "convex/react-clerk";
 import { ThemeProvider } from "./theme-provider";
 import { Spinner } from "./ui/spinner";
-import { SignInButton } from "@clerk/nextjs";
+import { UnauthenticatedView } from "@/features/auth/components/unauthenticated-view";
 
 const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -25,7 +25,7 @@ export const Providers = ({ children }: { children: React.ReactNode }) => {
         >
           <Authenticated> <UserButton/> {children}</Authenticated>
           <Unauthenticated>
-            <SignInButton />
+            <UnauthenticatedView />
           </Unauthenticated>
           <AuthLoading>
             <Spinner />
