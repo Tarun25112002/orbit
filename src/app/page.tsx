@@ -1,15 +1,19 @@
 'use client'
 import { Button } from "@/components/ui/button"
-import { useQuery } from "convex/react"
+import { useMutation, useQuery } from "convex/react"
 import { api } from "../../convex/_generated/api"
+
  const X = ()=>{
-  const tasks = useQuery(api.tasks.get)
+  const project = useQuery(api.projects.get)
+  const createProject = useMutation(api.projects.create)
   return (
     <div>
-      <Button>Click Me</Button>
+      <Button onClick={()=>createProject({
+        name:"New Project"
+      })}> Create Project </Button>
       <div className="flex min-h-screen flex-col items-center justify-between p-24 text-white">
-        {tasks?.map(({ _id, text }) => (
-          <div key={_id}>{text}</div>
+        {project?.map((project) => (
+          <div key={project._id}>{project.name}{project.ownerId}</div>
         ))}
       </div>
     </div>
