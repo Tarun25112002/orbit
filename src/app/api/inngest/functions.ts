@@ -4,8 +4,7 @@ import { generateText } from "ai";
 import { google } from "@ai-sdk/google";
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 export const orbit = inngest.createFunction(
-  { id: "orbit-generate" },
-  { event: "orbit/generate" },
+  { id: "orbit-generate", triggers: [{ event: "orbit/generate" }] },
   async ({ event, step }) => {
     const { prompt } = event.data as { prompt: string };
 
@@ -44,8 +43,7 @@ export const orbit = inngest.createFunction(
 );
 
 export const orbitError = inngest.createFunction(
-  { id: "orbit-error" },
-  { event: "orbit/error" },
+  { id: "orbit-error", triggers: [{ event: "orbit/error" }] },
   async ({ step }) => {
     await step.run("fail", async () => {
       throw new Error("Inngest error: Background job failed!");
