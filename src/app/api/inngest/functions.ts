@@ -15,7 +15,10 @@ export const orbit = inngest.createFunction(
     const scrapedContent = await step.run("scrape-urls", async () => {
       const results = await Promise.all(
         urls.map(async (url) => {
-          const result = await firecrawl.scrape(url, { formats: ["markdown"] });
+          const result = await firecrawl.scrape(url, {
+            formats: ["markdown"],
+            maxAge: 3600000,
+          });
           return result.markdown ?? null;
         }),
       );
