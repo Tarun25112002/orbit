@@ -18,6 +18,7 @@ export const orbit = inngest.createFunction(
           const result = await firecrawl.scrape(url, {
             formats: ["markdown"],
             maxAge: 3600000,
+            fastMode: true,
           });
           return result.markdown ?? null;
         }),
