@@ -53,7 +53,7 @@ export const ProjectsView = () => {
   }, [handleNewProject]);
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-background">
+    <div className="relative flex min-h-screen flex-col overflow-hidden bg-background">
       {/* subtle dot grid */}
       <div
         aria-hidden
@@ -68,7 +68,7 @@ export const ProjectsView = () => {
       {/* top glow — softer */}
       <div
         aria-hidden
-        className="pointer-events-none absolute left-1/2 top-0 h-48 w-[520px] -translate-x-1/2"
+        className="pointer-events-none absolute left-1/2 top-0 h-48 w-130 -translate-x-1/2"
         style={{
           background:
             "radial-gradient(ellipse at top, oklch(0.6562 0.1826 262.74 / 0.08) 0%, transparent 70%)",
@@ -76,7 +76,7 @@ export const ProjectsView = () => {
       />
 
       {/* header */}
-      <header className="relative z-10 flex items-center justify-between border-b border-white/[0.04] px-5 py-3">
+      <header className="relative z-10 flex items-center justify-between border-b border-white/4 px-5 py-3">
         <div className="flex items-center gap-2.5">
           <Image
             src="/orbit logo.svg"
@@ -92,7 +92,7 @@ export const ProjectsView = () => {
       </header>
 
       {/* main */}
-      <main className="relative z-10 flex min-h-[calc(100vh-57px)] items-center justify-center px-4 py-12">
+      <main className="relative z-10 flex flex-1 items-center justify-center px-4 pb-6 pt-16">
         <div className="w-full max-w-md animate-in fade-in slide-in-from-bottom-3 duration-500">
           <div className="flex flex-col items-center gap-8">
             {/* hero */}
@@ -106,14 +106,14 @@ export const ProjectsView = () => {
             </div>
 
             {/* card boundary */}
-            <div className="w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset,0_8px_40px_-12px_rgba(0,0,0,0.6)] backdrop-blur-sm">
+            <div className="w-full overflow-hidden rounded-2xl border border-white/8 bg-white/2 shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset,0_8px_40px_-12px_rgba(0,0,0,0.6)] backdrop-blur-sm">
               {/* new project action */}
               <div className="p-1.5 pb-0">
                 <button
                   onClick={handleNewProject}
                   className={cn(
                     "group flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left transition-all duration-200",
-                    "hover:bg-ring/[0.08]",
+                    "hover:bg-ring/8",
                   )}
                 >
                   <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-ring/20 bg-ring/10">
@@ -138,7 +138,7 @@ export const ProjectsView = () => {
                   onClick={() => setCommandOpen(true)}
                   className={cn(
                     "group flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all duration-200",
-                    "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
+                    "border-white/6 bg-white/3 hover:border-white/12 hover:bg-white/5",
                   )}
                 >
                   <Search className="size-3.5 shrink-0 text-muted-foreground/40" />
@@ -147,14 +147,14 @@ export const ProjectsView = () => {
                     Search projects…
                   </span>
 
-                  <Kbd className="h-[18px] px-1 font-mono text-[10px] opacity-60">
+                  <Kbd className="h-4.5 px-1 font-mono text-[10px] opacity-60">
                     ⌘K
                   </Kbd>
                 </button>
               </div>
 
               {/* divider */}
-              <div className="border-t border-white/[0.06]" />
+              <div className="border-t border-white/6" />
 
               {/* project list */}
               <div className="p-1.5">
@@ -166,10 +166,17 @@ export const ProjectsView = () => {
       </main>
 
       {/* footer branding */}
-      <footer className="relative z-10 flex items-center justify-center overflow-hidden pb-8 pt-4">
-        <span className="select-none text-[clamp(5rem,15vw,10rem)] font-bold leading-none tracking-tighter text-white/[0.04]">
-          Orbit
-        </span>
+      <footer className="pointer-events-none relative z-10 flex items-center justify-center overflow-hidden px-4 pb-8 pt-0">
+        <div
+          aria-label="Orbit"
+          className="flex select-none items-center justify-center gap-[0.14em] text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[-0.04em] text-white/6"
+        >
+          <span>O</span>
+          <span>r</span>
+          <span>b</span>
+          <span>i</span>
+          <span>t</span>
+        </div>
       </footer>
 
       <ProjectsCommandDialog open={commandOpen} onOpenChange={setCommandOpen} />

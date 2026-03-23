@@ -101,7 +101,7 @@ const ProjectCard = ({ data }: { data: Doc<"projects"> }) => {
 };
 
 export const ProjectsList = ({ onViewAll }: ProjectsListProps) => {
-  const projects = useProjectsPartial(6);
+  const projects = useProjectsPartial(3);
 
   if (projects === undefined) {
     return <LoadingState />;
