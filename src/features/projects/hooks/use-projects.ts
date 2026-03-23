@@ -1,13 +1,33 @@
-/* eslint-disable react-hooks/purity */
-
 import { useMutation, useQuery } from "convex/react";
 
 import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
 
-export const useProject = () => {
-  return useQuery(api.projects.get);
+const RECENT_PROJECTS_LIMIT = 6;
+
+type OptimisticProject = {
+  _id: Id<"projects">;
+  _creationTime: number;
+  name: string;
+  ownerId: string;
+  updatedAt: number;
+  importStatus?: "importing" | "completed" | "failed";
+  exportStatus?: "exporting" | "completed" | "failed" | "cancelled";
+  exportRepoUrl?: string;
 };
+
+const buildOptimisticProject = (name: string): OptimisticProject => {
+  const now = Date.now();
+
+  return {
+    _id: crypto.randomUUID() as Id<"projects">,
+    _creationTime: now,
+    name,
+    ownerId: "anonymous",
+    updatedAt: now,
+  };
+};
+
 
 export const useProjects = () => {
   return useQuery(api.projects.get);
@@ -22,24 +42,34 @@ export const useProjectsPartial = (limit: number) => {
 export const useCreateProject = () => {
   return useMutation(api.projects.create).withOptimisticUpdate(
     (localStore, args) => {
+      const optimisticProject = buildOptimisticProject(args.name);
+
       const existingProjects = localStore.getQuery(api.projects.get);
 
       if (existingProjects !== undefined) {
-        const now = Date.now();
-        const newProject = {
-          _id: crypto.randomUUID() as Id<"projects">,
-          _creationTime: now,
-          name: args.name,
-          ownerId: "anonymous",
-          updatedAt: now,
-        };
-
         localStore.setQuery(api.projects.get, {}, [
-          newProject,
+          optimisticProject,
           ...existingProjects,
         ]);
+      }
+
+      const existingRecentProjects = localStore.getQuery(
+        api.projects.getPartial,
+        {
+          limit: RECENT_PROJECTS_LIMIT,
+        },
+      );
+
+      if (existingRecentProjects !== undefined) {
+        localStore.setQuery(
+          api.projects.getPartial,
+          { limit: RECENT_PROJECTS_LIMIT },
+          [optimisticProject, ...existingRecentProjects].slice(
+            0,
+            RECENT_PROJECTS_LIMIT,
+          ),
+        );
       }
     },
   );
 };
-

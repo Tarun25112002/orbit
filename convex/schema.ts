@@ -21,5 +21,6 @@ export default defineSchema({
       ),
     ),
     exportRepoUrl: v.optional(v.string())
-  }).index("by_owner", ["ownerId"]),
+  }).index("by_owner", ["ownerId"])
+    .index("by_owner_updated", ["ownerId", "updatedAt"]),
 });

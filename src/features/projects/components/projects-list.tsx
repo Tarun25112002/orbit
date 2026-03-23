@@ -1,88 +1,103 @@
 import Link from "next/link";
-import { FaGithub } from "react-icons/fa";
 import { formatDistanceToNow } from "date-fns";
+import { FaGithub } from "react-icons/fa";
 import {
   AlertCircleIcon,
-  ArrowRightIcon,
   GlobeIcon,
   Loader2Icon,
 } from "lucide-react";
 
-import { Kbd } from "@/components/ui/kbd";
+import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
-import { Button } from "@/components/ui/button";
 
 import { Doc } from "../../../../convex/_generated/dataModel";
-
 import { useProjectsPartial } from "../hooks/use-projects";
-
-const formatTimestamp = (timestamp: number) => {
-  return formatDistanceToNow(new Date(timestamp), {
-    addSuffix: true,
-  });
-};
-
-const getProjectIcon = (project: Doc<"projects">) => {
-  if (project.importStatus === "completed") {
-    return <FaGithub className="size-3.5 text-muted-foreground" />;
-  }
-
-  if (project.importStatus === "failed") {
-    return <AlertCircleIcon className="size-3.5 text-muted-foreground" />;
-  }
-
-  if (project.importStatus === "importing") {
-    return (
-      <Loader2Icon className="size-3.5 text-muted-foreground animate-spin" />
-    );
-  }
-
-  return <GlobeIcon className="size-3.5 text-muted-foreground" />;
-};
 
 interface ProjectsListProps {
   onViewAll: () => void;
 }
 
-const ContinueCard = ({ data }: { data: Doc<"projects"> }) => {
+const formatTimestamp = (timestamp: number) =>
+  formatDistanceToNow(new Date(timestamp), { addSuffix: true });
+
+const ProjectIcon = ({
+  project,
+  className,
+}: {
+  project: Doc<"projects">;
+  className?: string;
+}) => {
+  const classes = cn("size-3.5 shrink-0", className);
+
+  if (project.importStatus === "completed") {
+    return <FaGithub className={classes} />;
+  }
+
+  if (project.importStatus === "failed") {
+    return <AlertCircleIcon className={cn(classes, "text-destructive")} />;
+  }
+
+  if (project.importStatus === "importing") {
+    return <Loader2Icon className={cn(classes, "animate-spin")} />;
+  }
+
+  return <GlobeIcon className={classes} />;
+};
+
+const LoadingState = () => {
   return (
-    <div className="flex flex-col gap-2">
-      <span className="text-xs text-muted-foreground">Last updated</span>
-      <Button
-        variant="outline"
-        asChild
-        className="h-auto items-start justify-start p-4 bg-background border rounded-none flex flex-col gap-2"
-      >
-        <Link href={`/projects/${data._id}`} className="group">
-          <div className="flex items-center justify-between w-full">
-            <div className="flex items-center gap-2">
-              {getProjectIcon(data)}
-              <span className="font-medium truncate">{data.name}</span>
-            </div>
-            <ArrowRightIcon className="size-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
-          </div>
-          <span className="text-xs text-muted-foreground">
-            {formatTimestamp(data.updatedAt)}
-          </span>
-        </Link>
-      </Button>
+    <div className="flex items-center justify-center py-8">
+      <Spinner className="size-4 text-ring/60" />
     </div>
   );
 };
 
-const ProjectItem = ({ data }: { data: Doc<"projects"> }) => {
+const EmptyState = () => {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-8 text-center">
+      <div className="mb-2.5 flex size-9 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.03]">
+        <GlobeIcon className="size-4 text-muted-foreground/60" />
+      </div>
+      <p className="text-sm font-medium text-foreground/80">No projects yet</p>
+      <p className="mt-0.5 font-mono text-[11px] text-muted-foreground/60">
+        Press ⌘J to create your first project
+      </p>
+    </div>
+  );
+};
+
+const ProjectCard = ({ data }: { data: Doc<"projects"> }) => {
   return (
     <Link
       href={`/projects/${data._id}`}
-      className="text-sm text-foreground/60 font-medium hover:text-foreground py-1 flex items-center justify-between w-full group"
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-200",
+        "border-white/[0.06] bg-white/[0.02]",
+        "hover:border-white/[0.12] hover:bg-white/[0.05]",
+        "hover:shadow-[0_0_20px_oklch(0.6562_0.1826_262.74/0.04)]",
+      )}
     >
-      <div className="flex items-center gap-2">
-        {getProjectIcon(data)}
-        <span className="truncate">{data.name}</span>
+      <div
+        className={cn(
+          "flex size-8 shrink-0 items-center justify-center rounded-lg border transition-colors duration-200",
+          "border-white/[0.08] bg-white/[0.04]",
+          "group-hover:border-ring/20 group-hover:bg-ring/8",
+        )}
+      >
+        <ProjectIcon
+          project={data}
+          className="text-muted-foreground/60 transition-colors group-hover:text-ring/70"
+        />
       </div>
-      <span className="text-xs text-muted-foreground group-hover:text-foreground/60 transition-colors">
-        {formatTimestamp(data.updatedAt)}
-      </span>
+
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium text-foreground/85 transition-colors group-hover:text-foreground">
+          {data.name}
+        </div>
+        <div className="mt-0.5 font-mono text-[11px] text-muted-foreground/50">
+          {formatTimestamp(data.updatedAt)}
+        </div>
+      </div>
     </Link>
   );
 };
@@ -91,35 +106,32 @@ export const ProjectsList = ({ onViewAll }: ProjectsListProps) => {
   const projects = useProjectsPartial(6);
 
   if (projects === undefined) {
-    return <Spinner className="size-4 text-ring" />;
+    return <LoadingState />;
   }
 
-  const [mostRecent, ...rest] = projects;
+  if (projects.length === 0) {
+    return <EmptyState />;
+  }
 
   return (
-    <div className="flex flex-col gap-4">
-      {mostRecent ? <ContinueCard data={mostRecent} /> : null}
-      {rest.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-xs text-muted-foreground">
-              Recent projects
-            </span>
-            <button
-              onClick={onViewAll}
-              className="flex items-center gap-2 text-muted-foreground text-xs hover:text-foreground transition-colors"
-            >
-              <span>View all</span>
-              <Kbd className="bg-accent border">⌘K</Kbd>
-            </button>
-          </div>
-          <ul className="flex flex-col">
-            {rest.map((project) => (
-              <ProjectItem key={project._id} data={project} />
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
+    <section className="flex flex-col gap-2.5">
+      <div className="flex items-center justify-between px-0.5">
+        <span className="font-mono text-[11px] font-medium uppercase tracking-[0.15em] text-muted-foreground/50">
+          Recent
+        </span>
+        <button
+          onClick={onViewAll}
+          className="font-mono text-[11px] text-muted-foreground/50 transition-colors hover:text-foreground"
+        >
+          View all →
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+        {projects.map((project) => (
+          <ProjectCard key={project._id} data={project} />
+        ))}
+      </div>
+    </section>
   );
 };
