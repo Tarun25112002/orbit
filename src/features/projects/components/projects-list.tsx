@@ -71,10 +71,8 @@ const ProjectCard = ({ data }: { data: Doc<"projects"> }) => {
     <Link
       href={`/projects/${data._id}`}
       className={cn(
-        "group flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-all duration-200",
-        "border-white/[0.06] bg-white/[0.02]",
-        "hover:border-white/[0.12] hover:bg-white/[0.05]",
-        "hover:shadow-[0_0_20px_oklch(0.6562_0.1826_262.74/0.04)]",
+        "group flex items-center gap-3 rounded-xl px-3.5 py-2.5 transition-all duration-200",
+        "hover:bg-white/[0.05]",
       )}
     >
       <div
@@ -114,20 +112,20 @@ export const ProjectsList = ({ onViewAll }: ProjectsListProps) => {
   }
 
   return (
-    <section className="flex flex-col gap-2.5">
-      <div className="flex items-center justify-between px-0.5">
-        <span className="font-mono text-[11px] font-medium uppercase tracking-[0.15em] text-muted-foreground/50">
+    <section className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between px-3.5 py-2">
+        <span className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-muted-foreground/40">
           Recent
         </span>
         <button
           onClick={onViewAll}
-          className="font-mono text-[11px] text-muted-foreground/50 transition-colors hover:text-foreground"
+          className="font-mono text-[10px] text-muted-foreground/40 transition-colors hover:text-foreground"
         >
           View all →
         </button>
       </div>
 
-      <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+      <div className="flex flex-col gap-px">
         {projects.map((project) => (
           <ProjectCard key={project._id} data={project} />
         ))}

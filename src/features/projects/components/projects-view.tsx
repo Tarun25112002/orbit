@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Image from "next/image";
 import { UserButton } from "@clerk/nextjs";
 import { Plus, Search } from "lucide-react";
 import {
@@ -77,12 +78,14 @@ export const ProjectsView = () => {
       {/* header */}
       <header className="relative z-10 flex items-center justify-between border-b border-white/[0.04] px-5 py-3">
         <div className="flex items-center gap-2.5">
-          <div className="flex size-7 items-center justify-center rounded-lg border border-ring/20 bg-ring/8">
-            <div className="size-2.5 rounded-[4px] bg-ring/70" />
-          </div>
-          <span className="text-[13px] font-semibold tracking-tight text-foreground">
-            Orbit
-          </span>
+          <Image
+            src="/orbit logo.svg"
+            alt="Orbit"
+            width={80}
+            height={24}
+            className="brightness-90"
+            priority
+          />
         </div>
 
         <UserButton />
@@ -102,59 +105,72 @@ export const ProjectsView = () => {
               </p>
             </div>
 
-            {/* actions */}
-            <div className="flex w-full flex-col gap-1.5">
-              <button
-                onClick={handleNewProject}
-                className={cn(
-                  "group flex w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition-all duration-200",
-                  "border-ring/20 bg-ring/[0.04] hover:border-ring/35 hover:bg-ring/[0.08]",
-                  "hover:shadow-[0_0_24px_oklch(0.6562_0.1826_262.74/0.06)]",
-                )}
-              >
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-ring/20 bg-ring/10">
-                  <Plus className="size-4 text-ring/80" />
-                </div>
+            {/* card boundary */}
+            <div className="w-full overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.02] shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset,0_8px_40px_-12px_rgba(0,0,0,0.6)] backdrop-blur-sm">
+              {/* new project action */}
+              <div className="p-1.5 pb-0">
+                <button
+                  onClick={handleNewProject}
+                  className={cn(
+                    "group flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left transition-all duration-200",
+                    "hover:bg-ring/[0.08]",
+                  )}
+                >
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-ring/20 bg-ring/10">
+                    <Plus className="size-4 text-ring/80" />
+                  </div>
 
-                <div className="min-w-0 flex-1">
-                  <span className="text-sm font-medium text-foreground">
-                    New project
+                  <div className="min-w-0 flex-1">
+                    <span className="text-sm font-medium text-foreground">
+                      New project
+                    </span>
+                  </div>
+
+                  <Kbd className="font-mono text-[10px] opacity-40 transition-opacity group-hover:opacity-80">
+                    ⌘J
+                  </Kbd>
+                </button>
+              </div>
+
+              {/* search trigger */}
+              <div className="px-3 py-1.5">
+                <button
+                  onClick={() => setCommandOpen(true)}
+                  className={cn(
+                    "group flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all duration-200",
+                    "border-white/[0.06] bg-white/[0.03] hover:border-white/[0.12] hover:bg-white/[0.05]",
+                  )}
+                >
+                  <Search className="size-3.5 shrink-0 text-muted-foreground/40" />
+
+                  <span className="flex-1 text-[13px] text-muted-foreground/40">
+                    Search projects…
                   </span>
-                </div>
 
-                <Kbd className="font-mono text-[10px] opacity-50 transition-opacity group-hover:opacity-80">
-                  ⌘J
-                </Kbd>
-              </button>
+                  <Kbd className="h-[18px] px-1 font-mono text-[10px] opacity-60">
+                    ⌘K
+                  </Kbd>
+                </button>
+              </div>
 
-              <button
-                onClick={() => setCommandOpen(true)}
-                className={cn(
-                  "group flex w-full items-center gap-3 rounded-xl border px-4 py-2.5 text-left transition-all duration-200",
-                  "border-white/[0.06] bg-white/[0.02] hover:border-white/[0.1] hover:bg-white/[0.04]",
-                )}
-              >
-                <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03]">
-                  <Search className="size-3.5 text-muted-foreground/70" />
-                </div>
+              {/* divider */}
+              <div className="border-t border-white/[0.06]" />
 
-                <span className="text-sm text-muted-foreground/80">
-                  Search projects…
-                </span>
-
-                <Kbd className="ml-auto font-mono text-[10px] opacity-50 transition-opacity group-hover:opacity-80">
-                  ⌘K
-                </Kbd>
-              </button>
-            </div>
-
-            {/* project list */}
-            <div className="w-full">
-              <ProjectsList onViewAll={() => setCommandOpen(true)} />
+              {/* project list */}
+              <div className="p-1.5">
+                <ProjectsList onViewAll={() => setCommandOpen(true)} />
+              </div>
             </div>
           </div>
         </div>
       </main>
+
+      {/* footer branding */}
+      <footer className="relative z-10 flex items-center justify-center overflow-hidden pb-8 pt-4">
+        <span className="select-none text-[clamp(5rem,15vw,10rem)] font-bold leading-none tracking-tighter text-white/[0.04]">
+          Orbit
+        </span>
+      </footer>
 
       <ProjectsCommandDialog open={commandOpen} onOpenChange={setCommandOpen} />
     </div>

@@ -49,22 +49,23 @@ const getProjectIcon = (project: Doc<"projects">) => {
 };
 
 const LoadingState = () => (
-  <div className="flex items-center justify-center py-10">
-    <Spinner className="size-4 text-ring/50" />
+  <div className="flex flex-col items-center justify-center gap-2 py-12">
+    <Spinner className="size-5 text-ring/40" />
+    <span className="font-mono text-[11px] text-muted-foreground/40">Loading projects…</span>
   </div>
 );
 
 const EmptyState = () => (
   <CommandEmpty>
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
-      <div className="flex size-9 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.03]">
-        <FolderOpenIcon className="size-4 text-muted-foreground/50" />
+    <div className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+      <div className="flex size-10 items-center justify-center rounded-full border border-dashed border-white/[0.12] bg-white/[0.02]">
+        <FolderOpenIcon className="size-4 text-muted-foreground/40" />
       </div>
       <div>
         <p className="text-sm font-medium text-foreground/80">
-          No projects found
+          No matching projects
         </p>
-        <p className="mt-0.5 font-mono text-[11px] text-muted-foreground/50">
+        <p className="mt-1 font-mono text-[11px] text-muted-foreground/40">
           Try a different search term
         </p>
       </div>
@@ -126,20 +127,20 @@ export const ProjectsCommandDialog = ({
       onOpenChange={onOpenChange}
       title="Projects"
       description="Search and navigate to your projects"
-      className="overflow-hidden border-white/[0.08] bg-popover/95 backdrop-blur-2xl sm:max-w-[460px]"
+      className="overflow-hidden rounded-2xl! border-white/[0.1] bg-[oklch(0.16_0.005_260)]/98 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.7)] backdrop-blur-2xl sm:max-w-[520px]"
     >
-      <div className="border-b border-white/[0.06]">
+      <div className="border-b border-white/[0.06] px-1 py-1">
         <CommandInput placeholder="Search projects…" />
       </div>
 
       {projects === undefined ? (
         <LoadingState />
       ) : (
-        <CommandList className="max-h-80">
+        <CommandList className="max-h-[360px] px-1">
           <EmptyState />
           <CommandGroup
             heading={
-              <span className="font-mono text-[11px] uppercase tracking-[0.12em]">
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground/40">
                 Projects · {projects.length}
               </span>
             }
@@ -155,17 +156,17 @@ export const ProjectsCommandDialog = ({
         </CommandList>
       )}
 
-      <div className="flex items-center gap-3 border-t border-white/[0.06] px-3 py-2">
-        <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/40">
-          <Kbd className="h-4 px-1 text-[9px]">↑↓</Kbd>
+      <div className="flex items-center gap-4 border-t border-white/[0.06] px-4 py-2">
+        <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
+          <Kbd className="h-[18px] min-w-[20px] border border-white/[0.06] bg-white/[0.03] px-1 text-[9px] shadow-none">↑↓</Kbd>
           <span>navigate</span>
         </div>
-        <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/40">
-          <Kbd className="h-4 px-1 text-[9px]">↵</Kbd>
+        <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
+          <Kbd className="h-[18px] min-w-[20px] border border-white/[0.06] bg-white/[0.03] px-1 text-[9px] shadow-none">↵</Kbd>
           <span>open</span>
         </div>
-        <div className="ml-auto flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/40">
-          <Kbd className="h-4 px-1 text-[9px]">esc</Kbd>
+        <div className="ml-auto flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
+          <Kbd className="h-[18px] min-w-[20px] border border-white/[0.06] bg-white/[0.03] px-1 text-[9px] shadow-none">esc</Kbd>
           <span>close</span>
         </div>
       </div>
