@@ -100,3 +100,35 @@ export const createFile = mutation({
 })
   },
 });
+export const createFolder = mutation({
+  args: { projectId: v.id("projects"), parentId: v.optional(v.id("files")), name: v.string() },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+    const project = await ctx.db.get("projects", args.projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+    if (project.ownerId !== identity.subject) {
+      throw new Error("Unauthorrized to access this project");
+    }
+    
+
+    const files = await ctx.db
+      .query("files")
+      .withIndex("by_project_parent", (q) =>
+        q.eq("projectId", args.projectId).eq("parentId", args.parentId),
+      )
+      .collect();
+      const existing = files.find((file)=>file.name===args.name && file.type ==="folder")
+     if(existing) throw new Error ("Folder already exists")
+      await ctx.db.insert("files", {
+    projectId: args.projectId,
+    parentId: args.parentId,
+    name: args.name,
+    type: "folder",
+    updatedAt: Date.now()
+})
+  },
+});
+
+
