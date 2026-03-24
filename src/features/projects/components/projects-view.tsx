@@ -54,7 +54,6 @@ export const ProjectsView = () => {
 
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden bg-background">
-      {/* subtle dot grid */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0 opacity-40"
@@ -65,7 +64,6 @@ export const ProjectsView = () => {
         }}
       />
 
-      {/* top glow — softer */}
       <div
         aria-hidden
         className="pointer-events-none absolute left-1/2 top-0 h-48 w-130 -translate-x-1/2"
@@ -75,7 +73,6 @@ export const ProjectsView = () => {
         }}
       />
 
-      {/* header */}
       <header className="relative z-10 flex items-center justify-between border-b border-white/4 px-5 py-3">
         <div className="flex items-center gap-2.5">
           <Image
@@ -91,11 +88,9 @@ export const ProjectsView = () => {
         <UserButton />
       </header>
 
-      {/* main */}
       <main className="relative z-10 flex flex-1 items-center justify-center px-4 pb-6 pt-16">
         <div className="w-full max-w-md animate-in fade-in slide-in-from-bottom-3 duration-500">
           <div className="flex flex-col items-center gap-8">
-            {/* hero */}
             <div className="space-y-2 text-center">
               <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
                 What are you building?
@@ -105,9 +100,7 @@ export const ProjectsView = () => {
               </p>
             </div>
 
-            {/* card boundary */}
             <div className="w-full overflow-hidden rounded-2xl border border-white/8 bg-white/2 shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset,0_8px_40px_-12px_rgba(0,0,0,0.6)] backdrop-blur-sm">
-              {/* new project action */}
               <div className="p-1.5 pb-0">
                 <button
                   onClick={handleNewProject}
@@ -132,7 +125,6 @@ export const ProjectsView = () => {
                 </button>
               </div>
 
-              {/* search trigger */}
               <div className="px-3 py-1.5">
                 <button
                   onClick={() => setCommandOpen(true)}
@@ -153,10 +145,8 @@ export const ProjectsView = () => {
                 </button>
               </div>
 
-              {/* divider */}
               <div className="border-t border-white/6" />
 
-              {/* project list */}
               <div className="p-1.5">
                 <ProjectsList onViewAll={() => setCommandOpen(true)} />
               </div>
@@ -165,7 +155,6 @@ export const ProjectsView = () => {
         </div>
       </main>
 
-      {/* footer branding */}
       <footer className="pointer-events-none relative z-10 flex items-center justify-center overflow-hidden px-4 pb-8 pt-0">
         <div
           aria-label="Orbit"

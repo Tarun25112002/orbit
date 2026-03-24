@@ -51,14 +51,16 @@ const getProjectIcon = (project: Doc<"projects">) => {
 const LoadingState = () => (
   <div className="flex flex-col items-center justify-center gap-2 py-12">
     <Spinner className="size-5 text-ring/40" />
-    <span className="font-mono text-[11px] text-muted-foreground/40">Loading projects…</span>
+    <span className="font-mono text-[11px] text-muted-foreground/40">
+      Loading projects…
+    </span>
   </div>
 );
 
 const EmptyState = () => (
   <CommandEmpty>
     <div className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
-      <div className="flex size-10 items-center justify-center rounded-full border border-dashed border-white/[0.12] bg-white/[0.02]">
+      <div className="flex size-10 items-center justify-center rounded-full border border-dashed border-white/12 bg-white/2">
         <FolderOpenIcon className="size-4 text-muted-foreground/40" />
       </div>
       <div>
@@ -85,13 +87,13 @@ const ProjectResultItem = ({
     onSelect={() => onSelect(project._id)}
     className={cn(
       "group flex items-center gap-3 rounded-lg px-3 py-2.5",
-      "data-selected:bg-white/[0.05]",
+      "data-selected:bg-white/5",
     )}
   >
     <div
       className={cn(
         "flex size-8 shrink-0 items-center justify-center rounded-lg border transition-colors duration-150",
-        "border-white/[0.08] bg-white/[0.03]",
+        "border-white/8 bg-white/3",
         "group-data-selected:border-ring/20 group-data-selected:bg-ring/8",
       )}
     >
@@ -127,16 +129,16 @@ export const ProjectsCommandDialog = ({
       onOpenChange={onOpenChange}
       title="Projects"
       description="Search and navigate to your projects"
-      className="overflow-hidden rounded-2xl! border-white/[0.1] bg-[oklch(0.16_0.005_260)]/98 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.7)] backdrop-blur-2xl sm:max-w-[520px]"
+      className="overflow-hidden rounded-2xl! border-white/10 bg-[oklch(0.16_0.005_260)]/98 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.7)] backdrop-blur-2xl sm:max-w-130"
     >
-      <div className="border-b border-white/[0.06] px-1 py-1">
+      <div className="border-b border-white/6 px-1 py-1">
         <CommandInput placeholder="Search projects…" />
       </div>
 
       {projects === undefined ? (
         <LoadingState />
       ) : (
-        <CommandList className="max-h-[360px] px-1">
+        <CommandList className="max-h-90 px-1">
           <EmptyState />
           <CommandGroup
             heading={
@@ -156,17 +158,23 @@ export const ProjectsCommandDialog = ({
         </CommandList>
       )}
 
-      <div className="flex items-center gap-4 border-t border-white/[0.06] px-4 py-2">
+      <div className="flex items-center gap-4 border-t border-white/6 px-4 py-2">
         <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
-          <Kbd className="h-[18px] min-w-[20px] border border-white/[0.06] bg-white/[0.03] px-1 text-[9px] shadow-none">↑↓</Kbd>
+          <Kbd className="h-4.5 min-w-5 border border-white/6 bg-white/3 px-1 text-[9px] shadow-none">
+            ↑↓
+          </Kbd>
           <span>navigate</span>
         </div>
         <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
-          <Kbd className="h-[18px] min-w-[20px] border border-white/[0.06] bg-white/[0.03] px-1 text-[9px] shadow-none">↵</Kbd>
+          <Kbd className="h-4.5 min-w-5 border border-white/6 bg-white/3 px-1 text-[9px] shadow-none">
+            ↵
+          </Kbd>
           <span>open</span>
         </div>
         <div className="ml-auto flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
-          <Kbd className="h-[18px] min-w-[20px] border border-white/[0.06] bg-white/[0.03] px-1 text-[9px] shadow-none">esc</Kbd>
+          <Kbd className="h-4.5 min-w-5 border border-white/6 bg-white/3 px-1 text-[9px] shadow-none">
+            esc
+          </Kbd>
           <span>close</span>
         </div>
       </div>

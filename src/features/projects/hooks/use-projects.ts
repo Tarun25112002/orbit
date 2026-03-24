@@ -1,5 +1,3 @@
-/* eslint-disable react-hooks/purity */
-
 import { useMutation, useQuery } from "convex/react";
 
 import { api } from "../../../../convex/_generated/api";
@@ -43,8 +41,6 @@ const reorderAfterTouch = (
   return sortByUpdatedAt([{ ...touched, updatedAt }, ...rest]);
 };
 
-// ─── queries ─────────────────────────────────────────────────────────────────
-
 export const useProjects = () => useQuery(api.projects.get);
 
 export const useProjectsPartial = (limit: number) =>
@@ -52,8 +48,6 @@ export const useProjectsPartial = (limit: number) =>
 
 export const useProject = (projectId: Id<"projects">) =>
   useQuery(api.projects.getById, { id: projectId });
-
-// ─── mutations ────────────────────────────────────────────────────────────────
 
 export const useCreateProject = () =>
   useMutation(api.projects.create).withOptimisticUpdate((localStore, args) => {
@@ -75,9 +69,11 @@ export const useCreateProject = () =>
 
 export const useRenameProject = (projectId: Id<"projects">) =>
   useMutation(api.projects.rename).withOptimisticUpdate((localStore, args) => {
-    const now = Date.now();
+    const existing0 = localStore.getQuery(api.projects.getById, {
+      id: projectId,
+    });
+    const now = existing0?.updatedAt ?? 0;
 
-    // update single project cache
     const existing = localStore.getQuery(api.projects.getById, {
       id: projectId,
     });
@@ -89,7 +85,6 @@ export const useRenameProject = (projectId: Id<"projects">) =>
       );
     }
 
-    // update full list cache
     const all = localStore.getQuery(api.projects.get) ?? [];
     localStore.setQuery(
       api.projects.get,
@@ -99,7 +94,6 @@ export const useRenameProject = (projectId: Id<"projects">) =>
       ),
     );
 
-    // update recent list cache
     const recent =
       localStore.getQuery(api.projects.getPartial, {
         limit: RECENT_PROJECTS_LIMIT,
@@ -115,7 +109,10 @@ export const useRenameProject = (projectId: Id<"projects">) =>
 
 export const useTouchProject = () =>
   useMutation(api.projects.touch).withOptimisticUpdate((localStore, args) => {
-    const now = Date.now();
+    const existing0 = localStore.getQuery(api.projects.getById, {
+      id: args.projectId,
+    });
+    const now = existing0?.updatedAt ?? 0;
 
     const all = localStore.getQuery(api.projects.get) ?? [];
     localStore.setQuery(

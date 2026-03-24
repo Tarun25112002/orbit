@@ -1,15 +1,12 @@
+"use client";
+
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { FaGithub } from "react-icons/fa";
-import {
-  AlertCircleIcon,
-  GlobeIcon,
-  Loader2Icon,
-} from "lucide-react";
+import { AlertCircleIcon, GlobeIcon, Loader2Icon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
-
 import { Doc } from "../../../../convex/_generated/dataModel";
 import { useProjectsPartial } from "../hooks/use-projects";
 
@@ -54,8 +51,8 @@ const LoadingState = () => {
 
 const EmptyState = () => {
   return (
-    <div className="flex flex-col items-center justify-center rounded-xl border border-white/[0.06] bg-white/[0.02] px-4 py-8 text-center">
-      <div className="mb-2.5 flex size-9 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.03]">
+    <div className="flex flex-col items-center justify-center rounded-xl border border-white/6 bg-white/2 px-4 py-8 text-center">
+      <div className="mb-2.5 flex size-9 items-center justify-center rounded-xl border border-white/8 bg-white/3">
         <GlobeIcon className="size-4 text-muted-foreground/60" />
       </div>
       <p className="text-sm font-medium text-foreground/80">No projects yet</p>
@@ -72,13 +69,13 @@ const ProjectCard = ({ data }: { data: Doc<"projects"> }) => {
       href={`/projects/${data._id}`}
       className={cn(
         "group flex items-center gap-3 rounded-xl px-3.5 py-2.5 transition-all duration-200",
-        "hover:bg-white/[0.05]",
+        "hover:bg-white/5",
       )}
     >
       <div
         className={cn(
           "flex size-8 shrink-0 items-center justify-center rounded-lg border transition-colors duration-200",
-          "border-white/[0.08] bg-white/[0.04]",
+          "border-white/8 bg-white/4",
           "group-hover:border-ring/20 group-hover:bg-ring/8",
         )}
       >

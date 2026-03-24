@@ -12,13 +12,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { Id } from "../../../../convex/_generated/dataModel";
 import { useProject, useRenameProject } from "../hooks/use-projects";
 
-// ── types ─────────────────────────────────────────────────────────────────────
-
 interface NavbarProps {
   projectId: Id<"projects">;
 }
-
-// ── last updated ──────────────────────────────────────────────────────────────
 
 const LastUpdated = ({ updatedAt }: { updatedAt: number }) => {
   return (
@@ -28,8 +24,6 @@ const LastUpdated = ({ updatedAt }: { updatedAt: number }) => {
     </span>
   );
 };
-
-// ── inline rename ─────────────────────────────────────────────────────────────
 
 const ProjectNameEditor = ({
   projectId,
@@ -98,8 +92,6 @@ const ProjectNameEditor = ({
   );
 };
 
-// ── navbar ────────────────────────────────────────────────────────────────────
-
 export const Navbar = ({ projectId }: NavbarProps) => {
   const project = useProject(projectId);
 
@@ -110,7 +102,6 @@ export const Navbar = ({ projectId }: NavbarProps) => {
         "border-b border-white/4 bg-background/90 px-4 backdrop-blur-sm",
       )}
     >
-      {/* ── left: home → project name + last updated ── */}
       <div className="flex items-center gap-1">
         <Link
           href="/"
@@ -133,7 +124,6 @@ export const Navbar = ({ projectId }: NavbarProps) => {
         )}
       </div>
 
-      {/* ── right: user ── */}
       <div className="flex items-center gap-3">
         <UserButton />
       </div>
