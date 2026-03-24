@@ -15,7 +15,6 @@
     "@clerk/ui": "^1.2.2",
     "@inngest/middleware-sentry": "^1.0.0",
     "@mendable/firecrawl-js": "^4.16.0",
-    "@monaco-editor/react": "^4.7.0",
     "@sentry/nextjs": "^10.45.0",
     "ai": "^6.0.116",
     "allotment": "^1.20.5",
