@@ -130,7 +130,7 @@ export const createFolder = mutation({
 })
   },
 });
-const renameFile = mutation({
+export const renameFile = mutation({
     args:{
         id: v.id("files"),
         newName: v.string()
