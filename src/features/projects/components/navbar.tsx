@@ -1,3 +1,4 @@
+"use client"
 import { Id } from "../../../../convex/_generated/dataModel";
 import {
   Breadcrumb,
@@ -7,12 +8,14 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
-import { useProjects } from "../hooks/use-projects";
+import { useProject } from "../hooks/use-projects";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
 import Image from "next/image";
 import { UserButton } from "@clerk/nextjs";
+import { Spinner } from "@/components/ui/spinner";
 export const Navbar = ({ projectId }: { projectId: Id<"projects"> }) => {
+    const project = useProject(projectId)
   return (
     <>
       <nav>
@@ -35,7 +38,7 @@ export const Navbar = ({ projectId }: { projectId: Id<"projects"> }) => {
               </BreadcrumbItem>
               <BreadcrumbSeparator />
               <BreadcrumbItem></BreadcrumbItem>
-              <BreadcrumbPage>Demo</BreadcrumbPage>
+              <BreadcrumbPage>{project?.name??<Spinner/>}</BreadcrumbPage>
             </BreadcrumbList>
           </Breadcrumb>
         </div>
