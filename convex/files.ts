@@ -245,3 +245,38 @@ export const deleteFile = mutation({
     });
   },
 });
+
+export const updateFile = mutation({
+  args: {
+    id: v.id("files"),
+    content: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+    const file = await ctx.db.get(args.id);
+    if (!file) {
+      throw new Error("File not found");
+    }
+
+    if (file.type !== "file") {
+      throw new Error("Cannot update content of a folder");
+    }
+
+    const project = await ctx.db.get(file.projectId);
+    if (!project) {
+      throw new Error("Project not found");
+    }
+    if (project.ownerId !== identity.subject) {
+      throw new Error("Unauthorrized to access this project");
+    }
+
+    const now = Date.now();
+    await ctx.db.patch("files", args.id, {
+      content: args.content,
+      updatedAt: now,
+    });
+    await ctx.db.patch("projects", file.projectId, {
+      updatedAt: now,
+    });
+  },
+});
