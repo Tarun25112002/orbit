@@ -1,11 +1,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import {
-  ChevronRightIcon,
-  FileIcon,
-  FolderIcon,
-  FolderOpenIcon,
-} from "lucide-react";
+import { ChevronRightIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/errors";
@@ -21,6 +16,7 @@ import { LoadingRow } from "./loading";
 import { CreateInput } from "./create-input";
 import { RenameInput } from "./rename-input";
 import { TreeItemWrapper } from "./tree-item-wrapper";
+import { ItemIcon } from "./item-icon";
 import { Doc, Id } from "../../../../../convex/_generated/dataModel";
 
 export const Tree = ({
@@ -154,13 +150,11 @@ export const Tree = ({
           void handleDelete();
         }}
       >
-        <FileIcon className="size-4 text-muted-foreground" />
+        <ItemIcon type="file" name={item.name} />
         <span className="truncate text-sm">{item.name}</span>
       </TreeItemWrapper>
     );
   }
-
-  const FolderGlyph = isOpen ? FolderOpenIcon : FolderIcon;
 
   const folderIcon = (
     <div className="flex items-center gap-0.5">
@@ -170,7 +164,7 @@ export const Tree = ({
           isOpen && "rotate-90",
         )}
       />
-      <FolderGlyph className="size-4 text-muted-foreground" />
+      <ItemIcon type="folder" isOpen={isOpen} />
     </div>
   );
 

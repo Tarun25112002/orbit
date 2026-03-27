@@ -1,11 +1,12 @@
 import { useRef, useState } from "react";
-import { ChevronRightIcon, FileIcon, FolderIcon } from "lucide-react";
+import { ChevronRightIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 import { getErrorMessage } from "@/lib/errors";
 
 import { getItemPadding } from "./constants";
+import { ItemIcon } from "./item-icon";
 
 type FocusSelection = "all" | "basename";
 
@@ -109,12 +110,12 @@ export const NameInputRow = ({
               )}
             />
           )}
-          {type === "file" && (
-            <FileIcon className="size-4 text-muted-foreground" />
-          )}
-          {type === "folder" && (
-            <FolderIcon className="size-4 text-muted-foreground" />
-          )}
+          <ItemIcon
+            type={type}
+            name={type === "file" ? value : undefined}
+            isOpen={isOpen}
+            allowPartialFileMatch
+          />
         </div>
         <input
           autoFocus
