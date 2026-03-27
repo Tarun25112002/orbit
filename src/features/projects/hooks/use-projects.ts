@@ -1,9 +1,11 @@
+import type { OptimisticLocalStore } from "convex/browser";
 import { useMutation, useQuery } from "convex/react";
 
 import { api } from "../../../../convex/_generated/api";
 import { Doc, Id } from "../../../../convex/_generated/dataModel";
 
 const RECENT_PROJECTS_LIMIT = 6;
+const PROJECT_PARTIAL_LIMITS = [3, RECENT_PROJECTS_LIMIT] as const;
 
 type OptimisticProject = {
   _id: Id<"projects">;
@@ -30,15 +32,103 @@ const buildOptimisticProject = (name: string): OptimisticProject => {
 const sortByUpdatedAt = <T extends { updatedAt: number }>(list: T[]): T[] =>
   [...list].sort((a, b) => b.updatedAt - a.updatedAt);
 
-const reorderAfterTouch = (
+const patchProjectList = (
   list: (Doc<"projects"> | OptimisticProject)[],
   projectId: Id<"projects">,
-  updatedAt: number,
+  patch: Partial<Pick<Doc<"projects">, "name" | "updatedAt">>,
 ) => {
-  const touched = list.find((p) => p._id === projectId);
-  if (!touched) return list;
-  const rest = list.filter((p) => p._id !== projectId);
-  return sortByUpdatedAt([{ ...touched, updatedAt }, ...rest]);
+  const hasProject = list.some((project) => project._id === projectId);
+  if (!hasProject) {
+    return list;
+  }
+
+  return sortByUpdatedAt(
+    list.map((project) =>
+      project._id === projectId ? { ...project, ...patch } : project,
+    ),
+  );
+};
+
+const getNextProjectUpdatedAt = (
+  localStore: OptimisticLocalStore,
+  projectId: Id<"projects">,
+) => {
+  const timestamps: number[] = [];
+
+  const project = localStore.getQuery(api.projects.getById, { id: projectId });
+  if (project) {
+    timestamps.push(project.updatedAt);
+  }
+
+  const allProjects = localStore.getQuery(api.projects.get, {});
+  if (allProjects) {
+    timestamps.push(...allProjects.map((item) => item.updatedAt));
+  }
+
+  for (const limit of PROJECT_PARTIAL_LIMITS) {
+    const partialProjects = localStore.getQuery(api.projects.getPartial, {
+      limit,
+    });
+    if (partialProjects) {
+      timestamps.push(...partialProjects.map((item) => item.updatedAt));
+    }
+  }
+
+  return Math.max(0, ...timestamps) + 1;
+};
+
+export const patchProjectCaches = (
+  localStore: OptimisticLocalStore,
+  {
+    projectId,
+    name,
+    updatedAt = getNextProjectUpdatedAt(localStore, projectId),
+  }: {
+    projectId: Id<"projects">;
+    name?: string;
+    updatedAt?: number;
+  },
+) => {
+  const patch = {
+    ...(name !== undefined ? { name } : {}),
+    updatedAt,
+  };
+
+  const existing = localStore.getQuery(api.projects.getById, {
+    id: projectId,
+  });
+  if (existing) {
+    localStore.setQuery(api.projects.getById, { id: projectId }, {
+      ...existing,
+      ...patch,
+    });
+  }
+
+  const allProjects = localStore.getQuery(api.projects.get, {});
+  if (allProjects) {
+    localStore.setQuery(
+      api.projects.get,
+      {},
+      patchProjectList(allProjects, projectId, patch),
+    );
+  }
+
+  for (const limit of PROJECT_PARTIAL_LIMITS) {
+    const partialProjects = localStore.getQuery(api.projects.getPartial, {
+      limit,
+    });
+    if (!partialProjects) {
+      continue;
+    }
+
+    localStore.setQuery(
+      api.projects.getPartial,
+      { limit },
+      patchProjectList(partialProjects, projectId, patch).slice(0, limit),
+    );
+  }
+
+  return updatedAt;
 };
 
 export const useProjects = () => useQuery(api.projects.get);
@@ -69,70 +159,17 @@ export const useCreateProject = () =>
 
 export const useRenameProject = (projectId: Id<"projects">) =>
   useMutation(api.projects.rename).withOptimisticUpdate((localStore, args) => {
-    const existing0 = localStore.getQuery(api.projects.getById, {
-      id: projectId,
+    patchProjectCaches(localStore, {
+      projectId,
+      name: args.name,
     });
-    const now = existing0?.updatedAt ?? 0;
-
-    const existing = localStore.getQuery(api.projects.getById, {
-      id: projectId,
-    });
-    if (existing) {
-      localStore.setQuery(
-        api.projects.getById,
-        { id: projectId },
-        { ...existing, name: args.name, updatedAt: now },
-      );
-    }
-
-    const all = localStore.getQuery(api.projects.get) ?? [];
-    localStore.setQuery(
-      api.projects.get,
-      {},
-      all.map((p) =>
-        p._id === args.id ? { ...p, name: args.name, updatedAt: now } : p,
-      ),
-    );
-
-    const recent =
-      localStore.getQuery(api.projects.getPartial, {
-        limit: RECENT_PROJECTS_LIMIT,
-      }) ?? [];
-    localStore.setQuery(
-      api.projects.getPartial,
-      { limit: RECENT_PROJECTS_LIMIT },
-      recent.map((p) =>
-        p._id === args.id ? { ...p, name: args.name, updatedAt: now } : p,
-      ),
-    );
   });
 
 export const useTouchProject = () =>
   useMutation(api.projects.touch).withOptimisticUpdate((localStore, args) => {
-    const existing0 = localStore.getQuery(api.projects.getById, {
-      id: args.projectId,
+    patchProjectCaches(localStore, {
+      projectId: args.projectId,
     });
-    const now = existing0?.updatedAt ?? 0;
-
-    const all = localStore.getQuery(api.projects.get) ?? [];
-    localStore.setQuery(
-      api.projects.get,
-      {},
-      reorderAfterTouch(all, args.projectId, now),
-    );
-
-    const recent =
-      localStore.getQuery(api.projects.getPartial, {
-        limit: RECENT_PROJECTS_LIMIT,
-      }) ?? [];
-    localStore.setQuery(
-      api.projects.getPartial,
-      { limit: RECENT_PROJECTS_LIMIT },
-      reorderAfterTouch(recent, args.projectId, now).slice(
-        0,
-        RECENT_PROJECTS_LIMIT,
-      ),
-    );
   });
 
 export const useStartGithubImport = () =>

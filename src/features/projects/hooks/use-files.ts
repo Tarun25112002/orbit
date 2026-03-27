@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "convex/react";
 
 import { api } from "../../../../convex/_generated/api";
 import { Doc, Id } from "../../../../convex/_generated/dataModel";
+import { patchProjectCaches } from "./use-projects";
 
 type UseFolderContentsArgs = {
   projectId: Id<"projects">;
@@ -95,6 +96,9 @@ export const useCreateFile = () =>
         ];
       },
     );
+    patchProjectCaches(localStore, {
+      projectId: args.projectId,
+    });
   });
 
 export const useCreateFolder = () =>
@@ -128,6 +132,9 @@ export const useCreateFolder = () =>
           ];
         },
       );
+      patchProjectCaches(localStore, {
+        projectId: args.projectId,
+      });
     },
   );
 
@@ -156,6 +163,9 @@ export const useRenameFile = () =>
       (current) =>
         current.map((item) => (item._id === args.id ? updatedItem : item)),
     );
+    patchProjectCaches(localStore, {
+      projectId: existing.projectId,
+    });
   });
 
 export const useDeleteFile = () =>
@@ -174,6 +184,9 @@ export const useDeleteFile = () =>
       },
       (current) => current.filter((item) => item._id !== args.id),
     );
+    patchProjectCaches(localStore, {
+      projectId: existing.projectId,
+    });
   });
 
 export const useFile = ({
@@ -195,5 +208,8 @@ export const useUpdateFile = () =>
       ...existing,
       content: args.content,
       updatedAt: existing.updatedAt + 1,
+    });
+    patchProjectCaches(localStore, {
+      projectId: existing.projectId,
     });
   });
