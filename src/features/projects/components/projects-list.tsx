@@ -51,7 +51,7 @@ const LoadingState = () => {
 
 const EmptyState = () => {
   return (
-    <div className="flex flex-col items-center justify-center rounded-xl border border-white/6 bg-white/2 px-4 py-8 text-center">
+    <div className="flex flex-col items-center rounded-xl border border-white/6 bg-white/2 px-4 py-8 text-center">
       <div className="mb-2.5 flex size-9 items-center justify-center rounded-xl border border-white/8 bg-white/3">
         <GlobeIcon className="size-4 text-muted-foreground/60" />
       </div>
@@ -67,18 +67,9 @@ const ProjectCard = ({ data }: { data: Doc<"projects"> }) => {
   return (
     <Link
       href={`/projects/${data._id}`}
-      className={cn(
-        "group flex items-center gap-3 rounded-xl px-3.5 py-2.5 transition-all duration-200",
-        "hover:bg-white/5",
-      )}
+      className="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 transition-colors duration-200 hover:bg-white/5"
     >
-      <div
-        className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-lg border transition-colors duration-200",
-          "border-white/8 bg-white/4",
-          "group-hover:border-ring/20 group-hover:bg-ring/8",
-        )}
-      >
+      <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-white/4 transition-colors duration-200 group-hover:border-ring/20 group-hover:bg-ring/8">
         <ProjectIcon
           project={data}
           className="text-muted-foreground/60 transition-colors group-hover:text-ring/70"

@@ -98,7 +98,7 @@ export const NameInputRow = ({
   return (
     <div>
       <div
-        className="w-full flex items-center gap-1 h-5.5 bg-accent/30"
+        className="flex h-5.5 items-center gap-1 bg-accent/30"
         style={{ paddingLeft: getItemPadding(level, type === "file") }}
       >
         <div className="flex items-center gap-0.5">

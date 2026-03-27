@@ -6,7 +6,6 @@ import { UserButton } from "@clerk/nextjs";
 import { formatDistanceToNow } from "date-fns";
 import { ChevronRightIcon, ClockIcon, PencilIcon } from "lucide-react";
 
-import { cn } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 
 import { Id } from "../../../../convex/_generated/dataModel";
@@ -69,12 +68,7 @@ const ProjectNameEditor = ({
           if (e.key === "Enter") e.currentTarget.blur();
           if (e.key === "Escape") cancel();
         }}
-        className={cn(
-          "h-7 max-w-55 rounded-lg border border-ring/40 bg-white/5 px-2.5",
-          "text-sm font-medium text-foreground outline-none",
-          "focus:border-ring/60 focus:ring-2 focus:ring-ring/20",
-          "transition-all duration-150",
-        )}
+        className="h-7 max-w-55 rounded-lg border border-ring/40 bg-white/5 px-2.5 text-sm font-medium text-foreground outline-none transition-[border-color,box-shadow] duration-150 focus:border-ring/60 focus:ring-2 focus:ring-ring/20"
         style={{ minWidth: `${Math.max(draft.length, 6) + 4}ch` }}
       />
     );
@@ -96,12 +90,7 @@ export const Navbar = ({ projectId }: NavbarProps) => {
   const project = useProject(projectId);
 
   return (
-    <header
-      className={cn(
-        "sticky top-0 z-40 flex h-14 items-center justify-between",
-        "border-b border-white/4 bg-background/90 px-4 backdrop-blur-sm",
-      )}
-    >
+    <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-white/4 bg-background/90 px-4 backdrop-blur-sm">
       <div className="flex items-center gap-1">
         <Link
           href="/"
@@ -124,9 +113,7 @@ export const Navbar = ({ projectId }: NavbarProps) => {
         )}
       </div>
 
-      <div className="flex items-center gap-3">
-        <UserButton />
-      </div>
+      <UserButton />
     </header>
   );
 };

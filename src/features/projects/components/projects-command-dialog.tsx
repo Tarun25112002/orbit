@@ -20,7 +20,6 @@ import {
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
-import { cn } from "@/lib/utils";
 
 import { useProjects } from "../hooks/use-projects";
 import { Doc } from "../../../../convex/_generated/dataModel";
@@ -37,19 +36,19 @@ const getProjectIcon = (project: Doc<"projects">) => {
   const base = "size-3.5";
 
   if (project.importStatus === "completed") {
-    return <FaGithub className={cn(base, "text-muted-foreground/70")} />;
+    return <FaGithub className={`${base} text-muted-foreground/70`} />;
   }
   if (project.importStatus === "failed") {
-    return <AlertCircleIcon className={cn(base, "text-destructive/80")} />;
+    return <AlertCircleIcon className={`${base} text-destructive/80`} />;
   }
   if (project.importStatus === "importing") {
-    return <Loader2Icon className={cn(base, "animate-spin text-ring/70")} />;
+    return <Loader2Icon className={`${base} animate-spin text-ring/70`} />;
   }
-  return <GlobeIcon className={cn(base, "text-muted-foreground/60")} />;
+  return <GlobeIcon className={`${base} text-muted-foreground/60`} />;
 };
 
 const LoadingState = () => (
-  <div className="flex flex-col items-center justify-center gap-2 py-12">
+  <div className="flex flex-col items-center gap-2 py-12">
     <Spinner className="size-5 text-ring/40" />
     <span className="font-mono text-[11px] text-muted-foreground/40">
       Loading projects…
@@ -59,7 +58,7 @@ const LoadingState = () => (
 
 const EmptyState = () => (
   <CommandEmpty>
-    <div className="flex flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+    <div className="flex flex-col items-center gap-3 px-6 py-12 text-center">
       <div className="flex size-10 items-center justify-center rounded-full border border-dashed border-white/12 bg-white/2">
         <FolderOpenIcon className="size-4 text-muted-foreground/40" />
       </div>
@@ -85,18 +84,9 @@ const ProjectResultItem = ({
   <CommandItem
     value={`${project.name}-${project._id}`}
     onSelect={() => onSelect(project._id)}
-    className={cn(
-      "group flex items-center gap-3 rounded-lg px-3 py-2.5",
-      "data-selected:bg-white/5",
-    )}
+    className="group flex items-center gap-3 rounded-lg px-3 py-2.5 data-selected:bg-white/5"
   >
-    <div
-      className={cn(
-        "flex size-8 shrink-0 items-center justify-center rounded-lg border transition-colors duration-150",
-        "border-white/8 bg-white/3",
-        "group-data-selected:border-ring/20 group-data-selected:bg-ring/8",
-      )}
-    >
+    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-white/3 transition-colors duration-150 group-data-selected:border-ring/20 group-data-selected:bg-ring/8">
       {getProjectIcon(project)}
     </div>
 
@@ -129,7 +119,7 @@ export const ProjectsCommandDialog = ({
       onOpenChange={onOpenChange}
       title="Projects"
       description="Search and navigate to your projects"
-      className="overflow-hidden rounded-2xl! border-white/10 bg-[oklch(0.16_0.005_260)]/98 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.7)] backdrop-blur-2xl sm:max-w-130"
+      className="rounded-2xl! bg-[oklch(0.16_0_0)]/98 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.7)] backdrop-blur-2xl sm:max-w-130"
     >
       <div className="border-b border-white/6 px-1 py-1">
         <CommandInput placeholder="Search projects…" />
@@ -160,19 +150,19 @@ export const ProjectsCommandDialog = ({
 
       <div className="flex items-center gap-4 border-t border-white/6 px-4 py-2">
         <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
-          <Kbd className="h-4.5 min-w-5 border border-white/6 bg-white/3 px-1 text-[9px] shadow-none">
+          <Kbd className="h-4.5 border border-white/6 bg-white/3 text-[9px]">
             ↑↓
           </Kbd>
           <span>navigate</span>
         </div>
         <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
-          <Kbd className="h-4.5 min-w-5 border border-white/6 bg-white/3 px-1 text-[9px] shadow-none">
+          <Kbd className="h-4.5 border border-white/6 bg-white/3 text-[9px]">
             ↵
           </Kbd>
           <span>open</span>
         </div>
         <div className="ml-auto flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
-          <Kbd className="h-4.5 min-w-5 border border-white/6 bg-white/3 px-1 text-[9px] shadow-none">
+          <Kbd className="h-4.5 border border-white/6 bg-white/3 text-[9px]">
             esc
           </Kbd>
           <span>close</span>

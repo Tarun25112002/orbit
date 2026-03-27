@@ -124,7 +124,7 @@ export const FileExplorer = ({
               {project?.name ?? "Loading..."}
             </p>
           </button>
-          <div className="opacity-0 group-hover/project:opacity-100 transition-none duration-0 flex items-center gap-0.5 ml-auto">
+          <div className="ml-auto flex items-center gap-0.5 opacity-0 group-hover/project:opacity-100">
             <Button
               type="button"
               aria-label="Create file"

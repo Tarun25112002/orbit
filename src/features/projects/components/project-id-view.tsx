@@ -37,15 +37,16 @@ const Tab = ({
   onClick: () => void;
 }) => {
   return (
-    <div
+    <button
+      type="button"
       onClick={onClick}
       className={cn(
-        "flex items-center gap-2 h-full px-3 cursor-pointer text-muted-foreground border-r hover:bg-accent/30",
+        "flex h-full items-center border-r px-3 text-muted-foreground hover:bg-accent/30",
         isActive && "bg-background text-foreground",
       )}
     >
       <span className="text-sm">{label}</span>
-    </div>
+    </button>
   );
 };
 
@@ -125,29 +126,27 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           isActive={activeView === "preview"}
           onClick={() => setActiveView("preview")}
         />
-        <div className="flex-1 flex justify-end h-full">
-          <div className="h-full flex items-center gap-2 px-2">
-            {selectedFile?.type === "file" && (
-              <Badge variant={isDirty ? "secondary" : "outline"}>
-                {isDirty ? "Unsaved changes" : "Saved"}
-              </Badge>
+        <div className="ml-auto flex h-full items-center gap-2 px-2">
+          {selectedFile?.type === "file" && (
+            <Badge variant={isDirty ? "secondary" : "outline"}>
+              {isDirty ? "Unsaved changes" : "Saved"}
+            </Badge>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              void handleSave();
+            }}
+            disabled={!isDirty || isSaving || !selectedFileId}
+          >
+            {isSaving ? (
+              <Spinner className="size-3.5" />
+            ) : (
+              <SaveIcon className="size-3.5" />
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                void handleSave();
-              }}
-              disabled={!isDirty || isSaving || !selectedFileId}
-            >
-              {isSaving ? (
-                <Spinner className="size-3.5" />
-              ) : (
-                <SaveIcon className="size-3.5" />
-              )}
-              Save
-            </Button>
-          </div>
+            Save
+          </Button>
         </div>
       </nav>
       <div className="flex-1 relative">

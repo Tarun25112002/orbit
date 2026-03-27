@@ -11,7 +11,6 @@ import {
   uniqueNamesGenerator,
 } from "unique-names-generator";
 
-import { cn } from "@/lib/utils";
 import { Kbd } from "@/components/ui/kbd";
 
 import { ProjectsCommandDialog } from "./projects-command-dialog";
@@ -59,7 +58,7 @@ export const ProjectsView = () => {
         className="pointer-events-none absolute inset-0 opacity-40"
         style={{
           backgroundImage:
-            "radial-gradient(circle, oklch(0.6562 0.1826 262.74 / 0.06) 1px, transparent 1px)",
+            "radial-gradient(circle, oklch(0.92 0 0 / 0.06) 1px, transparent 1px)",
           backgroundSize: "32px 32px",
         }}
       />
@@ -69,22 +68,19 @@ export const ProjectsView = () => {
         className="pointer-events-none absolute left-1/2 top-0 h-48 w-130 -translate-x-1/2"
         style={{
           background:
-            "radial-gradient(ellipse at top, oklch(0.6562 0.1826 262.74 / 0.08) 0%, transparent 70%)",
+            "radial-gradient(ellipse at top, oklch(0.98 0 0 / 0.08) 0%, transparent 70%)",
         }}
       />
 
       <header className="relative z-10 flex items-center justify-between border-b border-white/4 px-5 py-3">
-        <div className="flex items-center gap-2.5">
-          <Image
-            src="/orbit logo.svg"
-            alt="Orbit"
-            width={80}
-            height={24}
-            className="brightness-90"
-            priority
-          />
-        </div>
-
+        <Image
+          src="/orbit logo.svg"
+          alt="Orbit"
+          width={80}
+          height={24}
+          className="grayscale brightness-95 contrast-125"
+          priority
+        />
         <UserButton />
       </header>
 
@@ -104,10 +100,7 @@ export const ProjectsView = () => {
               <div className="p-1.5 pb-0">
                 <button
                   onClick={handleNewProject}
-                  className={cn(
-                    "group flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left transition-all duration-200",
-                    "hover:bg-ring/8",
-                  )}
+                  className="group flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-ring/8"
                 >
                   <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-ring/20 bg-ring/10">
                     <Plus className="size-4 text-ring/80" />
@@ -128,10 +121,7 @@ export const ProjectsView = () => {
               <div className="px-3 py-1.5">
                 <button
                   onClick={() => setCommandOpen(true)}
-                  className={cn(
-                    "group flex w-full items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-all duration-200",
-                    "border-white/6 bg-white/3 hover:border-white/12 hover:bg-white/5",
-                  )}
+                  className="group flex w-full items-center gap-2.5 rounded-lg border border-white/6 bg-white/3 px-3 py-2 text-left transition-colors duration-200 hover:border-white/12 hover:bg-white/5"
                 >
                   <Search className="size-3.5 shrink-0 text-muted-foreground/40" />
 
@@ -139,7 +129,7 @@ export const ProjectsView = () => {
                     Search projects…
                   </span>
 
-                  <Kbd className="h-4.5 px-1 font-mono text-[10px] opacity-60">
+                  <Kbd className="h-4.5 font-mono text-[10px] opacity-60">
                     ⌘K
                   </Kbd>
                 </button>
@@ -155,7 +145,7 @@ export const ProjectsView = () => {
         </div>
       </main>
 
-      <footer className="pointer-events-none relative z-10 flex items-center justify-center overflow-hidden px-4 pb-8 pt-0">
+      <footer className="pointer-events-none z-10 flex items-center justify-center overflow-hidden px-4 pb-8">
         <div
           aria-label="Orbit"
           className="flex select-none items-center justify-center gap-[0.14em] text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[-0.04em] text-white/6"

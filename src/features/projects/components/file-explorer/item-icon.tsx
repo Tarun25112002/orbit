@@ -40,6 +40,11 @@ import {
 import { cn } from "@/lib/utils";
 
 type IconRenderer = (className?: string) => ReactElement;
+const toneStrong = "text-foreground/90";
+const toneMedium = "text-foreground/75";
+const toneMuted = "text-muted-foreground";
+const toneSoft = "text-muted-foreground/85";
+const toneSubtle = "text-muted-foreground/70";
 
 const renderIcon = (Icon: ElementType, defaultClassName: string): IconRenderer => {
   function NamedIconRenderer(className?: string) {
@@ -51,70 +56,70 @@ const renderIcon = (Icon: ElementType, defaultClassName: string): IconRenderer =
   return NamedIconRenderer;
 };
 
-const defaultFileIcon = renderIcon(FileIcon, "text-muted-foreground");
-const defaultCodeIcon = renderIcon(VscFileCode, "text-[#7f8ea3]");
-const folderIcon = renderIcon(VscFolder, "text-[#dcb67a]");
-const folderOpenIcon = renderIcon(VscFolderOpened, "text-[#dcb67a]");
-const envIcon = renderIcon(VscSettingsGear, "text-[#9aa4b2]");
-const nextIcon = renderIcon(SiNextdotjs, "text-foreground");
-const nodeIcon = renderIcon(SiNodedotjs, "text-[#5fa04e]");
+const defaultFileIcon = renderIcon(FileIcon, toneMuted);
+const defaultCodeIcon = renderIcon(VscFileCode, toneMedium);
+const folderIcon = renderIcon(VscFolder, toneMedium);
+const folderOpenIcon = renderIcon(VscFolderOpened, toneMedium);
+const envIcon = renderIcon(VscSettingsGear, toneSoft);
+const nextIcon = renderIcon(SiNextdotjs, toneStrong);
+const nodeIcon = renderIcon(SiNodedotjs, toneMedium);
 
 const FILE_NAME_ICONS: Record<string, IconRenderer> = {
-  ".gitignore": renderIcon(SiGit, "text-[#f1502f]"),
-  ".gitattributes": renderIcon(SiGit, "text-[#f1502f]"),
-  "dockerfile": renderIcon(SiDocker, "text-[#2496ed]"),
-  "package-lock.json": renderIcon(SiNpm, "text-[#cb3837]"),
-  "package.json": renderIcon(SiNpm, "text-[#cb3837]"),
-  "pnpm-lock.yaml": renderIcon(SiPnpm, "text-[#f69220]"),
-  "postcss.config.js": renderIcon(SiPostcss, "text-[#dd3a0a]"),
-  "postcss.config.mjs": renderIcon(SiPostcss, "text-[#dd3a0a]"),
-  "postcss.config.ts": renderIcon(SiPostcss, "text-[#dd3a0a]"),
-  "tailwind.config.js": renderIcon(SiTailwindcss, "text-[#06b6d4]"),
-  "tailwind.config.mjs": renderIcon(SiTailwindcss, "text-[#06b6d4]"),
-  "tailwind.config.ts": renderIcon(SiTailwindcss, "text-[#06b6d4]"),
-  "tsconfig.json": renderIcon(SiTypescript, "text-[#3178c6]"),
-  "vite.config.js": renderIcon(SiJavascript, "text-[#f7df1e]"),
-  "vite.config.ts": renderIcon(SiTypescript, "text-[#3178c6]"),
-  "vitest.config.ts": renderIcon(SiVitest, "text-[#6e9f18]"),
-  "yarn.lock": renderIcon(SiYarn, "text-[#2c8ebb]"),
+  ".gitignore": renderIcon(SiGit, toneMedium),
+  ".gitattributes": renderIcon(SiGit, toneMedium),
+  "dockerfile": renderIcon(SiDocker, toneMedium),
+  "package-lock.json": renderIcon(SiNpm, toneStrong),
+  "package.json": renderIcon(SiNpm, toneStrong),
+  "pnpm-lock.yaml": renderIcon(SiPnpm, toneStrong),
+  "postcss.config.js": renderIcon(SiPostcss, toneMedium),
+  "postcss.config.mjs": renderIcon(SiPostcss, toneMedium),
+  "postcss.config.ts": renderIcon(SiPostcss, toneMedium),
+  "tailwind.config.js": renderIcon(SiTailwindcss, toneMedium),
+  "tailwind.config.mjs": renderIcon(SiTailwindcss, toneMedium),
+  "tailwind.config.ts": renderIcon(SiTailwindcss, toneMedium),
+  "tsconfig.json": renderIcon(SiTypescript, toneMedium),
+  "vite.config.js": renderIcon(SiJavascript, toneMedium),
+  "vite.config.ts": renderIcon(SiTypescript, toneMedium),
+  "vitest.config.ts": renderIcon(SiVitest, toneMedium),
+  "yarn.lock": renderIcon(SiYarn, toneStrong),
 };
 
 const FILE_EXTENSION_ICONS: Record<string, IconRenderer> = {
-  bash: renderIcon(VscTerminalBash, "text-[#89e051]"),
-  cjs: renderIcon(SiJavascript, "text-[#f7df1e]"),
-  css: renderIcon(SiCss, "text-[#1572b6]"),
+  bash: renderIcon(VscTerminalBash, toneMedium),
+  cjs: renderIcon(SiJavascript, toneMedium),
+  css: renderIcon(SiCss, toneMedium),
   env: envIcon,
-  gif: renderIcon(VscFileMedia, "text-[#a5d6ff]"),
-  gql: renderIcon(SiGraphql, "text-[#e10098]"),
-  graphql: renderIcon(SiGraphql, "text-[#e10098]"),
-  html: renderIcon(SiHtml5, "text-[#e34f26]"),
-  ico: renderIcon(VscFileMedia, "text-[#a5d6ff]"),
-  jpeg: renderIcon(VscFileMedia, "text-[#a5d6ff]"),
-  jpg: renderIcon(VscFileMedia, "text-[#a5d6ff]"),
-  js: renderIcon(SiJavascript, "text-[#f7df1e]"),
-  json: renderIcon(VscJson, "text-[#f1c40f]"),
-  jsonc: renderIcon(VscJson, "text-[#f1c40f]"),
-  jsx: renderIcon(SiReact, "text-[#61dafb]"),
-  less: renderIcon(SiCss, "text-[#1d365d]"),
-  md: renderIcon(VscMarkdown, "text-[#42a5f5]"),
-  mdx: renderIcon(SiMdx, "text-[#1b73ba]"),
-  mjs: renderIcon(SiJavascript, "text-[#f7df1e]"),
-  png: renderIcon(VscFileMedia, "text-[#a5d6ff]"),
-  postcss: renderIcon(SiPostcss, "text-[#dd3a0a]"),
-  prisma: renderIcon(SiPrisma, "text-[#5a67d8]"),
-  py: renderIcon(SiPython, "text-[#3776ab]"),
-  rs: renderIcon(SiRust, "text-[#dea584]"),
-  sh: renderIcon(VscTerminalBash, "text-[#89e051]"),
-  sql: renderIcon(SiSqlite, "text-[#0f80cc]"),
-  svg: renderIcon(SiSvg, "text-[#ffb13b]"),
-  toml: renderIcon(SiToml, "text-[#9c4221]"),
-  ts: renderIcon(SiTypescript, "text-[#3178c6]"),
-  tsx: renderIcon(SiReact, "text-[#61dafb]"),
+  gif: renderIcon(VscFileMedia, toneSubtle),
+  gql: renderIcon(SiGraphql, toneMedium),
+  graphql: renderIcon(SiGraphql, toneMedium),
+  html: renderIcon(SiHtml5, toneMedium),
+  ico: renderIcon(VscFileMedia, toneSubtle),
+  jpeg: renderIcon(VscFileMedia, toneSubtle),
+  jpg: renderIcon(VscFileMedia, toneSubtle),
+  js: renderIcon(SiJavascript, toneMedium),
+  json: renderIcon(VscJson, toneMedium),
+  jsonc: renderIcon(VscJson, toneMedium),
+  jsx: renderIcon(SiReact, toneMedium),
+  less: renderIcon(SiCss, toneMedium),
+  md: renderIcon(VscMarkdown, toneMedium),
+  mdx: renderIcon(SiMdx, toneMedium),
+  mjs: renderIcon(SiJavascript, toneMedium),
+  png: renderIcon(VscFileMedia, toneSubtle),
+  postcss: renderIcon(SiPostcss, toneMedium),
+  prisma: renderIcon(SiPrisma, toneMedium),
+  py: renderIcon(SiPython, toneMedium),
+  rs: renderIcon(SiRust, toneMedium),
+  sh: renderIcon(VscTerminalBash, toneMedium),
+  sql: renderIcon(SiSqlite, toneMedium),
+  svg: renderIcon(SiSvg, toneMedium),
+  toml: renderIcon(SiToml, toneMedium),
+  ts: renderIcon(SiTypescript, toneMedium),
+  tsx: renderIcon(SiReact, toneMedium),
   txt: defaultFileIcon,
-  webp: renderIcon(VscFileMedia, "text-[#a5d6ff]"),
+  webp: renderIcon(VscFileMedia, toneSubtle),
   xml: defaultCodeIcon,
-  yaml: renderIcon(SiYaml, "text-[#cb171e]"),
-  yml: renderIcon(SiYaml, "text-[#cb171e]"),
+  yaml: renderIcon(SiYaml, toneMedium),
+  yml: renderIcon(SiYaml, toneMedium),
 };
 
 const NEXT_CONFIG_FILES = new Set([

@@ -64,7 +64,7 @@ export const TreeItemWrapper = ({
             }
           }}
           className={cn(
-            "group flex items-center gap-1 w-full h-5.5 hover:bg-accent/30 outline-none focus:ring-1 focus:ring-inset focus:ring-ring disabled:pointer-events-none disabled:opacity-50",
+            "group flex h-5.5 items-center gap-1 hover:bg-accent/30 outline-none focus:ring-1 focus:ring-inset focus:ring-ring disabled:pointer-events-none disabled:opacity-50",
             isActive && "bg-accent/30",
           )}
           style={{ paddingLeft: getItemPadding(level, item.type === "file") }}
@@ -75,20 +75,20 @@ export const TreeItemWrapper = ({
       <ContextMenuContent className="w-64">
         {item.type === "folder" && (
           <>
-            <ContextMenuItem onClick={onCreateFile} className="text-sm">
+            <ContextMenuItem onClick={onCreateFile}>
               New File...
             </ContextMenuItem>
-            <ContextMenuItem onClick={onCreateFolder} className="text-sm">
+            <ContextMenuItem onClick={onCreateFolder}>
               New Folder...
             </ContextMenuItem>
             <ContextMenuSeparator />
           </>
         )}
-        <ContextMenuItem onClick={onRename} className="text-sm">
+        <ContextMenuItem onClick={onRename}>
           Rename...
           <ContextMenuShortcut>F2</ContextMenuShortcut>
         </ContextMenuItem>
-        <ContextMenuItem onClick={onDelete} className="text-sm">
+        <ContextMenuItem onClick={onDelete}>
           Delete Permanently
           <ContextMenuShortcut>Del</ContextMenuShortcut>
         </ContextMenuItem>
