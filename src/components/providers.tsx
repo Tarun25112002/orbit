@@ -13,6 +13,7 @@ import { UnauthenticatedView } from "@/features/auth/components/unauthenticated-
 
 import { ThemeProvider } from "./theme-provider";
 import { Spinner } from "./ui/spinner";
+import { Toaster } from "./ui/sonner";
 
 const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -27,6 +28,7 @@ export const Providers = ({ children }: { children: React.ReactNode }) => {
           disableTransitionOnChange
         >
           <Authenticated>{children}</Authenticated>
+          <Toaster />
 
           <Unauthenticated>
             <UnauthenticatedView />
