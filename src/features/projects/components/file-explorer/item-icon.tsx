@@ -3,8 +3,6 @@ import { FileIcon } from "lucide-react";
 import {
   VscFileCode,
   VscFileMedia,
-  VscFolder,
-  VscFolderOpened,
   VscJson,
   VscMarkdown,
   VscSettingsGear,
@@ -36,15 +34,57 @@ import {
   SiYaml,
   SiYarn,
 } from "react-icons/si";
+import {
+  TbFolder,
+  TbFolderBolt,
+  TbFolderCheck,
+  TbFolderCode,
+  TbFolderCog,
+  TbFolderOpen,
+  TbFolderRoot,
+} from "react-icons/tb";
 
 import { cn } from "@/lib/utils";
 
 type IconRenderer = (className?: string) => ReactElement;
-const toneStrong = "text-foreground/90";
-const toneMedium = "text-foreground/75";
-const toneMuted = "text-muted-foreground";
-const toneSoft = "text-muted-foreground/85";
-const toneSubtle = "text-muted-foreground/70";
+type FolderIconSet = {
+  closed: IconRenderer;
+  open: IconRenderer;
+};
+const toneDefault = "text-muted-foreground";
+const toneSubtle = "text-muted-foreground/80";
+const colorBash = "text-[#8fcf7a]";
+const colorCss = "text-[#86bafc]";
+const colorDocker = "text-[#7cb8f9]";
+const colorEnv = "text-[#a6b0c5]";
+const colorFolder = "text-[#dcb67a]";
+const colorFolderAutomation = "text-[#e2b26f]";
+const colorFolderCode = "text-[#92b4ff]";
+const colorFolderConfig = "text-[#b2a3ff]";
+const colorGit = "text-[#f59563]";
+const colorFolderRoot = "text-[#e7c981]";
+const colorFolderTest = "text-[#93d39e]";
+const colorGraphql = "text-[#e590d0]";
+const colorHtml = "text-[#f39c6b]";
+const colorJavascript = "text-[#f7de6d]";
+const colorJson = "text-[#cb9e72]";
+const colorMarkdown = "text-[#7aa2f7]";
+const colorNext = "text-[#d8dee9]";
+const colorNode = "text-[#8fcf7a]";
+const colorNpm = "text-[#ef7d7d]";
+const colorPnpm = "text-[#f2b56b]";
+const colorPostCss = "text-[#86bafc]";
+const colorPrisma = "text-[#8fa8d6]";
+const colorPython = "text-[#f7d06a]";
+const colorReact = "text-[#7ad8f5]";
+const colorRust = "text-[#d0a989]";
+const colorSql = "text-[#8ab4f8]";
+const colorSvg = "text-[#f0c778]";
+const colorTailwind = "text-[#7ad8f5]";
+const colorToml = "text-[#b6becf]";
+const colorTypescript = "text-[#4aa4f4]";
+const colorYaml = "text-[#d7ba7d]";
+const colorYarn = "text-[#7ad0dd]";
 
 const renderIcon = (Icon: ElementType, defaultClassName: string): IconRenderer => {
   function NamedIconRenderer(className?: string) {
@@ -56,70 +96,88 @@ const renderIcon = (Icon: ElementType, defaultClassName: string): IconRenderer =
   return NamedIconRenderer;
 };
 
-const defaultFileIcon = renderIcon(FileIcon, toneMuted);
-const defaultCodeIcon = renderIcon(VscFileCode, toneMedium);
-const folderIcon = renderIcon(VscFolder, toneMedium);
-const folderOpenIcon = renderIcon(VscFolderOpened, toneMedium);
-const envIcon = renderIcon(VscSettingsGear, toneSoft);
-const nextIcon = renderIcon(SiNextdotjs, toneStrong);
-const nodeIcon = renderIcon(SiNodedotjs, toneMedium);
+const defaultFileIcon = renderIcon(FileIcon, toneDefault);
+const defaultCodeIcon = renderIcon(VscFileCode, colorMarkdown);
+const envIcon = renderIcon(VscSettingsGear, colorEnv);
+const nextIcon = renderIcon(SiNextdotjs, colorNext);
+const nodeIcon = renderIcon(SiNodedotjs, colorNode);
+const renderFolderSet = (
+  ClosedIcon: ElementType,
+  defaultClassName: string,
+): FolderIconSet => ({
+  closed: renderIcon(ClosedIcon, defaultClassName),
+  open: renderIcon(TbFolderOpen, defaultClassName),
+});
+const folderIcons = renderFolderSet(TbFolder, colorFolder);
+const codeFolderIcons = renderFolderSet(TbFolderCode, colorFolderCode);
+const configFolderIcons = renderFolderSet(TbFolderCog, colorFolderConfig);
+const gitFolderIcons = renderFolderSet(TbFolder, colorGit);
+const automationFolderIcons = renderFolderSet(
+  TbFolderBolt,
+  colorFolderAutomation,
+);
+const testingFolderIcons = renderFolderSet(TbFolderCheck, colorFolderTest);
+const rootFolderIcons = renderFolderSet(TbFolderRoot, colorFolderRoot);
 
 const FILE_NAME_ICONS: Record<string, IconRenderer> = {
-  ".gitignore": renderIcon(SiGit, toneMedium),
-  ".gitattributes": renderIcon(SiGit, toneMedium),
-  "dockerfile": renderIcon(SiDocker, toneMedium),
-  "package-lock.json": renderIcon(SiNpm, toneStrong),
-  "package.json": renderIcon(SiNpm, toneStrong),
-  "pnpm-lock.yaml": renderIcon(SiPnpm, toneStrong),
-  "postcss.config.js": renderIcon(SiPostcss, toneMedium),
-  "postcss.config.mjs": renderIcon(SiPostcss, toneMedium),
-  "postcss.config.ts": renderIcon(SiPostcss, toneMedium),
-  "tailwind.config.js": renderIcon(SiTailwindcss, toneMedium),
-  "tailwind.config.mjs": renderIcon(SiTailwindcss, toneMedium),
-  "tailwind.config.ts": renderIcon(SiTailwindcss, toneMedium),
-  "tsconfig.json": renderIcon(SiTypescript, toneMedium),
-  "vite.config.js": renderIcon(SiJavascript, toneMedium),
-  "vite.config.ts": renderIcon(SiTypescript, toneMedium),
-  "vitest.config.ts": renderIcon(SiVitest, toneMedium),
-  "yarn.lock": renderIcon(SiYarn, toneStrong),
+  ".gitignore": renderIcon(SiGit, colorGit),
+  ".gitattributes": renderIcon(SiGit, colorGit),
+  "bun.lockb": renderIcon(SiNpm, colorNpm),
+  "dockerfile": renderIcon(SiDocker, colorDocker),
+  "license": renderIcon(FileIcon, colorMarkdown),
+  "package-lock.json": renderIcon(SiNpm, colorNpm),
+  "package.json": renderIcon(SiNpm, colorNpm),
+  "pnpm-lock.yaml": renderIcon(SiPnpm, colorPnpm),
+  "postcss.config.js": renderIcon(SiPostcss, colorPostCss),
+  "postcss.config.mjs": renderIcon(SiPostcss, colorPostCss),
+  "postcss.config.ts": renderIcon(SiPostcss, colorPostCss),
+  "tailwind.config.js": renderIcon(SiTailwindcss, colorTailwind),
+  "tailwind.config.mjs": renderIcon(SiTailwindcss, colorTailwind),
+  "tailwind.config.ts": renderIcon(SiTailwindcss, colorTailwind),
+  "tsconfig.json": renderIcon(SiTypescript, colorTypescript),
+  "vite.config.js": renderIcon(SiJavascript, colorJavascript),
+  "vite.config.ts": renderIcon(SiTypescript, colorTypescript),
+  "vitest.config.ts": renderIcon(SiVitest, colorTypescript),
+  "yarn.lock": renderIcon(SiYarn, colorYarn),
+  "readme.md": renderIcon(VscMarkdown, colorMarkdown),
 };
 
 const FILE_EXTENSION_ICONS: Record<string, IconRenderer> = {
-  bash: renderIcon(VscTerminalBash, toneMedium),
-  cjs: renderIcon(SiJavascript, toneMedium),
-  css: renderIcon(SiCss, toneMedium),
+  bash: renderIcon(VscTerminalBash, colorBash),
+  cjs: renderIcon(SiJavascript, colorJavascript),
+  css: renderIcon(SiCss, colorCss),
   env: envIcon,
   gif: renderIcon(VscFileMedia, toneSubtle),
-  gql: renderIcon(SiGraphql, toneMedium),
-  graphql: renderIcon(SiGraphql, toneMedium),
-  html: renderIcon(SiHtml5, toneMedium),
+  gql: renderIcon(SiGraphql, colorGraphql),
+  graphql: renderIcon(SiGraphql, colorGraphql),
+  html: renderIcon(SiHtml5, colorHtml),
   ico: renderIcon(VscFileMedia, toneSubtle),
   jpeg: renderIcon(VscFileMedia, toneSubtle),
   jpg: renderIcon(VscFileMedia, toneSubtle),
-  js: renderIcon(SiJavascript, toneMedium),
-  json: renderIcon(VscJson, toneMedium),
-  jsonc: renderIcon(VscJson, toneMedium),
-  jsx: renderIcon(SiReact, toneMedium),
-  less: renderIcon(SiCss, toneMedium),
-  md: renderIcon(VscMarkdown, toneMedium),
-  mdx: renderIcon(SiMdx, toneMedium),
-  mjs: renderIcon(SiJavascript, toneMedium),
+  js: renderIcon(SiJavascript, colorJavascript),
+  json: renderIcon(VscJson, colorJson),
+  jsonc: renderIcon(VscJson, colorJson),
+  jsx: renderIcon(SiReact, colorReact),
+  less: renderIcon(SiCss, colorCss),
+  md: renderIcon(VscMarkdown, colorMarkdown),
+  mdx: renderIcon(SiMdx, colorMarkdown),
+  mjs: renderIcon(SiJavascript, colorJavascript),
   png: renderIcon(VscFileMedia, toneSubtle),
-  postcss: renderIcon(SiPostcss, toneMedium),
-  prisma: renderIcon(SiPrisma, toneMedium),
-  py: renderIcon(SiPython, toneMedium),
-  rs: renderIcon(SiRust, toneMedium),
-  sh: renderIcon(VscTerminalBash, toneMedium),
-  sql: renderIcon(SiSqlite, toneMedium),
-  svg: renderIcon(SiSvg, toneMedium),
-  toml: renderIcon(SiToml, toneMedium),
-  ts: renderIcon(SiTypescript, toneMedium),
-  tsx: renderIcon(SiReact, toneMedium),
+  postcss: renderIcon(SiPostcss, colorPostCss),
+  prisma: renderIcon(SiPrisma, colorPrisma),
+  py: renderIcon(SiPython, colorPython),
+  rs: renderIcon(SiRust, colorRust),
+  sh: renderIcon(VscTerminalBash, colorBash),
+  sql: renderIcon(SiSqlite, colorSql),
+  svg: renderIcon(SiSvg, colorSvg),
+  toml: renderIcon(SiToml, colorToml),
+  ts: renderIcon(SiTypescript, colorTypescript),
+  tsx: renderIcon(SiReact, colorReact),
   txt: defaultFileIcon,
   webp: renderIcon(VscFileMedia, toneSubtle),
   xml: defaultCodeIcon,
-  yaml: renderIcon(SiYaml, toneMedium),
-  yml: renderIcon(SiYaml, toneMedium),
+  yaml: renderIcon(SiYaml, colorYaml),
+  yml: renderIcon(SiYaml, colorYaml),
 };
 
 const NEXT_CONFIG_FILES = new Set([
@@ -132,6 +190,33 @@ const NODE_FILES = new Set([
   ".nvmrc",
   ".node-version",
 ]);
+const FOLDER_NAME_ICONS: Record<string, FolderIconSet> = {
+  ".git": gitFolderIcons,
+  ".github": gitFolderIcons,
+  ".husky": configFolderIcons,
+  ".vscode": configFolderIcons,
+  "api": automationFolderIcons,
+  "app": codeFolderIcons,
+  "components": codeFolderIcons,
+  "config": configFolderIcons,
+  "configs": configFolderIcons,
+  "e2e": testingFolderIcons,
+  "features": codeFolderIcons,
+  "hooks": codeFolderIcons,
+  "lib": codeFolderIcons,
+  "pages": codeFolderIcons,
+  "scripts": automationFolderIcons,
+  "server": automationFolderIcons,
+  "src": rootFolderIcons,
+  "spec": testingFolderIcons,
+  "specs": testingFolderIcons,
+  "test": testingFolderIcons,
+  "tests": testingFolderIcons,
+  "types": codeFolderIcons,
+  "utils": codeFolderIcons,
+  "workers": automationFolderIcons,
+  "__tests__": testingFolderIcons,
+};
 
 const resolveFileIcon = (
   name: string,
@@ -183,6 +268,12 @@ const resolveFileIcon = (
 
   return defaultCodeIcon;
 };
+const resolveFolderIcon = (name: string, isOpen: boolean) => {
+  const normalizedName = name.trim().toLowerCase();
+  const iconSet = FOLDER_NAME_ICONS[normalizedName] ?? folderIcons;
+
+  return isOpen ? iconSet.open : iconSet.closed;
+};
 
 export const ItemIcon = ({
   type,
@@ -198,7 +289,7 @@ export const ItemIcon = ({
   allowPartialFileMatch?: boolean;
 }) => {
   if (type === "folder") {
-    return (isOpen ? folderOpenIcon : folderIcon)(className);
+    return resolveFolderIcon(name ?? "", Boolean(isOpen))(className);
   }
 
   return resolveFileIcon(name ?? "", allowPartialFileMatch)(className);

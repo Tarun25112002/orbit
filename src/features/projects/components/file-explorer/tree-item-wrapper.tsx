@@ -8,17 +8,19 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 
-import { getItemPadding } from "./constants";
+import { getIndentGuideOffsets, getItemPadding } from "./constants";
 import { Doc } from "../../../../../convex/_generated/dataModel";
 
 export const TreeItemWrapper = ({
   item,
   children,
+  actions,
   level,
   isActive,
   isExpanded,
   disabled,
   onClick,
+  onContextMenu,
   onDoubleClick,
   onRename,
   onDelete,
@@ -27,29 +29,45 @@ export const TreeItemWrapper = ({
 }: {
   item: Doc<"files">;
   children: React.ReactNode;
+  actions?: React.ReactNode;
   level: number;
   isActive?: boolean;
   isExpanded?: boolean;
   disabled?: boolean;
   onClick?: () => void;
+  onContextMenu?: () => void;
   onDoubleClick?: () => void;
   onRename?: () => void;
   onDelete?: () => void;
   onCreateFile?: () => void;
   onCreateFolder?: () => void;
 }) => {
+  const guideOffsets = getIndentGuideOffsets(level);
+
   return (
     <ContextMenu>
-      <ContextMenuTrigger>
-        <button
-          type="button"
+      <ContextMenuTrigger className="block w-full">
+        <div
           role="treeitem"
-          disabled={disabled}
           aria-selected={isActive}
+          aria-disabled={disabled || undefined}
+          aria-level={level + 1}
           aria-expanded={item.type === "folder" ? isExpanded : undefined}
-          onClick={onClick}
-          onDoubleClick={onDoubleClick}
+          tabIndex={disabled ? -1 : 0}
+          onClick={disabled ? undefined : onClick}
+          onContextMenu={disabled ? undefined : onContextMenu}
+          onDoubleClick={disabled ? undefined : onDoubleClick}
           onKeyDown={(event) => {
+            if (disabled) {
+              return;
+            }
+
+            if ((event.key === "Enter" || event.key === " ") && onClick) {
+              event.preventDefault();
+              onClick();
+              return;
+            }
+
             if (event.key === "F2") {
               event.preventDefault();
               onRename?.();
@@ -64,13 +82,30 @@ export const TreeItemWrapper = ({
             }
           }}
           className={cn(
-            "group flex h-5.5 items-center gap-1 hover:bg-accent/30 outline-none focus:ring-1 focus:ring-inset focus:ring-ring disabled:pointer-events-none disabled:opacity-50",
-            isActive && "bg-accent/30",
+            "group relative flex h-6 w-full items-center gap-1 overflow-hidden rounded-md pr-1.5 text-left text-sm text-foreground/85 transition-colors outline-none hover:bg-accent/30 hover:text-foreground focus:ring-1 focus:ring-inset focus:ring-ring",
+            isActive &&
+              "bg-accent/40 text-foreground shadow-[inset_1px_0_0_var(--color-ring)]",
+            disabled && "pointer-events-none opacity-50",
           )}
           style={{ paddingLeft: getItemPadding(level, item.type === "file") }}
         >
+          {guideOffsets.length > 0 && (
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 left-0"
+            >
+              {guideOffsets.map((offset) => (
+                <span
+                  key={offset}
+                  className="absolute inset-y-1 w-px bg-border/45"
+                  style={{ left: offset }}
+                />
+              ))}
+            </div>
+          )}
           {children}
-        </button>
+          {actions}
+        </div>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-64">
         {item.type === "folder" && (
@@ -88,7 +123,7 @@ export const TreeItemWrapper = ({
           Rename...
           <ContextMenuShortcut>F2</ContextMenuShortcut>
         </ContextMenuItem>
-        <ContextMenuItem onClick={onDelete}>
+        <ContextMenuItem variant="destructive" onClick={onDelete}>
           Delete Permanently
           <ContextMenuShortcut>Del</ContextMenuShortcut>
         </ContextMenuItem>

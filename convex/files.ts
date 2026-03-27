@@ -5,6 +5,7 @@ import { Id } from "./_generated/dataModel";
 
 type FileReadCtx = QueryCtx | MutationCtx;
 const INVALID_ITEM_NAME_PATTERN = /[\\/]/;
+const PATH_SEPARATOR_PATTERN = /[\\/]/;
 
 const validateItemName = (
   name: string,
@@ -85,6 +86,22 @@ const validateParentFolder = async (
   return parent;
 };
 
+const parseCreatePathSegments = (name: string, type: "file" | "folder") => {
+  const trimmedName = name.trim();
+  const label = type === "file" ? "File path" : "Folder path";
+
+  if (!trimmedName) {
+    throw new Error(`${label} cannot be empty`);
+  }
+
+  const segments = trimmedName.split(PATH_SEPARATOR_PATTERN).map((segment) => segment.trim());
+  if (segments.some((segment) => !segment)) {
+    throw new Error(`${label} cannot include empty path segments`);
+  }
+
+  return segments.map((segment) => validateItemName(segment, "item"));
+};
+
 const ensureUniqueSiblingName = async (
   ctx: FileReadCtx,
   {
@@ -115,11 +132,69 @@ const ensureUniqueSiblingName = async (
   }
 };
 
+const ensureFolderPath = async (
+  ctx: MutationCtx,
+  {
+    projectId,
+    parentId,
+    folderSegments,
+  }: {
+    projectId: Id<"projects">;
+    parentId?: Id<"files">;
+    folderSegments: string[];
+  },
+) => {
+  let currentParentId = parentId;
+
+  for (const segment of folderSegments) {
+    const folderName = validateItemName(segment, "folder");
+    const siblings = await ctx.db
+      .query("files")
+      .withIndex("by_project_parent", (q) =>
+        q.eq("projectId", projectId).eq("parentId", currentParentId),
+      )
+      .collect();
+
+    const existing = siblings.find((sibling) => sibling.name === folderName);
+    if (existing) {
+      if (existing.type !== "folder") {
+        throw new Error(`"${folderName}" already exists as a file`);
+      }
+
+      currentParentId = existing._id;
+      continue;
+    }
+
+    currentParentId = await ctx.db.insert("files", {
+      projectId,
+      parentId: currentParentId,
+      name: folderName,
+      type: "folder",
+      updatedAt: Date.now(),
+    });
+  }
+
+  return currentParentId;
+};
+
 const touchProject = async (ctx: MutationCtx, projectId: Id<"projects">) => {
   await ctx.db.patch(projectId, {
     updatedAt: Date.now(),
   });
 };
+
+const sortFiles = <T extends { type: "file" | "folder"; name: string }>(
+  files: T[],
+) =>
+  files.sort((a, b) => {
+    if (a.type === "folder" && b.type === "file") return -1;
+    if (a.type === "file" && b.type === "folder") return 1;
+
+    return a.name.localeCompare(b.name, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
 
 export const getFiles = query({
   args: { projectId: v.id("projects") },
@@ -127,10 +202,10 @@ export const getFiles = query({
     const identity = await verifyAuth(ctx);
     await requireProjectAccess(ctx, args.projectId, identity.subject);
 
-    return await ctx.db
+    return sortFiles(await ctx.db
       .query("files")
       .withIndex("by_project", (q) => q.eq("projectId", args.projectId))
-      .collect();
+      .collect());
   },
 });
 export const getFile = query({
@@ -160,12 +235,7 @@ export const getFolderContents = query({
         q.eq("projectId", args.projectId).eq("parentId", args.parentId),
       )
       .collect();
-    return files.sort((a, b) => {
-      if (a.type === "folder" && b.type === "file") return -1;
-      if (a.type === "file" && b.type === "folder") return 1;
-
-      return a.name.localeCompare(b.name);
-    });
+    return sortFiles(files);
   },
 });
 export const createFile = mutation({
@@ -177,21 +247,28 @@ export const createFile = mutation({
   },
   handler: async (ctx, args) => {
     const identity = await verifyAuth(ctx);
-    const name = validateItemName(args.name, "file");
+    const pathSegments = parseCreatePathSegments(args.name, "file");
+    const name = validateItemName(pathSegments[pathSegments.length - 1]!, "file");
+    const folderSegments = pathSegments.slice(0, -1);
     await requireProjectAccess(ctx, args.projectId, identity.subject);
     await validateParentFolder(ctx, {
       projectId: args.projectId,
       parentId: args.parentId,
     });
-    await ensureUniqueSiblingName(ctx, {
+    const parentId = await ensureFolderPath(ctx, {
       projectId: args.projectId,
       parentId: args.parentId,
+      folderSegments,
+    });
+    await ensureUniqueSiblingName(ctx, {
+      projectId: args.projectId,
+      parentId,
       name,
     });
 
     const fileId = await ctx.db.insert("files", {
       projectId: args.projectId,
-      parentId: args.parentId,
+      parentId,
       name,
       type: "file",
       content: args.content,
@@ -211,21 +288,28 @@ export const createFolder = mutation({
   },
   handler: async (ctx, args) => {
     const identity = await verifyAuth(ctx);
-    const name = validateItemName(args.name, "folder");
+    const pathSegments = parseCreatePathSegments(args.name, "folder");
+    const name = validateItemName(pathSegments[pathSegments.length - 1]!, "folder");
+    const folderSegments = pathSegments.slice(0, -1);
     await requireProjectAccess(ctx, args.projectId, identity.subject);
     await validateParentFolder(ctx, {
       projectId: args.projectId,
       parentId: args.parentId,
     });
-    await ensureUniqueSiblingName(ctx, {
+    const parentId = await ensureFolderPath(ctx, {
       projectId: args.projectId,
       parentId: args.parentId,
+      folderSegments,
+    });
+    await ensureUniqueSiblingName(ctx, {
+      projectId: args.projectId,
+      parentId,
       name,
     });
 
     const folderId = await ctx.db.insert("files", {
       projectId: args.projectId,
-      parentId: args.parentId,
+      parentId,
       name,
       type: "folder",
       updatedAt: Date.now(),

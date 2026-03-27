@@ -213,7 +213,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           )}
           {selectedFile?.type === "file" && (
             <div className="h-full overflow-auto p-3">
-              <pre className="min-h-full rounded-lg border bg-muted/20 p-3 font-mono text-sm whitespace-pre-wrap break-words">
+              <pre className="min-h-full rounded-lg border bg-muted/20 p-3 font-mono text-sm whitespace-pre-wrap wrap-break-word">
                 {draftContent || "(empty file)"}
               </pre>
             </div>
