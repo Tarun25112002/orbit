@@ -19,6 +19,7 @@ import {
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { lintKeymap } from "@codemirror/lint";
 import { EditorView } from "@codemirror/view";
+import { showMinimap } from "@replit/codemirror-minimap";
 
 import { getLanguageExtension } from "../utils/language-detection";
 import { editorTheme, editorHighlighting } from "../utils/editor-theme";
@@ -58,6 +59,13 @@ export const CodeEditor = ({
 
       // Scroll past end — add padding at the bottom
       EditorView.contentAttributes.of({ style: "padding-bottom: 50vh" }),
+
+      // VS Code-like minimap in the right gutter.
+      showMinimap.compute(["doc"], () => ({
+        create: () => ({ dom: document.createElement("div") }),
+        displayText: "blocks",
+        showOverlay: "always",
+      })),
 
       // Line wrapping off (like VS Code default)
       // Users can toggle via View menu if needed
