@@ -10,13 +10,22 @@ import {
 } from "react";
 import { Allotment } from "allotment";
 import { useConvex } from "convex/react";
-import { ChevronLeftIcon, ChevronRightIcon, SaveIcon, XIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  SaveIcon,
+  XIcon,
+} from "lucide-react";
 import type { Doc } from "../../../../convex/_generated/dataModel";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -111,19 +120,20 @@ const EditorTabStrip = ({
       `[data-tab-id="${activeTabId}"]`,
     );
     if (activeEl) {
-      activeEl.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      activeEl.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+        inline: "nearest",
+      });
     }
   }, [activeTabId]);
 
-  const scroll = useCallback(
-    (direction: "left" | "right") => {
-      scrollRef.current?.scrollBy({
-        left: direction === "left" ? -SCROLL_AMOUNT : SCROLL_AMOUNT,
-        behavior: "smooth",
-      });
-    },
-    [],
-  );
+  const scroll = useCallback((direction: "left" | "right") => {
+    scrollRef.current?.scrollBy({
+      left: direction === "left" ? -SCROLL_AMOUNT : SCROLL_AMOUNT,
+      behavior: "smooth",
+    });
+  }, []);
 
   if (tabs.length === 0) {
     return (
@@ -179,9 +189,7 @@ const EditorTabStrip = ({
                 className="min-w-0 flex-1 truncate text-left text-xs"
                 title={tab.label}
               >
-                <span className={cn(isPreview && "italic")}>
-                  {tab.label}
-                </span>
+                <span className={cn(isPreview && "italic")}>{tab.label}</span>
               </button>
               <button
                 type="button"
@@ -299,7 +307,11 @@ const BreadcrumbSegment = ({
               )}
             >
               <span className="shrink-0">
-                <ItemIcon type={item.type} name={item.name} className="!size-4" />
+                <ItemIcon
+                  type={item.type}
+                  name={item.name}
+                  className="!size-4"
+                />
               </span>
               <span className="min-w-0 truncate">{item.name}</span>
             </button>
@@ -352,7 +364,6 @@ const BreadcrumbBar = ({
     </div>
   );
 };
-
 
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
@@ -506,78 +517,89 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             activeView === "editor" ? "visible" : "invisible",
           )}
         >
-          <Allotment defaultSizes={[DEFAULT_SIDEBAR_WIDTH, DEFAULT_MAIN_SIZE]}>
-            <Allotment.Pane
-              snap
-              minSize={MIN_SIDEBAR_WIDTH}
-              maxSize={MAX_SIDEBAR_WIDTH}
-              preferredSize={DEFAULT_SIDEBAR_WIDTH}
+          <div className="relative h-full">
+            <Allotment
+              defaultSizes={[DEFAULT_SIDEBAR_WIDTH, DEFAULT_MAIN_SIZE]}
             >
-              <FileExplorer
-                projectId={projectId}
-                selectedFileId={selectedFileId}
-                onSelectFile={(fileId, options) => {
-                  if (!fileId) {
-                    if (activeTabId) {
-                      close(activeTabId);
+              <Allotment.Pane
+                snap
+                minSize={MIN_SIDEBAR_WIDTH}
+                maxSize={MAX_SIDEBAR_WIDTH}
+                preferredSize={DEFAULT_SIDEBAR_WIDTH}
+              >
+                <FileExplorer
+                  projectId={projectId}
+                  selectedFileId={selectedFileId}
+                  onSelectFile={(fileId, options) => {
+                    if (!fileId) {
+                      if (activeTabId) {
+                        close(activeTabId);
+                      }
+                      return;
                     }
-                    return;
-                  }
 
-                  if (options?.pinned) {
-                    openPermanent(fileId);
-                    return;
-                  }
+                    if (options?.pinned) {
+                      openPermanent(fileId);
+                      return;
+                    }
 
-                  openPreview(fileId);
-                }}
-              />
-            </Allotment.Pane>
-            <Allotment.Pane>
-              <div className="flex h-full min-h-0 flex-col">
-                <EditorTabStrip
-                  tabs={editorTabs}
-                  activeTabId={activeTabId}
-                  previewTabId={previewTabId}
-                  onActivate={handleActivateTab}
-                  onPin={handlePinTab}
-                  onClose={close}
+                    openPreview(fileId);
+                  }}
                 />
-                {selectedFile && (
-                  <BreadcrumbBar
-                    file={selectedFile}
-                    allFiles={projectFiles ?? []}
-                    onOpenFile={handlePinTab}
-                  />
-                )}
-                <div className="min-h-0 flex-1">
-                  {!selectedFileId && (
-                    <EmptyState label="Select a file from the explorer to start editing." />
-                  )}
-                  {selectedFileId && selectedFile === undefined && (
-                    <div className="h-full w-full flex items-center justify-center">
-                      <Spinner className="size-5" />
-                    </div>
-                  )}
-                  {selectedFile?.type === "folder" && (
-                    <EmptyState label="Folders cannot be edited. Select a file instead." />
-                  )}
-                  {selectedFile?.type === "file" && (
-                    <div className="h-full p-3">
-                      <Textarea
-                        className="h-full min-h-full font-mono text-sm"
-                        value={draftContent}
-                        onChange={(event) =>
-                          setDraftContent(event.target.value)
-                        }
-                        spellCheck={false}
+              </Allotment.Pane>
+              <Allotment.Pane>
+                <div className="relative h-full">
+                  <div className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2">
+                    <span className="select-none text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[0.14em] text-white/3">
+                      Orbit
+                    </span>
+                  </div>
+                  <div className="relative z-10 flex h-full min-h-0 flex-col">
+                    <EditorTabStrip
+                      tabs={editorTabs}
+                      activeTabId={activeTabId}
+                      previewTabId={previewTabId}
+                      onActivate={handleActivateTab}
+                      onPin={handlePinTab}
+                      onClose={close}
+                    />
+                    {selectedFile && (
+                      <BreadcrumbBar
+                        file={selectedFile}
+                        allFiles={projectFiles ?? []}
+                        onOpenFile={handlePinTab}
                       />
+                    )}
+                    <div className="min-h-0 flex-1">
+                      {!selectedFileId && (
+                        <EmptyState label="Select a file from the explorer to start editing." />
+                      )}
+                      {selectedFileId && selectedFile === undefined && (
+                        <div className="h-full w-full flex items-center justify-center">
+                          <Spinner className="size-5" />
+                        </div>
+                      )}
+                      {selectedFile?.type === "folder" && (
+                        <EmptyState label="Folders cannot be edited. Select a file instead." />
+                      )}
+                      {selectedFile?.type === "file" && (
+                        <div className="h-full p-3">
+                          <Textarea
+                            className="h-full min-h-full font-mono text-sm"
+                            value={draftContent}
+                            onChange={(event) =>
+                              setDraftContent(event.target.value)
+                            }
+                            spellCheck={false}
+                          />
+                        </div>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
-              </div>
-            </Allotment.Pane>
-          </Allotment>
+              </Allotment.Pane>
+            </Allotment>
+          </div>
         </div>
         <div
           className={cn(

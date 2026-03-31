@@ -21,12 +21,6 @@ export const ProjectIdLayout = ({
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <Navbar projectId={projectId} />
 
-      <div className="pointer-events-none fixed inset-0 flex items-center justify-center">
-        <span className="select-none text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[0.14em] text-white/3">
-          Orbit
-        </span>
-      </div>
-
       <div className="relative z-10 flex-1 overflow-hidden">
         <Allotment>
           <Allotment.Pane
