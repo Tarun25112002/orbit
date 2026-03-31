@@ -5,11 +5,12 @@ import {
   useEffect,
   useEffectEvent,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { Allotment } from "allotment";
 import { useConvex } from "convex/react";
-import { SaveIcon, XIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, SaveIcon, XIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ import { Id } from "../../../../convex/_generated/dataModel";
 import { useEditor } from "../../editor/hooks/use-editor";
 import { useFile, useProjectFiles, useUpdateFile } from "../hooks/use-files";
 import { FileExplorer } from "./file-explorer";
+import { ItemIcon } from "./file-explorer/item-icon";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
@@ -59,6 +61,8 @@ const Tab = ({
   );
 };
 
+const SCROLL_AMOUNT = 200;
+
 const EditorTabStrip = ({
   tabs,
   activeTabId,
@@ -74,6 +78,51 @@ const EditorTabStrip = ({
   onPin: (fileId: Id<"files">) => void;
   onClose: (fileId: Id<"files">) => void;
 }) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateScrollState = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 1);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    updateScrollState();
+    el.addEventListener("scroll", updateScrollState, { passive: true });
+    const ro = new ResizeObserver(updateScrollState);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", updateScrollState);
+      ro.disconnect();
+    };
+  }, [updateScrollState, tabs.length]);
+
+  // Auto-scroll active tab into view
+  useEffect(() => {
+    if (!activeTabId || !scrollRef.current) return;
+    const activeEl = scrollRef.current.querySelector(
+      `[data-tab-id="${activeTabId}"]`,
+    );
+    if (activeEl) {
+      activeEl.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    }
+  }, [activeTabId]);
+
+  const scroll = useCallback(
+    (direction: "left" | "right") => {
+      scrollRef.current?.scrollBy({
+        left: direction === "left" ? -SCROLL_AMOUNT : SCROLL_AMOUNT,
+        behavior: "smooth",
+      });
+    },
+    [],
+  );
+
   if (tabs.length === 0) {
     return (
       <div className="flex h-9 items-center border-b bg-sidebar/60 px-3 text-xs text-muted-foreground">
@@ -83,41 +132,79 @@ const EditorTabStrip = ({
   }
 
   return (
-    <div className="flex h-9 items-end gap-1 overflow-x-auto border-b bg-sidebar/60 px-1.5 pt-1">
-      {tabs.map((tab) => {
-        const isActive = activeTabId === tab.id;
-        const isPreview = previewTabId === tab.id;
+    <div className="relative flex h-9 items-end border-b bg-sidebar/60">
+      {/* Left scroll button */}
+      {canScrollLeft && (
+        <button
+          type="button"
+          onClick={() => scroll("left")}
+          className="absolute left-0 z-10 flex h-full w-6 items-center justify-center bg-gradient-to-r from-sidebar/90 to-transparent text-muted-foreground hover:text-foreground"
+          aria-label="Scroll tabs left"
+        >
+          <ChevronLeftIcon className="size-3.5" />
+        </button>
+      )}
 
-        return (
-          <div
-            key={tab.id}
-            className={cn(
-              "group flex h-8 min-w-0 max-w-52 items-center gap-1 rounded-t-md border border-b-0 px-1.5",
-              isActive
-                ? "bg-background text-foreground border-border"
-                : "bg-muted/35 text-muted-foreground border-transparent hover:bg-muted/50",
-            )}
-          >
-            <button
-              type="button"
-              onClick={() => onActivate(tab.id)}
-              onDoubleClick={() => onPin(tab.id)}
-              className="min-w-0 flex-1 truncate text-left text-xs"
-              title={tab.label}
+      {/* Scrollable tab container */}
+      <div
+        ref={scrollRef}
+        className="flex h-full w-full items-end gap-1 overflow-x-auto px-1.5 pt-1 scrollbar-none"
+        style={{ scrollbarWidth: "none" }}
+      >
+        {tabs.map((tab) => {
+          const isActive = activeTabId === tab.id;
+          const isPreview = previewTabId === tab.id;
+
+          return (
+            <div
+              key={tab.id}
+              data-tab-id={tab.id}
+              className={cn(
+                "group flex h-8 w-40 shrink-0 items-center gap-1.5 rounded-t-md border border-b-0 px-2",
+                isActive
+                  ? "bg-background text-foreground border-border"
+                  : "bg-muted/35 text-muted-foreground border-transparent hover:bg-muted/50",
+              )}
             >
-              <span className={cn(isPreview && "italic")}>{tab.label}</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onClose(tab.id)}
-              className="rounded p-0.5 opacity-70 transition hover:bg-accent hover:opacity-100"
-              aria-label={`Close ${tab.label}`}
-            >
-              <XIcon className="size-3" />
-            </button>
-          </div>
-        );
-      })}
+              {/* File-type icon */}
+              <span className="shrink-0">
+                <ItemIcon type="file" name={tab.label} />
+              </span>
+              <button
+                type="button"
+                onClick={() => onActivate(tab.id)}
+                onDoubleClick={() => onPin(tab.id)}
+                className="min-w-0 flex-1 truncate text-left text-xs"
+                title={tab.label}
+              >
+                <span className={cn(isPreview && "italic")}>
+                  {tab.label}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onClose(tab.id)}
+                className="shrink-0 rounded p-0.5 opacity-0 transition group-hover:opacity-70 hover:!opacity-100 hover:bg-accent"
+                aria-label={`Close ${tab.label}`}
+              >
+                <XIcon className="size-3" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Right scroll button */}
+      {canScrollRight && (
+        <button
+          type="button"
+          onClick={() => scroll("right")}
+          className="absolute right-0 z-10 flex h-full w-6 items-center justify-center bg-gradient-to-l from-sidebar/90 to-transparent text-muted-foreground hover:text-foreground"
+          aria-label="Scroll tabs right"
+        >
+          <ChevronRightIcon className="size-3.5" />
+        </button>
+      )}
     </div>
   );
 };

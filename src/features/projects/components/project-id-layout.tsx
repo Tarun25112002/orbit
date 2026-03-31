@@ -28,8 +28,9 @@ export const ProjectIdLayout = ({
       </div>
 
       <div className="relative z-10 flex-1 overflow-hidden">
-        <Allotment snap>
+        <Allotment>
           <Allotment.Pane
+            snap
             minSize={0}
             maxSize={MAX_SIDEBAR_WIDTH}
             preferredSize={DEFAULT_SIDEBAR_WIDTH}
@@ -39,7 +40,7 @@ export const ProjectIdLayout = ({
             </div>
           </Allotment.Pane>
 
-          <Allotment.Pane preferredSize={DEFAULT_MAIN_SIZE}>
+          <Allotment.Pane minSize={400} preferredSize={DEFAULT_MAIN_SIZE}>
             {children}
           </Allotment.Pane>
         </Allotment>
