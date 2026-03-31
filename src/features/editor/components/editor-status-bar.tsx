@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BracesIcon,
   IndentIncreaseIcon,
@@ -44,7 +44,7 @@ const StatusItem = ({
     type="button"
     onClick={onClick}
     title={title}
-    className={`flex items-center gap-1 px-2 py-0 h-full text-[11px] leading-none transition-colors ${
+    className={`flex shrink-0 items-center gap-1 px-2 py-0 h-full text-[11px] leading-none transition-colors ${
       onClick ? "hover:bg-[#ffffff1a] cursor-pointer" : "cursor-default"
     }`}
     disabled={!onClick}
@@ -63,6 +63,49 @@ export const EditorStatusBar = ({
   isDirty,
   lineEnding = "LF",
 }: EditorStatusBarProps) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [compactMode, setCompactMode] = useState<"full" | "md" | "sm" | "xs">(
+    "full",
+  );
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) {
+      return;
+    }
+
+    const updateCompactMode = () => {
+      const width = element.clientWidth;
+
+      if (width < 620) {
+        setCompactMode("xs");
+        return;
+      }
+      if (width < 760) {
+        setCompactMode("sm");
+        return;
+      }
+      if (width < 980) {
+        setCompactMode("md");
+        return;
+      }
+
+      setCompactMode("full");
+    };
+
+    updateCompactMode();
+    const observer = new ResizeObserver(updateCompactMode);
+    observer.observe(element);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
+  const isFull = compactMode === "full";
+  const isMdOrWider = compactMode === "full" || compactMode === "md";
+  const isSmOrWider = compactMode !== "xs";
+
   const languageName = getLanguageName(filename);
 
   const toggleWordWrap = useCallback(() => {
@@ -107,9 +150,12 @@ export const EditorStatusBar = ({
   }, [onUpdateSettings, settings.renderWhitespace]);
 
   return (
-    <div className="flex h-[22px] items-center justify-between border-t border-[#1e1e1e] bg-[#007acc] text-white select-none">
+    <div
+      ref={containerRef}
+      className="flex h-5.5 items-center border-t border-[#1e1e1e] bg-[#007acc] text-white select-none whitespace-nowrap overflow-hidden"
+    >
       {/* ── Left side ─────────────────────────────── */}
-      <div className="flex h-full items-center">
+      <div className="flex h-full min-w-0 items-center overflow-hidden">
         {/* Branch / dirty indicator */}
         {isDirty && (
           <StatusItem title="File has unsaved changes">
@@ -121,57 +167,77 @@ export const EditorStatusBar = ({
         <StatusItem title="Go to Line (Ctrl+G)">
           Ln {cursorState.line}, Col {cursorState.col}
         </StatusItem>
-        <StatusItem title="Current selections">
-          {cursorState.selectionCount > 1
-            ? `${cursorState.selectionCount} selections`
-            : "1 selection"}
-        </StatusItem>
+        {isSmOrWider && (
+          <StatusItem title="Current selections">
+            {cursorState.selectionCount > 1
+              ? `${cursorState.selectionCount} selections`
+              : "1 selection"}
+          </StatusItem>
+        )}
       </div>
 
       {/* ── Right side ────────────────────────────── */}
-      <div className="flex h-full items-center">
+      <div className="ml-auto flex h-full min-w-0 items-center overflow-hidden">
         {/* Indent type */}
         <StatusItem onClick={toggleIndentType} title="Toggle indent type">
           <IndentIncreaseIcon className="size-3" />
-          {settings.insertSpaces ? "Spaces" : "Tabs"}
+          {settings.insertSpaces
+            ? compactMode === "xs"
+              ? "Sp"
+              : "Spaces"
+            : "Tabs"}
         </StatusItem>
 
         {/* Tab size */}
-        <StatusItem onClick={cycleTabSize} title="Change tab size">
-          Tab Size: {settings.tabSize}
-        </StatusItem>
+        {isSmOrWider && (
+          <StatusItem onClick={cycleTabSize} title="Change tab size">
+            {compactMode === "sm"
+              ? `Tab:${settings.tabSize}`
+              : `Tab Size: ${settings.tabSize}`}
+          </StatusItem>
+        )}
 
         {/* Encoding */}
-        <StatusItem title="File encoding">UTF-8</StatusItem>
+        {isMdOrWider && <StatusItem title="File encoding">UTF-8</StatusItem>}
 
         {/* Line ending */}
-        <StatusItem title="End of line sequence">{lineEnding}</StatusItem>
+        {isMdOrWider && (
+          <StatusItem title="End of line sequence">{lineEnding}</StatusItem>
+        )}
 
         {/* Line numbers mode */}
-        <StatusItem
-          onClick={cycleLineNumberMode}
-          title="Cycle line number mode"
-        >
-          Line #{" "}
-          {settings.lineNumbers === "relative"
-            ? "Relative"
-            : settings.lineNumbers === "off"
-              ? "Off"
-              : "On"}
-        </StatusItem>
+        {isMdOrWider && (
+          <StatusItem
+            onClick={cycleLineNumberMode}
+            title="Cycle line number mode"
+          >
+            Line #{" "}
+            {settings.lineNumbers === "relative"
+              ? "Relative"
+              : settings.lineNumbers === "off"
+                ? "Off"
+                : "On"}
+          </StatusItem>
+        )}
 
         {/* Whitespace rendering */}
-        <StatusItem
-          onClick={cycleWhitespace}
-          title="Cycle whitespace rendering"
-        >
-          WS: {settings.renderWhitespace}
-        </StatusItem>
+        {isFull && (
+          <StatusItem
+            onClick={cycleWhitespace}
+            title="Cycle whitespace rendering"
+          >
+            WS: {settings.renderWhitespace}
+          </StatusItem>
+        )}
 
         {/* Word wrap toggle */}
         <StatusItem onClick={toggleWordWrap} title="Toggle Word Wrap (Alt+Z)">
           <WrapTextIcon className="size-3" />
-          {settings.wordWrap ? "Wrap" : "No Wrap"}
+          {compactMode === "xs"
+            ? "Wrap"
+            : settings.wordWrap
+              ? "Wrap"
+              : "No Wrap"}
         </StatusItem>
 
         {/* Minimap toggle */}
@@ -182,11 +248,11 @@ export const EditorStatusBar = ({
         {/* Language */}
         <StatusItem title="Select language mode">
           <BracesIcon className="size-3" />
-          {languageName}
+          {compactMode === "xs" ? languageName.split(" ")[0] : languageName}
         </StatusItem>
 
         {/* File size */}
-        {fileSize !== undefined && (
+        {fileSize !== undefined && isMdOrWider && (
           <StatusItem title="File size">
             <TypeIcon className="size-3" />
             {formatFileSize(fileSize)}

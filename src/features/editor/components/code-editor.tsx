@@ -239,11 +239,11 @@ export const CodeEditor = ({
       }),
 
       settings.minimap
-        ? showMinimap.compute(["doc"], () => ({
+        ? showMinimap.of({
             create: () => ({ dom: document.createElement("div") }),
             displayText: "blocks",
             showOverlay: "always",
-          }))
+          })
         : [],
 
       keymap.of([...vscodeKeymap, indentWithTab]),
@@ -317,12 +317,7 @@ export const CodeEditor = ({
         // Formatting requires external formatter wiring by language.
       }}
     >
-      <div
-        className="size-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none"
-        onWheelCapture={(event) => {
-          event.stopPropagation();
-        }}
-      >
+      <div className="size-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none">
         <CodeMirror
           key={filename}
           value={value}
