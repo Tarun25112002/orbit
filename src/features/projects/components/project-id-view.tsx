@@ -16,6 +16,7 @@ import type { Doc } from "../../../../convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 
@@ -210,70 +211,148 @@ const EditorTabStrip = ({
   );
 };
 
-const buildFilePath = (
+const buildFileAncestors = (
   file: Doc<"files">,
   allFiles: Doc<"files">[],
-): string[] => {
-  const segments: string[] = [];
+): Doc<"files">[] => {
+  const ancestors: Doc<"files">[] = [];
   const fileMap = new Map(allFiles.map((f) => [f._id, f]));
 
   let current: Doc<"files"> | undefined = file;
   while (current) {
-    segments.unshift(current.name);
+    ancestors.unshift(current);
     current = current.parentId ? fileMap.get(current.parentId) : undefined;
   }
 
-  return segments;
+  return ancestors;
+};
+
+const sortItems = (items: Doc<"files">[]) =>
+  [...items].sort((a, b) => {
+    if (a.type === "folder" && b.type === "file") return -1;
+    if (a.type === "file" && b.type === "folder") return 1;
+    return a.name.localeCompare(b.name, undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
+
+const BreadcrumbSegment = ({
+  ancestor,
+  isLast,
+  allFiles,
+  activeFileId,
+  onOpenFile,
+}: {
+  ancestor: Doc<"files">;
+  isLast: boolean;
+  allFiles: Doc<"files">[];
+  activeFileId: Id<"files">;
+  onOpenFile: (fileId: Id<"files">) => void;
+}) => {
+  const siblings = useMemo(() => {
+    const items = allFiles.filter((f) => f.parentId === ancestor.parentId);
+    return sortItems(items);
+  }, [allFiles, ancestor.parentId]);
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        className={cn(
+          "flex shrink-0 cursor-pointer items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-accent/50",
+          isLast ? "text-foreground" : "text-muted-foreground",
+        )}
+      >
+        <span className="shrink-0">
+          <ItemIcon
+            type={isLast ? ancestor.type : "folder"}
+            name={ancestor.name}
+            isOpen={!isLast}
+            className="!size-3.5"
+          />
+        </span>
+        <span className="text-xs">{ancestor.name}</span>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        side="bottom"
+        sideOffset={2}
+        className="max-h-64 w-56 overflow-y-auto p-1"
+      >
+        {siblings.map((item) => {
+          const isActive = item._id === activeFileId;
+          return (
+            <button
+              key={item._id}
+              type="button"
+              onClick={() => {
+                if (item.type === "file") {
+                  onOpenFile(item._id);
+                }
+              }}
+              className={cn(
+                "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs transition-colors",
+                isActive
+                  ? "bg-accent text-accent-foreground"
+                  : "text-popover-foreground hover:bg-accent/50",
+                item.type === "folder" && "opacity-70",
+              )}
+            >
+              <span className="shrink-0">
+                <ItemIcon type={item.type} name={item.name} className="!size-4" />
+              </span>
+              <span className="min-w-0 truncate">{item.name}</span>
+            </button>
+          );
+        })}
+      </PopoverContent>
+    </Popover>
+  );
 };
 
 const BreadcrumbBar = ({
   file,
   allFiles,
+  onOpenFile,
 }: {
   file: Doc<"files">;
   allFiles: Doc<"files">[];
+  onOpenFile: (fileId: Id<"files">) => void;
 }) => {
-  const pathSegments = useMemo(
-    () => buildFilePath(file, allFiles),
+  const ancestors = useMemo(
+    () => buildFileAncestors(file, allFiles),
     [file, allFiles],
   );
 
-  if (pathSegments.length === 0) return null;
+  if (ancestors.length === 0) return null;
 
   return (
-    <div className="flex h-6 items-center gap-0.5 border-b bg-background/50 px-3 overflow-x-auto scrollbar-none" style={{ scrollbarWidth: "none" }}>
-      {pathSegments.map((segment, index) => {
-        const isLast = index === pathSegments.length - 1;
+    <div
+      className="flex h-7 items-center gap-0.5 border-b bg-background/50 px-2 overflow-x-auto scrollbar-none"
+      style={{ scrollbarWidth: "none" }}
+    >
+      {ancestors.map((ancestor, index) => {
+        const isLast = index === ancestors.length - 1;
 
         return (
-          <span key={index} className="flex shrink-0 items-center gap-0.5">
+          <span key={ancestor._id} className="flex shrink-0 items-center">
             {index > 0 && (
-              <ChevronRightIcon className="size-3 text-muted-foreground/50" />
+              <ChevronRightIcon className="size-3 text-muted-foreground/40" />
             )}
-            <span className="shrink-0">
-              <ItemIcon
-                type={isLast ? file.type : "folder"}
-                name={segment}
-                isOpen={!isLast}
-                className="!size-3.5"
-              />
-            </span>
-            <span
-              className={cn(
-                "text-xs",
-                isLast
-                  ? "text-foreground"
-                  : "text-muted-foreground hover:text-foreground cursor-default",
-              )}
-            >
-              {segment}
-            </span>
+            <BreadcrumbSegment
+              ancestor={ancestor}
+              isLast={isLast}
+              allFiles={allFiles}
+              activeFileId={file._id}
+              onOpenFile={onOpenFile}
+            />
           </span>
         );
       })}
     </div>
   );
 };
+
 
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
@@ -468,6 +547,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   <BreadcrumbBar
                     file={selectedFile}
                     allFiles={projectFiles ?? []}
+                    onOpenFile={handlePinTab}
                   />
                 )}
                 <div className="min-h-0 flex-1">
