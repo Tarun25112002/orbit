@@ -28,7 +28,10 @@ export const FileExplorer = ({
 }: {
   projectId: Id<"projects">;
   selectedFileId?: Id<"files"> | null;
-  onSelectFile?: (fileId: Id<"files"> | null) => void;
+  onSelectFile?: (
+    fileId: Id<"files"> | null,
+    options?: { pinned?: boolean },
+  ) => void;
 }) => {
   const [isOpen, setIsOpen] = useState(true);
   const [creating, setCreating] = useState<"file" | "folder" | null>(null);
@@ -44,17 +47,18 @@ export const FileExplorer = ({
 
   const activeSelectedFileId =
     selectedFileId !== undefined ? selectedFileId : internalSelectedFileId;
-  const handleSelectFile = onSelectFile ?? setInternalSelectedFileId;
+  const handleSelectFile =
+    onSelectFile ??
+    ((fileId: Id<"files"> | null) => {
+      setInternalSelectedFileId(fileId);
+    });
 
   const project = useProject(projectId);
   const files = useProjectFiles({
     projectId,
     enabled: isOpen,
   });
-  const treeModel = useMemo(
-    () => buildTreeModel(files ?? []),
-    [files],
-  );
+  const treeModel = useMemo(() => buildTreeModel(files ?? []), [files]);
   const itemsById = useMemo(
     () => new Map((files ?? []).map((item) => [item._id, item])),
     [files],
@@ -141,13 +145,16 @@ export const FileExplorer = ({
 
     setFocusedItemId(itemId);
   };
-  const handleSelectExplorerFile = (fileId: Id<"files"> | null) => {
+  const handleSelectExplorerFile = (
+    fileId: Id<"files"> | null,
+    options?: { pinned?: boolean },
+  ) => {
     if (fileId) {
       expandAncestorFolders(fileId);
     }
 
     setFocusedItemId(fileId);
-    handleSelectFile(fileId);
+    handleSelectFile(fileId, options);
   };
   const resolveCreateParentId = () => {
     if (!activeItem) {
@@ -195,7 +202,7 @@ export const FileExplorer = ({
       });
 
       resetCreateState();
-      handleSelectExplorerFile(fileId);
+      handleSelectExplorerFile(fileId, { pinned: true });
       return;
     }
 

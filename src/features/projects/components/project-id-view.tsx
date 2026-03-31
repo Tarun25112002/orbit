@@ -2,7 +2,7 @@
 
 import { useEffect, useEffectEvent, useMemo, useState } from "react";
 import { Allotment } from "allotment";
-import { SaveIcon } from "lucide-react";
+import { SaveIcon, XIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 
 import { Id } from "../../../../convex/_generated/dataModel";
-import { useFile, useUpdateFile } from "../hooks/use-files";
+import { useEditor } from "../hooks/use-editor";
+import { useFile, useProjectFiles, useUpdateFile } from "../hooks/use-files";
 import { FileExplorer } from "./file-explorer";
 
 const MIN_SIDEBAR_WIDTH = 200;
@@ -50,25 +51,110 @@ const Tab = ({
   );
 };
 
+const EditorTabStrip = ({
+  tabs,
+  activeTabId,
+  previewTabId,
+  onActivate,
+  onPin,
+  onClose,
+}: {
+  tabs: Array<{ id: Id<"files">; label: string }>;
+  activeTabId: Id<"files"> | null;
+  previewTabId: Id<"files"> | null;
+  onActivate: (fileId: Id<"files">) => void;
+  onPin: (fileId: Id<"files">) => void;
+  onClose: (fileId: Id<"files">) => void;
+}) => {
+  if (tabs.length === 0) {
+    return (
+      <div className="flex h-9 items-center border-b bg-sidebar/60 px-3 text-xs text-muted-foreground">
+        No file open
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-9 items-end gap-1 overflow-x-auto border-b bg-sidebar/60 px-1.5 pt-1">
+      {tabs.map((tab) => {
+        const isActive = activeTabId === tab.id;
+        const isPreview = previewTabId === tab.id;
+
+        return (
+          <div
+            key={tab.id}
+            className={cn(
+              "group flex h-8 min-w-0 max-w-52 items-center gap-1 rounded-t-md border border-b-0 px-1.5",
+              isActive
+                ? "bg-background text-foreground border-border"
+                : "bg-muted/35 text-muted-foreground border-transparent hover:bg-muted/50",
+            )}
+          >
+            <button
+              type="button"
+              onClick={() => onActivate(tab.id)}
+              onDoubleClick={() => onPin(tab.id)}
+              className="min-w-0 flex-1 truncate text-left text-xs"
+              title={tab.label}
+            >
+              <span className={cn(isPreview && "italic")}>{tab.label}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onClose(tab.id)}
+              className="rounded p-0.5 opacity-70 transition hover:bg-accent hover:opacity-100"
+              aria-label={`Close ${tab.label}`}
+            >
+              <XIcon className="size-3" />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
-  const [selectedFileId, setSelectedFileId] = useState<Id<"files"> | null>(
-    null,
-  );
   const [draftContent, setDraftContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+
+  const {
+    openTabs,
+    activeTabId,
+    previewTabId,
+    openPreview,
+    openPermanent,
+    close,
+    setActive,
+  } = useEditor(projectId);
+  const selectedFileId = activeTabId;
 
   const selectedFile = useFile({
     id: selectedFileId,
   });
+  const projectFiles = useProjectFiles({ projectId });
   const updateFile = useUpdateFile();
 
-  // Clear stale selection when a file is deleted
+  const fileNameById = useMemo(
+    () => new Map((projectFiles ?? []).map((item) => [item._id, item.name])),
+    [projectFiles],
+  );
+
+  const editorTabs = useMemo(
+    () =>
+      openTabs.map((fileId) => ({
+        id: fileId,
+        label: fileNameById.get(fileId) ?? "Deleted file",
+      })),
+    [openTabs, fileNameById],
+  );
+
   useEffect(() => {
     if (selectedFileId && selectedFile === null) {
-      setSelectedFileId(null);
+      close(selectedFileId);
     }
-  }, [selectedFileId, selectedFile]);
+  }, [selectedFileId, selectedFile, close]);
 
   useEffect(() => {
     if (selectedFile?.type === "file") {
@@ -166,31 +252,59 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               <FileExplorer
                 projectId={projectId}
                 selectedFileId={selectedFileId}
-                onSelectFile={setSelectedFileId}
+                onSelectFile={(fileId, options) => {
+                  if (!fileId) {
+                    if (activeTabId) {
+                      close(activeTabId);
+                    }
+                    return;
+                  }
+
+                  if (options?.pinned) {
+                    openPermanent(fileId);
+                    return;
+                  }
+
+                  openPreview(fileId);
+                }}
               />
             </Allotment.Pane>
             <Allotment.Pane>
-              {!selectedFileId && (
-                <EmptyState label="Select a file from the explorer to start editing." />
-              )}
-              {selectedFileId && selectedFile === undefined && (
-                <div className="h-full w-full flex items-center justify-center">
-                  <Spinner className="size-5" />
+              <div className="flex h-full min-h-0 flex-col">
+                <EditorTabStrip
+                  tabs={editorTabs}
+                  activeTabId={activeTabId}
+                  previewTabId={previewTabId}
+                  onActivate={setActive}
+                  onPin={openPermanent}
+                  onClose={close}
+                />
+                <div className="min-h-0 flex-1">
+                  {!selectedFileId && (
+                    <EmptyState label="Select a file from the explorer to start editing." />
+                  )}
+                  {selectedFileId && selectedFile === undefined && (
+                    <div className="h-full w-full flex items-center justify-center">
+                      <Spinner className="size-5" />
+                    </div>
+                  )}
+                  {selectedFile?.type === "folder" && (
+                    <EmptyState label="Folders cannot be edited. Select a file instead." />
+                  )}
+                  {selectedFile?.type === "file" && (
+                    <div className="h-full p-3">
+                      <Textarea
+                        className="h-full min-h-full font-mono text-sm"
+                        value={draftContent}
+                        onChange={(event) =>
+                          setDraftContent(event.target.value)
+                        }
+                        spellCheck={false}
+                      />
+                    </div>
+                  )}
                 </div>
-              )}
-              {selectedFile?.type === "folder" && (
-                <EmptyState label="Folders cannot be edited. Select a file instead." />
-              )}
-              {selectedFile?.type === "file" && (
-                <div className="h-full p-3">
-                  <Textarea
-                    className="h-full min-h-full font-mono text-sm"
-                    value={draftContent}
-                    onChange={(event) => setDraftContent(event.target.value)}
-                    spellCheck={false}
-                  />
-                </div>
-              )}
+              </div>
             </Allotment.Pane>
           </Allotment>
         </div>

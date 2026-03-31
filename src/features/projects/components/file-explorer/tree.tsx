@@ -41,14 +41,14 @@ export const Tree = ({
   level?: number;
   selectedFileId: Id<"files"> | null;
   activeItemId: Id<"files"> | null;
-  onSelectFile: (fileId: Id<"files"> | null) => void;
+  onSelectFile: (
+    fileId: Id<"files"> | null,
+    options?: { pinned?: boolean },
+  ) => void;
   onFocusItem: (itemId: Id<"files"> | null) => void;
   creating: "file" | "folder" | null;
   createTargetId?: Id<"files">;
-  onStartCreate: (
-    type: "file" | "folder",
-    parentId: Id<"files">,
-  ) => void;
+  onStartCreate: (type: "file" | "folder", parentId: Id<"files">) => void;
   onCreate: (name: string) => Promise<void>;
   onCancelCreate: () => void;
   expandedFolders: ReadonlySet<Id<"files">>;
@@ -129,12 +129,12 @@ export const Tree = ({
         disabled={isDeleting}
         onClick={() => {
           onFocusItem(item._id);
-          onSelectFile(item._id);
+          onSelectFile(item._id, { pinned: false });
         }}
         onContextMenu={() => onFocusItem(item._id)}
         onDoubleClick={() => {
           onFocusItem(item._id);
-          onSelectFile(item._id);
+          onSelectFile(item._id, { pinned: true });
         }}
         onRename={() => setIsRenaming(true)}
         onDelete={() => {
