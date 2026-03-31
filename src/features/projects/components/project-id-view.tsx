@@ -27,7 +27,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
 
 import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
@@ -35,6 +34,7 @@ import { useEditor } from "../../editor/hooks/use-editor";
 import { useFile, useProjectFiles, useUpdateFile } from "../hooks/use-files";
 import { FileExplorer } from "./file-explorer";
 import { ItemIcon } from "./file-explorer/item-icon";
+import { CodeEditor } from "../../editor/components/code-editor";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
@@ -583,14 +583,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                         <EmptyState label="Folders cannot be edited. Select a file instead." />
                       )}
                       {selectedFile?.type === "file" && (
-                        <div className="h-full p-3">
-                          <Textarea
-                            className="h-full min-h-full font-mono text-sm"
+                        <div className="h-full">
+                          <CodeEditor
                             value={draftContent}
-                            onChange={(event) =>
-                              setDraftContent(event.target.value)
-                            }
-                            spellCheck={false}
+                            onChange={setDraftContent}
+                            filename={selectedFile.name}
                           />
                         </div>
                       )}
