@@ -11,6 +11,7 @@ import {
 import { Allotment } from "allotment";
 import { useConvex } from "convex/react";
 import { ChevronLeftIcon, ChevronRightIcon, SaveIcon, XIcon } from "lucide-react";
+import type { Doc } from "../../../../convex/_generated/dataModel";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -209,6 +210,71 @@ const EditorTabStrip = ({
   );
 };
 
+const buildFilePath = (
+  file: Doc<"files">,
+  allFiles: Doc<"files">[],
+): string[] => {
+  const segments: string[] = [];
+  const fileMap = new Map(allFiles.map((f) => [f._id, f]));
+
+  let current: Doc<"files"> | undefined = file;
+  while (current) {
+    segments.unshift(current.name);
+    current = current.parentId ? fileMap.get(current.parentId) : undefined;
+  }
+
+  return segments;
+};
+
+const BreadcrumbBar = ({
+  file,
+  allFiles,
+}: {
+  file: Doc<"files">;
+  allFiles: Doc<"files">[];
+}) => {
+  const pathSegments = useMemo(
+    () => buildFilePath(file, allFiles),
+    [file, allFiles],
+  );
+
+  if (pathSegments.length === 0) return null;
+
+  return (
+    <div className="flex h-6 items-center gap-0.5 border-b bg-background/50 px-3 overflow-x-auto scrollbar-none" style={{ scrollbarWidth: "none" }}>
+      {pathSegments.map((segment, index) => {
+        const isLast = index === pathSegments.length - 1;
+
+        return (
+          <span key={index} className="flex shrink-0 items-center gap-0.5">
+            {index > 0 && (
+              <ChevronRightIcon className="size-3 text-muted-foreground/50" />
+            )}
+            <span className="shrink-0">
+              <ItemIcon
+                type={isLast ? file.type : "folder"}
+                name={segment}
+                isOpen={!isLast}
+                className="!size-3.5"
+              />
+            </span>
+            <span
+              className={cn(
+                "text-xs",
+                isLast
+                  ? "text-foreground"
+                  : "text-muted-foreground hover:text-foreground cursor-default",
+              )}
+            >
+              {segment}
+            </span>
+          </span>
+        );
+      })}
+    </div>
+  );
+};
+
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
   const [draftContent, setDraftContent] = useState("");
@@ -398,6 +464,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   onPin={handlePinTab}
                   onClose={close}
                 />
+                {selectedFile && (
+                  <BreadcrumbBar
+                    file={selectedFile}
+                    allFiles={projectFiles ?? []}
+                  />
+                )}
                 <div className="min-h-0 flex-1">
                   {!selectedFileId && (
                     <EmptyState label="Select a file from the explorer to start editing." />
