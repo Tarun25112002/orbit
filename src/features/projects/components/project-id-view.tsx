@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect, useEffectEvent, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useState,
+} from "react";
 import { Allotment } from "allotment";
+import { useConvex } from "convex/react";
 import { SaveIcon, XIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -10,8 +17,9 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 
+import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
-import { useEditor } from "../hooks/use-editor";
+import { useEditor } from "../../editor/hooks/use-editor";
 import { useFile, useProjectFiles, useUpdateFile } from "../hooks/use-files";
 import { FileExplorer } from "./file-explorer";
 
@@ -135,6 +143,30 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   });
   const projectFiles = useProjectFiles({ projectId });
   const updateFile = useUpdateFile();
+  const convex = useConvex();
+
+  const fetchFileForTab = useCallback(
+    (fileId: Id<"files">) => {
+      void convex.query(api.files.getFile, { id: fileId });
+    },
+    [convex],
+  );
+
+  const handleActivateTab = useCallback(
+    (fileId: Id<"files">) => {
+      setActive(fileId);
+      fetchFileForTab(fileId);
+    },
+    [setActive, fetchFileForTab],
+  );
+
+  const handlePinTab = useCallback(
+    (fileId: Id<"files">) => {
+      openPermanent(fileId);
+      fetchFileForTab(fileId);
+    },
+    [openPermanent, fetchFileForTab],
+  );
 
   const fileNameById = useMemo(
     () => new Map((projectFiles ?? []).map((item) => [item._id, item.name])),
@@ -275,8 +307,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   tabs={editorTabs}
                   activeTabId={activeTabId}
                   previewTabId={previewTabId}
-                  onActivate={setActive}
-                  onPin={openPermanent}
+                  onActivate={handleActivateTab}
+                  onPin={handlePinTab}
                   onClose={close}
                 />
                 <div className="min-h-0 flex-1">
