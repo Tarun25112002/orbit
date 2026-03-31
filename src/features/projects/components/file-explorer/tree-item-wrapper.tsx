@@ -82,9 +82,8 @@ export const TreeItemWrapper = ({
             }
           }}
           className={cn(
-            "group relative flex h-6 w-full items-center gap-1 overflow-hidden rounded-md pr-1.5 text-left text-sm text-foreground/85 transition-colors outline-none hover:bg-accent/30 hover:text-foreground focus:ring-1 focus:ring-inset focus:ring-ring",
-            isActive &&
-              "bg-accent/40 text-foreground shadow-[inset_1px_0_0_var(--color-ring)]",
+            "group relative flex h-6 w-full items-center gap-1 overflow-hidden rounded-md pr-1.5 text-left text-sm text-foreground/85 transition-colors outline-none hover:bg-accent/30 hover:text-foreground focus-visible:ring-0",
+            isActive && "bg-accent/40 text-foreground",
             disabled && "pointer-events-none opacity-50",
           )}
           style={{ paddingLeft: getItemPadding(level, item.type === "file") }}
