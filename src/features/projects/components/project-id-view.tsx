@@ -34,13 +34,20 @@ import { useEditor } from "../../editor/hooks/use-editor";
 import { useFile, useProjectFiles, useUpdateFile } from "../hooks/use-files";
 import { FileExplorer } from "./file-explorer";
 import { ItemIcon } from "./file-explorer/item-icon";
-import { CodeEditor } from "../../editor/components/code-editor";
+import {
+  CodeEditor,
+  type EditorRuntimeMeta,
+} from "../../editor/components/code-editor";
+import { EditorStatusBar } from "../../editor/components/editor-status-bar";
+import { WelcomeTab } from "../../editor/components/welcome-tab";
+import type { CursorState } from "../../editor/store/use-editor-store";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
 const DEFAULT_SIDEBAR_WIDTH = 350;
 const DEFAULT_MAIN_SIZE = 1000;
 
+// ── Empty state ─────────────────────────────────────────────────
 const EmptyState = ({ label }: { label: string }) => {
   return (
     <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">
@@ -49,6 +56,7 @@ const EmptyState = ({ label }: { label: string }) => {
   );
 };
 
+// ── Top view tab ────────────────────────────────────────────────
 const Tab = ({
   label,
   isActive,
@@ -74,6 +82,7 @@ const Tab = ({
 
 const SCROLL_AMOUNT = 200;
 
+// ── Editor tab strip with context menu ──────────────────────────
 const EditorTabStrip = ({
   tabs,
   activeTabId,
@@ -81,6 +90,9 @@ const EditorTabStrip = ({
   onActivate,
   onPin,
   onClose,
+  onCloseOthers,
+  onCloseRight,
+  onCloseAll,
 }: {
   tabs: Array<{ id: Id<"files">; label: string }>;
   activeTabId: Id<"files"> | null;
@@ -88,10 +100,18 @@ const EditorTabStrip = ({
   onActivate: (fileId: Id<"files">) => void;
   onPin: (fileId: Id<"files">) => void;
   onClose: (fileId: Id<"files">) => void;
+  onCloseOthers: (fileId: Id<"files">) => void;
+  onCloseRight: (fileId: Id<"files">) => void;
+  onCloseAll: () => void;
 }) => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    fileId: Id<"files">;
+  } | null>(null);
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -128,6 +148,18 @@ const EditorTabStrip = ({
     }
   }, [activeTabId]);
 
+  // Close context menu on click outside
+  useEffect(() => {
+    if (!contextMenu) return;
+    const handler = () => setContextMenu(null);
+    window.addEventListener("click", handler);
+    window.addEventListener("contextmenu", handler);
+    return () => {
+      window.removeEventListener("click", handler);
+      window.removeEventListener("contextmenu", handler);
+    };
+  }, [contextMenu]);
+
   const scroll = useCallback((direction: "left" | "right") => {
     scrollRef.current?.scrollBy({
       left: direction === "left" ? -SCROLL_AMOUNT : SCROLL_AMOUNT,
@@ -135,22 +167,39 @@ const EditorTabStrip = ({
     });
   }, []);
 
+  // Middle-click to close tab
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent, fileId: Id<"files">) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        onClose(fileId);
+      }
+    },
+    [onClose],
+  );
+
+  // Right-click context menu
+  const handleContextMenu = useCallback(
+    (e: React.MouseEvent, fileId: Id<"files">) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setContextMenu({ x: e.clientX, y: e.clientY, fileId });
+    },
+    [],
+  );
+
   if (tabs.length === 0) {
-    return (
-      <div className="flex h-9 items-center border-b bg-sidebar/60 px-3 text-xs text-muted-foreground">
-        No file open
-      </div>
-    );
+    return null;
   }
 
   return (
-    <div className="relative flex h-9 items-end border-b bg-sidebar/60">
+    <div className="relative flex h-[35px] items-end border-b border-[#252526] bg-[#252526]">
       {/* Left scroll button */}
       {canScrollLeft && (
         <button
           type="button"
           onClick={() => scroll("left")}
-          className="absolute left-0 z-10 flex h-full w-6 items-center justify-center bg-gradient-to-r from-sidebar/90 to-transparent text-muted-foreground hover:text-foreground"
+          className="absolute left-0 z-10 flex h-full w-6 items-center justify-center bg-gradient-to-r from-[#252526] to-transparent text-[#858585] hover:text-[#cccccc]"
           aria-label="Scroll tabs left"
         >
           <ChevronLeftIcon className="size-3.5" />
@@ -160,7 +209,7 @@ const EditorTabStrip = ({
       {/* Scrollable tab container */}
       <div
         ref={scrollRef}
-        className="flex h-full w-full items-end gap-1 overflow-x-auto px-1.5 pt-1 scrollbar-none"
+        className="flex h-full w-full items-end overflow-x-auto scrollbar-none"
         style={{ scrollbarWidth: "none" }}
       >
         {tabs.map((tab) => {
@@ -171,13 +220,20 @@ const EditorTabStrip = ({
             <div
               key={tab.id}
               data-tab-id={tab.id}
+              onMouseDown={(e) => handleMouseDown(e, tab.id)}
+              onContextMenu={(e) => handleContextMenu(e, tab.id)}
               className={cn(
-                "group flex h-8 w-40 shrink-0 items-center gap-1.5 rounded-t-md border border-b-0 px-2",
+                "group relative flex h-[35px] w-[160px] shrink-0 items-center gap-1.5 border-r border-[#252526] px-2.5",
                 isActive
-                  ? "bg-background text-foreground border-border"
-                  : "bg-muted/35 text-muted-foreground border-transparent hover:bg-muted/50",
+                  ? "bg-[#1e1e1e] text-[#ffffff]"
+                  : "bg-[#2d2d2d] text-[#969696] hover:bg-[#2d2d2dee]",
               )}
             >
+              {/* Active tab top border accent */}
+              {isActive && (
+                <div className="absolute top-0 left-0 right-0 h-[1px] bg-[#007acc]" />
+              )}
+
               {/* File-type icon */}
               <span className="shrink-0">
                 <ItemIcon type="file" name={tab.label} />
@@ -186,18 +242,23 @@ const EditorTabStrip = ({
                 type="button"
                 onClick={() => onActivate(tab.id)}
                 onDoubleClick={() => onPin(tab.id)}
-                className="min-w-0 flex-1 truncate text-left text-xs"
+                className="min-w-0 flex-1 truncate text-left text-[12px]"
                 title={tab.label}
               >
                 <span className={cn(isPreview && "italic")}>{tab.label}</span>
               </button>
+
+              {/* Modified indicator + close button */}
               <button
                 type="button"
-                onClick={() => onClose(tab.id)}
-                className="shrink-0 rounded p-0.5 opacity-0 transition group-hover:opacity-70 hover:!opacity-100 hover:bg-accent"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(tab.id);
+                }}
+                className="shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-70 hover:!opacity-100 hover:bg-[#ffffff15]"
                 aria-label={`Close ${tab.label}`}
               >
-                <XIcon className="size-3" />
+                <XIcon className="size-3.5" />
               </button>
             </div>
           );
@@ -209,16 +270,76 @@ const EditorTabStrip = ({
         <button
           type="button"
           onClick={() => scroll("right")}
-          className="absolute right-0 z-10 flex h-full w-6 items-center justify-center bg-gradient-to-l from-sidebar/90 to-transparent text-muted-foreground hover:text-foreground"
+          className="absolute right-0 z-10 flex h-full w-6 items-center justify-center bg-gradient-to-l from-[#252526] to-transparent text-[#858585] hover:text-[#cccccc]"
           aria-label="Scroll tabs right"
         >
           <ChevronRightIcon className="size-3.5" />
         </button>
       )}
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          className="fixed z-50 min-w-[180px] rounded-md border border-[#454545] bg-[#252526] py-1 shadow-lg"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          {[
+            {
+              label: "Close",
+              action: () => onClose(contextMenu.fileId),
+              shortcut: "Ctrl+W",
+            },
+            {
+              label: "Close Others",
+              action: () => onCloseOthers(contextMenu.fileId),
+            },
+            {
+              label: "Close to the Right",
+              action: () => onCloseRight(contextMenu.fileId),
+            },
+            { label: "Close All", action: () => onCloseAll() },
+            { divider: true } as {
+              divider: true;
+              label?: undefined;
+              action?: undefined;
+              shortcut?: undefined;
+            },
+            {
+              label: "Keep Open",
+              action: () => onPin(contextMenu.fileId),
+            },
+          ].map((item, i) =>
+            "divider" in item && item.divider ? (
+              <div
+                key={`divider-${i}`}
+                className="mx-2 my-1 border-t border-[#454545]"
+              />
+            ) : (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => {
+                  item.action?.();
+                  setContextMenu(null);
+                }}
+                className="flex w-full items-center justify-between px-3 py-1 text-left text-[12px] text-[#cccccc] hover:bg-[#094771]"
+              >
+                <span>{item.label}</span>
+                {item.shortcut && (
+                  <span className="ml-6 text-[11px] text-[#858585]">
+                    {item.shortcut}
+                  </span>
+                )}
+              </button>
+            ),
+          )}
+        </div>
+      )}
     </div>
   );
 };
 
+// ── Breadcrumb helpers ──────────────────────────────────────────
 const buildFileAncestors = (
   file: Doc<"files">,
   allFiles: Doc<"files">[],
@@ -267,8 +388,8 @@ const BreadcrumbSegment = ({
     <Popover>
       <PopoverTrigger
         className={cn(
-          "flex shrink-0 cursor-pointer items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-accent/50",
-          isLast ? "text-foreground" : "text-muted-foreground",
+          "flex shrink-0 cursor-pointer items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-[#ffffff12]",
+          isLast ? "text-[#cccccc]" : "text-[#858585]",
         )}
       >
         <span className="shrink-0">
@@ -279,13 +400,13 @@ const BreadcrumbSegment = ({
             className="!size-3.5"
           />
         </span>
-        <span className="text-xs">{ancestor.name}</span>
+        <span className="text-[11px]">{ancestor.name}</span>
       </PopoverTrigger>
       <PopoverContent
         align="start"
         side="bottom"
         sideOffset={2}
-        className="max-h-64 w-56 overflow-y-auto p-1"
+        className="max-h-64 w-56 overflow-y-auto p-1 bg-[#252526] border-[#454545]"
       >
         {siblings.map((item) => {
           const isActive = item._id === activeFileId;
@@ -301,8 +422,8 @@ const BreadcrumbSegment = ({
               className={cn(
                 "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs transition-colors",
                 isActive
-                  ? "bg-accent text-accent-foreground"
-                  : "text-popover-foreground hover:bg-accent/50",
+                  ? "bg-[#094771] text-white"
+                  : "text-[#cccccc] hover:bg-[#ffffff12]",
                 item.type === "folder" && "opacity-70",
               )}
             >
@@ -340,7 +461,7 @@ const BreadcrumbBar = ({
 
   return (
     <div
-      className="flex h-7 items-center gap-0.5 border-b bg-background/50 px-2 overflow-x-auto scrollbar-none"
+      className="flex h-[22px] items-center gap-0.5 border-b border-[#2d2d2d] bg-[#1e1e1e] px-2 overflow-x-auto scrollbar-none"
       style={{ scrollbarWidth: "none" }}
     >
       {ancestors.map((ancestor, index) => {
@@ -349,7 +470,7 @@ const BreadcrumbBar = ({
         return (
           <span key={ancestor._id} className="flex shrink-0 items-center">
             {index > 0 && (
-              <ChevronRightIcon className="size-3 text-muted-foreground/40" />
+              <ChevronRightIcon className="size-3 text-[#4a4a4a]" />
             )}
             <BreadcrumbSegment
               ancestor={ancestor}
@@ -365,19 +486,40 @@ const BreadcrumbBar = ({
   );
 };
 
+// ── Main component ──────────────────────────────────────────────
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
   const [draftContent, setDraftContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [cursorState, setCursorState] = useState<CursorState>({
+    line: 1,
+    col: 1,
+    scrollTop: 0,
+    scrollLeft: 0,
+    selectionCount: 1,
+    selections: [{ anchor: 0, head: 0 }],
+  });
+  const [editorMeta, setEditorMeta] = useState<EditorRuntimeMeta>({
+    totalLines: 1,
+    lineEnding: "LF",
+    language: "Plain Text",
+  });
 
   const {
     openTabs,
     activeTabId,
     previewTabId,
+    settings,
+    updateSettings,
     openPreview,
     openPermanent,
     close,
+    closeAll,
+    closeOthers,
+    closeRight,
     setActive,
+    saveCursorState,
+    restoreCursorState,
   } = useEditor(projectId);
   const selectedFileId = activeTabId;
 
@@ -395,13 +537,25 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [convex],
   );
 
+  // Save cursor state before switching tabs
+  const previousFileIdRef = useRef<Id<"files"> | null>(null);
+
   const handleActivateTab = useCallback(
     (fileId: Id<"files">) => {
+      // Save current cursor state before switching
+      if (previousFileIdRef.current) {
+        saveCursorState(previousFileIdRef.current, cursorState);
+      }
       setActive(fileId);
       fetchFileForTab(fileId);
     },
-    [setActive, fetchFileForTab],
+    [setActive, fetchFileForTab, saveCursorState, cursorState],
   );
+
+  // Track the active file for cursor state saving
+  useEffect(() => {
+    previousFileIdRef.current = selectedFileId;
+  }, [selectedFileId]);
 
   const handlePinTab = useCallback(
     (fileId: Id<"files">) => {
@@ -409,6 +563,17 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       fetchFileForTab(fileId);
     },
     [openPermanent, fetchFileForTab],
+  );
+
+  const handleCloseTab = useCallback(
+    (fileId: Id<"files">) => {
+      // Save cursor state before closing
+      if (fileId === selectedFileId) {
+        saveCursorState(fileId, cursorState);
+      }
+      close(fileId);
+    },
+    [close, selectedFileId, saveCursorState, cursorState],
   );
 
   const fileNameById = useMemo(
@@ -473,6 +638,29 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     window.addEventListener("keydown", onWindowKeyDown);
     return () => window.removeEventListener("keydown", onWindowKeyDown);
   }, []);
+
+  // Get initial cursor state for current file
+  const initialCursorState = useMemo(() => {
+    if (!selectedFileId) return undefined;
+    return restoreCursorState(selectedFileId);
+  }, [selectedFileId, restoreCursorState]);
+
+  // Handle cursor changes from the editor
+  const handleCursorStateChange = useCallback(
+    (state: CursorState) => {
+      setCursorState(state);
+      if (selectedFileId) {
+        saveCursorState(selectedFileId, state);
+      }
+    },
+    [selectedFileId, saveCursorState],
+  );
+
+  // Compute file size for status bar
+  const fileSize = useMemo(() => {
+    if (!draftContent) return 0;
+    return new TextEncoder().encode(draftContent).length;
+  }, [draftContent]);
 
   return (
     <div className="h-full flex flex-col">
@@ -548,21 +736,30 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                 />
               </Allotment.Pane>
               <Allotment.Pane>
-                <div className="relative h-full">
+                <div className="relative h-full flex flex-col">
+                  {/* Watermark behind everything */}
                   <div className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2">
                     <span className="select-none text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[0.14em] text-white/3">
                       Orbit
                     </span>
                   </div>
+
+                  {/* Content area */}
                   <div className="relative z-10 flex h-full min-h-0 flex-col">
+                    {/* Tab strip */}
                     <EditorTabStrip
                       tabs={editorTabs}
                       activeTabId={activeTabId}
                       previewTabId={previewTabId}
                       onActivate={handleActivateTab}
                       onPin={handlePinTab}
-                      onClose={close}
+                      onClose={handleCloseTab}
+                      onCloseOthers={closeOthers}
+                      onCloseRight={closeRight}
+                      onCloseAll={closeAll}
                     />
+
+                    {/* Breadcrumb */}
                     {selectedFile && (
                       <BreadcrumbBar
                         file={selectedFile}
@@ -570,10 +767,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                         onOpenFile={handlePinTab}
                       />
                     )}
+
+                    {/* Editor content */}
                     <div className="min-h-0 flex-1">
-                      {!selectedFileId && (
-                        <EmptyState label="Select a file from the explorer to start editing." />
-                      )}
+                      {!selectedFileId && <WelcomeTab />}
                       {selectedFileId && selectedFile === undefined && (
                         <div className="h-full w-full flex items-center justify-center">
                           <Spinner className="size-5" />
@@ -585,13 +782,31 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       {selectedFile?.type === "file" && (
                         <div className="h-full">
                           <CodeEditor
+                            key={selectedFile._id}
                             value={draftContent}
                             onChange={setDraftContent}
                             filename={selectedFile.name}
+                            settings={settings}
+                            initialCursorState={initialCursorState}
+                            onCursorStateChange={handleCursorStateChange}
+                            onMetaChange={setEditorMeta}
                           />
                         </div>
                       )}
                     </div>
+
+                    {/* Status bar */}
+                    {selectedFile?.type === "file" && (
+                      <EditorStatusBar
+                        filename={selectedFile.name}
+                        cursorState={cursorState}
+                        settings={settings}
+                        onUpdateSettings={updateSettings}
+                        fileSize={fileSize}
+                        isDirty={isDirty}
+                        lineEnding={editorMeta.lineEnding}
+                      />
+                    )}
                   </div>
                 </div>
               </Allotment.Pane>
