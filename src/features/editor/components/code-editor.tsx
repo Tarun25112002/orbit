@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { keymap } from "@codemirror/view";
 import { indentWithTab } from "@codemirror/commands";
@@ -10,16 +10,12 @@ import {
   indentOnInput,
   indentUnit,
 } from "@codemirror/language";
-import {
-  autocompletion,
-  closeBrackets,
-  closeBracketsKeymap,
-  completionKeymap,
-} from "@codemirror/autocomplete";
-import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-import { lintKeymap } from "@codemirror/lint";
+import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
+import { highlightSelectionMatches } from "@codemirror/search";
 import { EditorView } from "@codemirror/view";
 import { showMinimap } from "@replit/codemirror-minimap";
+import { vscodeKeymap } from "@replit/codemirror-vscode-keymap";
+import { indentationMarkers } from "@replit/codemirror-indentation-markers";
 
 import { getLanguageExtension } from "../utils/language-detection";
 import { editorTheme, editorHighlighting } from "../utils/editor-theme";
@@ -37,6 +33,14 @@ export const CodeEditor = ({
   filename,
   readOnly = false,
 }: CodeEditorProps) => {
+  const handleEditorWheelCapture = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      // Keep wheel scrolling contained in the editor like VS Code.
+      event.stopPropagation();
+    },
+    [],
+  );
+
   const extensions = useMemo(() => {
     const langExt = getLanguageExtension(filename);
 
@@ -56,6 +60,33 @@ export const CodeEditor = ({
       foldGutter(),
       highlightSelectionMatches(),
       autocompletion(),
+      indentationMarkers({
+        hideFirstIndent: true,
+        markerType: "codeOnly",
+        thickness: 1,
+      }),
+
+      // Force editor-internal scrolling similar to VS Code behavior.
+      EditorView.theme({
+        "&": {
+          height: "100%",
+          overflow: "hidden",
+        },
+        ".cm-scroller": {
+          height: "100%",
+          overflowY: "scroll !important",
+          overflowX: "auto !important",
+          overscrollBehaviorY: "contain",
+          overscrollBehaviorX: "contain",
+          scrollbarGutter: "stable",
+        },
+        ".cm-content": {
+          minWidth: "max-content",
+        },
+        ".cm-minimap-gutter": {
+          height: "100%",
+        },
+      }),
 
       // Scroll past end — add padding at the bottom
       EditorView.contentAttributes.of({ style: "padding-bottom: 50vh" }),
@@ -70,14 +101,8 @@ export const CodeEditor = ({
       // Line wrapping off (like VS Code default)
       // Users can toggle via View menu if needed
 
-      // Keymaps
-      keymap.of([
-        ...closeBracketsKeymap,
-        ...completionKeymap,
-        ...searchKeymap,
-        ...lintKeymap,
-        indentWithTab,
-      ]),
+      // VS Code keyboard shortcuts.
+      keymap.of([...vscodeKeymap, indentWithTab]),
 
       // Read-only
       ...(readOnly ? [EditorView.editable.of(false)] : []),
@@ -85,7 +110,10 @@ export const CodeEditor = ({
   }, [filename, readOnly]);
 
   return (
-    <div className="size-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-auto">
+    <div
+      className="size-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none"
+      onWheelCapture={handleEditorWheelCapture}
+    >
       <CodeMirror
         value={value}
         onChange={onChange}
@@ -101,10 +129,10 @@ export const CodeEditor = ({
           dropCursor: true,
           allowMultipleSelections: true,
           syntaxHighlighting: true,
-          defaultKeymap: true,
-          historyKeymap: true,
+          defaultKeymap: false,
+          historyKeymap: false,
           searchKeymap: false, // We add our own
-          foldKeymap: true,
+          foldKeymap: false,
           completionKeymap: false, // We add our own
           lintKeymap: false, // We add our own
           bracketMatching: false, // We add our own
