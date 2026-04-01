@@ -43,6 +43,7 @@ const MAX_SIDEBAR_WIDTH = 800;
 const DEFAULT_SIDEBAR_WIDTH = 350;
 const DEFAULT_MAIN_SIZE = 1000;
 const AUTO_SAVE_DELAY_MS = 2000;
+const AUTO_SAVE_RETRY_DELAY_MS = 3000;
 
 // ── Empty state ─────────────────────────────────────────────────
 const EmptyState = ({ label }: { label: string }) => {
@@ -529,6 +530,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const autoSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const autoSaveRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef(true);
   const saveInFlightRef = useRef(false);
   const queuedSaveRef = useRef<{ fileId: Id<"files">; content: string } | null>(
@@ -551,6 +553,9 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       isMountedRef.current = false;
       if (autoSaveDebounceRef.current) {
         clearTimeout(autoSaveDebounceRef.current);
+      }
+      if (autoSaveRetryRef.current) {
+        clearTimeout(autoSaveRetryRef.current);
       }
     };
   }, []);
@@ -664,6 +669,28 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     isDirtyRef.current = isDirty;
   }, [isDirty]);
 
+  const clearAutoSaveRetry = useCallback(() => {
+    if (autoSaveRetryRef.current) {
+      clearTimeout(autoSaveRetryRef.current);
+      autoSaveRetryRef.current = null;
+    }
+  }, []);
+
+  const scheduleAutoSaveRetry = useCallback(() => {
+    clearAutoSaveRetry();
+
+    autoSaveRetryRef.current = setTimeout(() => {
+      autoSaveRetryRef.current = null;
+
+      const fileId = selectedEditableFileIdRef.current;
+      if (!fileId || !isDirtyRef.current) {
+        return;
+      }
+
+      void persistFileContentRef.current(fileId, draftContentRef.current);
+    }, AUTO_SAVE_RETRY_DELAY_MS);
+  }, [clearAutoSaveRetry]);
+
   const persistFileContent = useCallback(
     async function saveFile(fileId: Id<"files">, content: string) {
       if (!isMountedRef.current) {
@@ -678,6 +705,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       saveInFlightRef.current = true;
       setIsAutoSaving(true);
       setAutoSaveError(null);
+      clearAutoSaveRetry();
 
       try {
         await updateFile({
@@ -694,6 +722,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           setAutoSaveError(
             getErrorMessage(error, "Auto-save failed. Changes will retry."),
           );
+          scheduleAutoSaveRetry();
         }
       } finally {
         saveInFlightRef.current = false;
@@ -711,7 +740,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         }
       }
     },
-    [updateFile],
+    [clearAutoSaveRetry, scheduleAutoSaveRetry, updateFile],
   );
 
   useEffect(() => {
@@ -729,13 +758,17 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       autoSaveDebounceRef.current = null;
     }
 
+    clearAutoSaveRetry();
+
     void persistFileContentRef.current(fileId, draftContentRef.current);
   }
 
   const selectedEditableFileId =
     selectedFile?.type === "file"
       ? selectedFile._id
-      : selectedFile === null || selectedFile?.type === "folder" || !selectedFileId
+      : selectedFile === null ||
+          selectedFile?.type === "folder" ||
+          !selectedFileId
         ? null
         : selectedEditableFileIdRef.current;
 
@@ -749,6 +782,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         clearTimeout(autoSaveDebounceRef.current);
         autoSaveDebounceRef.current = null;
       }
+      clearAutoSaveRetry();
       return;
     }
 
@@ -773,7 +807,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         autoSaveDebounceRef.current = null;
       }
     };
-  }, [draftContent, isDirty, selectedEditableFileId]);
+  }, [clearAutoSaveRetry, draftContent, isDirty, selectedEditableFileId]);
 
   // Get initial cursor state for current file
   const initialCursorState = useMemo(() => {
@@ -972,6 +1006,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                             initialCursorState={initialCursorState}
                             onCursorStateChange={handleCursorStateChange}
                             onMetaChange={setEditorMeta}
+                            onBlur={flushPendingAutoSave}
                           />
                         </div>
                       )}

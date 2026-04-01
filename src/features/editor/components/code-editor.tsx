@@ -71,6 +71,7 @@ interface CodeEditorProps {
   initialCursorState?: CursorState;
   onCursorStateChange?: (state: CursorState) => void;
   onMetaChange?: (meta: EditorRuntimeMeta) => void;
+  onBlur?: () => void;
 }
 
 const clampOffset = (offset: number, max: number) =>
@@ -117,6 +118,7 @@ export const CodeEditor = ({
   initialCursorState,
   onCursorStateChange,
   onMetaChange,
+  onBlur,
 }: CodeEditorProps) => {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const disposablesRef = useRef<Monaco.IDisposable[]>([]);
@@ -394,6 +396,9 @@ export const CodeEditor = ({
         editor.onDidChangeModel(() => {
           emitState(true);
         }),
+        editor.onDidBlurEditorText(() => {
+          onBlur?.();
+        }),
         editor.onMouseDown((event) => {
           if (
             event.target.type !==
@@ -416,7 +421,7 @@ export const CodeEditor = ({
 
       restoreInitialState(editor, monacoApi);
     },
-    [emitState, restoreInitialState],
+    [emitState, onBlur, restoreInitialState],
   );
 
   const language = useMemo(() => getMonacoLanguage(filename), [filename]);
