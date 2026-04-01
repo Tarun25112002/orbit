@@ -768,7 +768,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
                     {/* Editor content */}
                     <div className="min-h-0 flex-1 overflow-hidden">
-                      {!selectedFileId && <WelcomeTab />}
+                      {!selectedFileId && (
+                        <WelcomeTab
+                          projectId={projectId}
+                          onOpenFile={handlePinTab}
+                        />
+                      )}
                       {selectedFileId && selectedFile === undefined && (
                         <div className="h-full w-full flex items-center justify-center">
                           <Spinner className="size-5" />

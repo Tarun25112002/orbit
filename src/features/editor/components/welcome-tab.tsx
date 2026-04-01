@@ -1,92 +1,225 @@
 "use client";
 
-import {
-  FileIcon,
-  FolderOpenIcon,
-  KeyboardIcon,
-  SparklesIcon,
-} from "lucide-react";
+import { ChangeEvent, useCallback, useRef, useState } from "react";
+import { FileIcon, FolderOpenIcon, LoaderCircleIcon } from "lucide-react";
+import { toast } from "sonner";
 
-// ── Keyboard shortcuts data ─────────────────────────────────────
-const shortcuts = [
-  { keys: "Ctrl+S", description: "Save file" },
-  { keys: "Ctrl+F", description: "Find in file" },
-  { keys: "Ctrl+H", description: "Find and replace" },
-  { keys: "Ctrl+G", description: "Go to line" },
-  { keys: "Ctrl+D", description: "Select next occurrence" },
-  { keys: "Ctrl+/", description: "Toggle line comment" },
-  { keys: "Ctrl+Shift+K", description: "Delete line" },
-  { keys: "Alt+↑/↓", description: "Move line up/down" },
-  { keys: "Ctrl+Shift+↑/↓", description: "Copy line up/down" },
-  { keys: "Ctrl+Shift+[", description: "Fold region" },
-  { keys: "Ctrl+Shift+]", description: "Unfold region" },
-  { keys: "Ctrl+Space", description: "Trigger autocomplete" },
-  { keys: "Tab", description: "Indent / accept suggestion" },
-  { keys: "Alt+Z", description: "Toggle word wrap" },
-  { keys: "Ctrl+Z", description: "Undo" },
-  { keys: "Ctrl+Shift+Z", description: "Redo" },
-];
+import { Button } from "@/components/ui/button";
+import { getErrorMessage } from "@/lib/errors";
+import { useCreateFile } from "@/features/projects/hooks/use-files";
 
-// ── Component ───────────────────────────────────────────────────
-export const WelcomeTab = () => {
+import { Id } from "../../../../convex/_generated/dataModel";
+
+type DirectoryInputElement = HTMLInputElement & {
+  webkitdirectory?: boolean;
+  directory?: boolean;
+};
+
+const normalizePath = (value: string) =>
+  value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/{2,}/g, "/");
+
+export const WelcomeTab = ({
+  projectId,
+  onOpenFile,
+}: {
+  projectId: Id<"projects">;
+  onOpenFile: (fileId: Id<"files">) => void;
+}) => {
+  const createFile = useCreateFile();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const [isImporting, setIsImporting] = useState(false);
+
+  const importSingleFile = useCallback(
+    async (file: File) => {
+      const content = await file.text();
+      const fileId = await createFile({
+        projectId,
+        name: file.name,
+        content,
+      });
+
+      onOpenFile(fileId);
+      toast.success(`Opened ${file.name}`);
+    },
+    [createFile, onOpenFile, projectId],
+  );
+
+  const importFolder = useCallback(
+    async (files: FileList) => {
+      const entries = Array.from(files)
+        .map((file) => {
+          const webkitRelativePath = (
+            file as File & { webkitRelativePath?: string }
+          ).webkitRelativePath;
+          const path = normalizePath(webkitRelativePath || file.name);
+          return { file, path };
+        })
+        .filter((entry) => entry.path.length > 0);
+
+      if (entries.length === 0) {
+        toast.error("No files found in selected folder.");
+        return;
+      }
+
+      let firstImportedFileId: Id<"files"> | null = null;
+      let importedCount = 0;
+      let failedCount = 0;
+      let firstError: unknown;
+
+      for (const entry of entries) {
+        try {
+          const content = await entry.file.text();
+          const importedId = await createFile({
+            projectId,
+            name: entry.path,
+            content,
+          });
+
+          if (!firstImportedFileId) {
+            firstImportedFileId = importedId;
+          }
+          importedCount += 1;
+        } catch (error) {
+          failedCount += 1;
+          firstError ??= error;
+        }
+      }
+
+      if (firstImportedFileId) {
+        onOpenFile(firstImportedFileId);
+      }
+
+      if (failedCount === 0) {
+        toast.success(
+          `Imported ${importedCount} file${importedCount === 1 ? "" : "s"}.`,
+        );
+        return;
+      }
+
+      if (importedCount === 0) {
+        toast.error(getErrorMessage(firstError, "Unable to import folder."));
+        return;
+      }
+
+      toast.error(
+        `Imported ${importedCount} file${
+          importedCount === 1 ? "" : "s"
+        }, ${failedCount} failed.`,
+      );
+    },
+    [createFile, onOpenFile, projectId],
+  );
+
+  const handleFileChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+
+      if (!file) {
+        return;
+      }
+
+      setIsImporting(true);
+      try {
+        await importSingleFile(file);
+      } catch (error) {
+        toast.error(getErrorMessage(error, "Unable to open file."));
+      } finally {
+        setIsImporting(false);
+      }
+    },
+    [importSingleFile],
+  );
+
+  const handleFolderChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const selectedFiles = event.target.files;
+      event.target.value = "";
+
+      if (!selectedFiles || selectedFiles.length === 0) {
+        return;
+      }
+
+      setIsImporting(true);
+      try {
+        await importFolder(selectedFiles);
+      } finally {
+        setIsImporting(false);
+      }
+    },
+    [importFolder],
+  );
+
+  const openFolderPicker = useCallback(() => {
+    const input = folderInputRef.current as DirectoryInputElement | null;
+    if (!input) {
+      return;
+    }
+
+    input.webkitdirectory = true;
+    input.directory = true;
+    input.multiple = true;
+    input.click();
+  }, []);
+
   return (
     <div className="flex h-full w-full items-center justify-center overflow-auto bg-[#1e1e1e] p-8">
-      <div className="w-full max-w-lg space-y-8">
-        {/* ── Hero ──────────────────────────────────────── */}
-        <div className="text-center">
-          <div className="mb-3 flex items-center justify-center gap-2">
-            <SparklesIcon className="size-6 text-[#007acc]" />
-            <h2 className="text-2xl font-semibold tracking-tight text-[#cccccc]">
-              Welcome
-            </h2>
-          </div>
-          <p className="text-sm text-[#858585]">
-            Select a file from the explorer to start editing
-          </p>
-        </div>
-
-        {/* ── Quick actions ─────────────────────────────── */}
-        <div className="flex justify-center gap-6">
-          <div className="flex items-center gap-2 rounded-md border border-[#3c3c3c] bg-[#252526] px-4 py-2.5 text-xs text-[#cccccc]">
-            <FileIcon className="size-3.5 text-[#007acc]" />
-            Open a file
-          </div>
-          <div className="flex items-center gap-2 rounded-md border border-[#3c3c3c] bg-[#252526] px-4 py-2.5 text-xs text-[#cccccc]">
-            <FolderOpenIcon className="size-3.5 text-[#007acc]" />
-            Browse explorer
-          </div>
-        </div>
-
-        {/* ── Keyboard shortcuts ────────────────────────── */}
-        <div className="rounded-lg border border-[#3c3c3c] bg-[#252526]/50">
-          <div className="flex items-center gap-2 border-b border-[#3c3c3c] px-4 py-2.5">
-            <KeyboardIcon className="size-4 text-[#007acc]" />
-            <h3 className="text-xs font-medium text-[#cccccc]">
-              Keyboard Shortcuts
-            </h3>
-          </div>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-0 p-3">
-            {shortcuts.map((shortcut) => (
-              <div
-                key={shortcut.keys}
-                className="flex items-center justify-between gap-4 rounded px-2 py-1 transition-colors hover:bg-[#ffffff08]"
-              >
-                <span className="text-[11px] text-[#858585]">
-                  {shortcut.description}
-                </span>
-                <kbd className="shrink-0 rounded border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-0.5 font-mono text-[10px] text-[#9cdcfe]">
-                  {shortcut.keys}
-                </kbd>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* ── Footer tip ────────────────────────────────── */}
-        <p className="text-center text-[10px] text-[#4a4a4a]">
-          Tip: Double-click a file in the explorer to pin it as a permanent tab
+      <div className="w-full max-w-xl space-y-6 text-center">
+        <h2 className="text-5xl font-semibold tracking-[0.2em] text-[#d9d9d9]">
+          ORBIT
+        </h2>
+        <p className="text-sm text-[#858585]">
+          Open a file or folder to import it into this project.
         </p>
+
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <Button
+            type="button"
+            variant="outline"
+            className="border-[#3c3c3c] bg-[#252526] text-[#cccccc] hover:bg-[#2f2f2f]"
+            disabled={isImporting}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <FileIcon className="size-4 text-[#007acc]" />
+            Open file
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="border-[#3c3c3c] bg-[#252526] text-[#cccccc] hover:bg-[#2f2f2f]"
+            disabled={isImporting}
+            onClick={openFolderPicker}
+          >
+            <FolderOpenIcon className="size-4 text-[#007acc]" />
+            Open folder
+          </Button>
+        </div>
+
+        {isImporting && (
+          <div className="flex items-center justify-center gap-2 text-xs text-[#9a9a9a]">
+            <LoaderCircleIcon className="size-4 animate-spin text-[#007acc]" />
+            Importing...
+          </div>
+        )}
       </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFileChange}
+      />
+      <input
+        ref={folderInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFolderChange}
+      />
     </div>
   );
 };

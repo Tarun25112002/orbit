@@ -4,6 +4,7 @@ import {
   ChevronRightIcon,
   FilePlusCornerIcon,
   FolderPlusIcon,
+  PencilIcon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -108,6 +109,24 @@ export const Tree = ({
 
   if (item.type === "file") {
     const isActive = activeItemId === item._id;
+    const fileActions = (
+      <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+        <Button
+          type="button"
+          aria-label={`Rename ${item.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            setIsRenaming(true);
+          }}
+          variant="ghost"
+          size="icon-xs"
+          className="text-muted-foreground hover:text-foreground"
+        >
+          <PencilIcon className="size-3.5" />
+        </Button>
+      </div>
+    );
 
     if (isRenaming) {
       return (
@@ -140,6 +159,7 @@ export const Tree = ({
         onDelete={() => {
           void handleDelete();
         }}
+        actions={fileActions}
       >
         <ItemIcon type="file" name={item.name} />
         <span className="truncate text-sm">{item.name}</span>
@@ -161,6 +181,20 @@ export const Tree = ({
   const isActive = activeItemId === item._id;
   const folderActions = (
     <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <Button
+        type="button"
+        aria-label={`Rename ${item.name}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          event.preventDefault();
+          setIsRenaming(true);
+        }}
+        variant="ghost"
+        size="icon-xs"
+        className="text-muted-foreground hover:text-foreground"
+      >
+        <PencilIcon className="size-3.5" />
+      </Button>
       <Button
         type="button"
         aria-label={`Create file inside ${item.name}`}
