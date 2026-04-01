@@ -42,7 +42,7 @@ const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
 const DEFAULT_SIDEBAR_WIDTH = 350;
 const DEFAULT_MAIN_SIZE = 1000;
-const AUTO_SAVE_DELAY_MS = 5000;
+const AUTO_SAVE_DELAY_MS = 2000;
 
 // ── Empty state ─────────────────────────────────────────────────
 const EmptyState = ({ label }: { label: string }) => {
@@ -526,9 +526,18 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const projectFiles = useProjectFiles({ projectId });
   const updateFile = useUpdateFile();
   const convex = useConvex();
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const isMountedRef = useRef(true);
+  const saveInFlightRef = useRef(false);
+  const queuedSaveRef = useRef<{ fileId: Id<"files">; content: string } | null>(
+    null,
+  );
   const lastSavedContentRef = useRef("");
+  const draftContentRef = useRef("");
+  const isDirtyRef = useRef(false);
+  const selectedEditableFileIdRef = useRef<Id<"files"> | null>(null);
 
   useEffect(() => {
     lastSavedContentRef.current = lastSavedContent;
@@ -537,8 +546,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   useEffect(() => {
     return () => {
       isMountedRef.current = false;
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
+      if (autoSaveDebounceRef.current) {
+        clearTimeout(autoSaveDebounceRef.current);
       }
     };
   }, []);
@@ -645,12 +654,26 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     return draftContent !== lastSavedContent;
   }, [selectedFile, draftContent, lastSavedContent]);
 
+  useEffect(() => {
+    draftContentRef.current = draftContent;
+  }, [draftContent]);
+
+  useEffect(() => {
+    isDirtyRef.current = isDirty;
+  }, [isDirty]);
+
   const persistFileContent = useCallback(
-    async (fileId: Id<"files">, content: string) => {
+    async function saveFile(fileId: Id<"files">, content: string) {
       if (!isMountedRef.current) {
         return;
       }
 
+      if (saveInFlightRef.current) {
+        queuedSaveRef.current = { fileId, content };
+        return;
+      }
+
+      saveInFlightRef.current = true;
       setIsAutoSaving(true);
       setAutoSaveError(null);
 
@@ -670,6 +693,16 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           );
         }
       } finally {
+        saveInFlightRef.current = false;
+
+        const queued = queuedSaveRef.current;
+        queuedSaveRef.current = null;
+
+        if (queued && isMountedRef.current) {
+          await saveFile(queued.fileId, queued.content);
+          return;
+        }
+
         if (isMountedRef.current) {
           setIsAutoSaving(false);
         }
@@ -679,46 +712,51 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   );
 
   function flushPendingAutoSave() {
-    if (!selectedFile || selectedFile.type !== "file" || !isDirty) {
+    const fileId = selectedEditableFileIdRef.current;
+    if (!fileId || !isDirtyRef.current) {
       return;
     }
 
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = null;
+    if (autoSaveDebounceRef.current) {
+      clearTimeout(autoSaveDebounceRef.current);
+      autoSaveDebounceRef.current = null;
     }
 
-    void persistFileContent(selectedFile._id, draftContent);
+    void persistFileContent(fileId, draftContentRef.current);
   }
 
   const selectedEditableFileId =
     selectedFile?.type === "file" ? selectedFile._id : null;
 
   useEffect(() => {
+    selectedEditableFileIdRef.current = selectedEditableFileId;
+  }, [selectedEditableFileId]);
+
+  useEffect(() => {
     if (!selectedEditableFileId || !isDirty) {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-        autoSaveTimerRef.current = null;
+      if (autoSaveDebounceRef.current) {
+        clearTimeout(autoSaveDebounceRef.current);
+        autoSaveDebounceRef.current = null;
       }
       return;
     }
 
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
+    if (autoSaveDebounceRef.current) {
+      clearTimeout(autoSaveDebounceRef.current);
     }
 
     const fileId = selectedEditableFileId;
     const contentSnapshot = draftContent;
 
-    autoSaveTimerRef.current = setTimeout(() => {
-      autoSaveTimerRef.current = null;
+    autoSaveDebounceRef.current = setTimeout(() => {
+      autoSaveDebounceRef.current = null;
       void persistFileContent(fileId, contentSnapshot);
     }, AUTO_SAVE_DELAY_MS);
 
     return () => {
-      if (autoSaveTimerRef.current) {
-        clearTimeout(autoSaveTimerRef.current);
-        autoSaveTimerRef.current = null;
+      if (autoSaveDebounceRef.current) {
+        clearTimeout(autoSaveDebounceRef.current);
+        autoSaveDebounceRef.current = null;
       }
     };
   }, [draftContent, isDirty, persistFileContent, selectedEditableFileId]);
