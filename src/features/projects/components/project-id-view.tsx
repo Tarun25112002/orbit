@@ -538,6 +538,9 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const draftContentRef = useRef("");
   const isDirtyRef = useRef(false);
   const selectedEditableFileIdRef = useRef<Id<"files"> | null>(null);
+  const persistFileContentRef = useRef<
+    (fileId: Id<"files">, content: string) => Promise<void>
+  >(async () => {});
 
   useEffect(() => {
     lastSavedContentRef.current = lastSavedContent;
@@ -630,15 +633,14 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       const isNewFile = hydratedFileIdRef.current !== selectedFile._id;
       hydratedFileIdRef.current = selectedFile._id;
 
-      setDraftContent((currentDraft) => {
-        if (isNewFile || currentDraft === lastSavedContentRef.current) {
-          return content;
-        }
+      const hasLocalUnsavedChanges =
+        draftContentRef.current !== lastSavedContentRef.current;
 
-        return currentDraft;
-      });
-      setLastSavedContent(content);
-      setAutoSaveError(null);
+      if (isNewFile || !hasLocalUnsavedChanges) {
+        setDraftContent(content);
+        setLastSavedContent(content);
+        setAutoSaveError(null);
+      }
     } else {
       hydratedFileIdRef.current = null;
       setDraftContent("");
@@ -684,6 +686,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         });
 
         if (isMountedRef.current && activeFileIdRef.current === fileId) {
+          lastSavedContentRef.current = content;
           setLastSavedContent(content);
         }
       } catch (error) {
@@ -711,6 +714,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [updateFile],
   );
 
+  useEffect(() => {
+    persistFileContentRef.current = persistFileContent;
+  }, [persistFileContent]);
+
   function flushPendingAutoSave() {
     const fileId = selectedEditableFileIdRef.current;
     if (!fileId || !isDirtyRef.current) {
@@ -722,11 +729,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       autoSaveDebounceRef.current = null;
     }
 
-    void persistFileContent(fileId, draftContentRef.current);
+    void persistFileContentRef.current(fileId, draftContentRef.current);
   }
 
   const selectedEditableFileId =
-    selectedFile?.type === "file" ? selectedFile._id : null;
+    selectedFile?.type === "file"
+      ? selectedFile._id
+      : selectedFile === null || selectedFile?.type === "folder" || !selectedFileId
+        ? null
+        : selectedEditableFileIdRef.current;
 
   useEffect(() => {
     selectedEditableFileIdRef.current = selectedEditableFileId;
@@ -745,12 +756,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       clearTimeout(autoSaveDebounceRef.current);
     }
 
-    const fileId = selectedEditableFileId;
-    const contentSnapshot = draftContent;
-
     autoSaveDebounceRef.current = setTimeout(() => {
       autoSaveDebounceRef.current = null;
-      void persistFileContent(fileId, contentSnapshot);
+
+      const fileId = selectedEditableFileIdRef.current;
+      if (!fileId || !isDirtyRef.current) {
+        return;
+      }
+
+      void persistFileContentRef.current(fileId, draftContentRef.current);
     }, AUTO_SAVE_DELAY_MS);
 
     return () => {
@@ -759,7 +773,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         autoSaveDebounceRef.current = null;
       }
     };
-  }, [draftContent, isDirty, persistFileContent, selectedEditableFileId]);
+  }, [draftContent, isDirty, selectedEditableFileId]);
 
   // Get initial cursor state for current file
   const initialCursorState = useMemo(() => {

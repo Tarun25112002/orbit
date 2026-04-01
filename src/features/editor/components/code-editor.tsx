@@ -6,6 +6,7 @@ import MonacoEditor, {
   type OnMount,
 } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
+import { emmetCSS, emmetHTML, emmetJSX } from "emmet-monaco-es";
 
 import {
   type CursorState,
@@ -25,6 +26,34 @@ const DEFAULT_SETTINGS: EditorSettings = {
   insertSpaces: true,
   lineNumbers: "on",
   renderWhitespace: "none",
+};
+
+const EMMET_INIT_FLAG = "__orbit_monaco_emmet_initialized__";
+const EMMET_HTML_LANGUAGES = [
+  "html",
+  "handlebars",
+  "php",
+  "razor",
+  "twig",
+  "xml",
+];
+const EMMET_CSS_LANGUAGES = ["css", "less", "scss"];
+const EMMET_JSX_LANGUAGES = ["javascript", "typescript", "mdx"];
+
+const initializeEmmet = (monacoApi: typeof Monaco) => {
+  const globalState = globalThis as typeof globalThis & {
+    [EMMET_INIT_FLAG]?: boolean;
+  };
+
+  if (globalState[EMMET_INIT_FLAG]) {
+    return;
+  }
+
+  emmetHTML(monacoApi, EMMET_HTML_LANGUAGES);
+  emmetCSS(monacoApi, EMMET_CSS_LANGUAGES);
+  emmetJSX(monacoApi, EMMET_JSX_LANGUAGES);
+
+  globalState[EMMET_INIT_FLAG] = true;
 };
 
 export interface EditorRuntimeMeta {
@@ -305,6 +334,8 @@ export const CodeEditor = ({
   );
 
   const handleBeforeMount = useCallback<BeforeMount>((monacoApi) => {
+    initializeEmmet(monacoApi);
+
     const compilerOptions = {
       target: monacoApi.languages.typescript.ScriptTarget.ESNext,
       module: monacoApi.languages.typescript.ModuleKind.ESNext,

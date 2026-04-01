@@ -55,6 +55,7 @@
     "convex": "^1.33.1",
     "date-fns": "^4.1.0",
     "embla-carousel-react": "^8.6.0",
+    "emmet-monaco-es": "^5.7.0",
     "inngest": "^4.0.4",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.577.0",
