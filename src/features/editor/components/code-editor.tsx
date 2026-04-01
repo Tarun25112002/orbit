@@ -486,6 +486,8 @@ export const CodeEditor = ({
       onToggleBlockComment={() => runEditorAction("editor.action.blockComment")}
       onFold={() => runEditorAction("editor.fold")}
       onUnfold={() => runEditorAction("editor.unfold")}
+      onFoldAll={() => runEditorAction("editor.foldAll")}
+      onUnfoldAll={() => runEditorAction("editor.unfoldAll")}
       onFormatDocument={() => runEditorAction("editor.action.formatDocument")}
     >
       <div className="size-full overflow-hidden">

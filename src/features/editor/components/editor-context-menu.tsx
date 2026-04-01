@@ -28,6 +28,8 @@ interface EditorContextMenuProps {
   onToggleBlockComment: () => void;
   onFold: () => void;
   onUnfold: () => void;
+  onFoldAll: () => void;
+  onUnfoldAll: () => void;
   onFormatDocument: () => void;
 }
 
@@ -50,6 +52,8 @@ export const EditorContextMenu = ({
   onToggleBlockComment,
   onFold,
   onUnfold,
+  onFoldAll,
+  onUnfoldAll,
   onFormatDocument,
 }: EditorContextMenuProps) => {
   return (
@@ -129,6 +133,14 @@ export const EditorContextMenu = ({
         <ContextMenuItem onClick={onUnfold}>
           Unfold Region
           <ContextMenuShortcut>Ctrl+Shift+]</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onFoldAll}>
+          Fold All
+          <ContextMenuShortcut>Ctrl+K Ctrl+0</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onUnfoldAll}>
+          Unfold All
+          <ContextMenuShortcut>Ctrl+K Ctrl+J</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onClick={onFormatDocument}>

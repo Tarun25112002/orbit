@@ -1,25 +1,13 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useEffectEvent,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Allotment } from "allotment";
 import { useConvex } from "convex/react";
-import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  SaveIcon,
-  XIcon,
-} from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
 import type { Doc } from "../../../../convex/_generated/dataModel";
 
 import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
+import { getErrorMessage } from "@/lib/errors";
 import { Badge } from "@/components/ui/badge";
 import {
   Popover,
@@ -46,6 +34,7 @@ const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
 const DEFAULT_SIDEBAR_WIDTH = 350;
 const DEFAULT_MAIN_SIZE = 1000;
+const AUTO_SAVE_DELAY_MS = 5000;
 
 // ── Empty state ─────────────────────────────────────────────────
 const EmptyState = ({ label }: { label: string }) => {
@@ -490,7 +479,9 @@ const BreadcrumbBar = ({
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
   const [draftContent, setDraftContent] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
+  const [autoSaveError, setAutoSaveError] = useState<string | null>(null);
+  const [lastSavedContent, setLastSavedContent] = useState("");
   const [cursorState, setCursorState] = useState<CursorState>({
     line: 1,
     col: 1,
@@ -527,6 +518,22 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const projectFiles = useProjectFiles({ projectId });
   const updateFile = useUpdateFile();
   const convex = useConvex();
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
+  const lastSavedContentRef = useRef("");
+
+  useEffect(() => {
+    lastSavedContentRef.current = lastSavedContent;
+  }, [lastSavedContent]);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, []);
 
   const fetchFileForTab = useCallback(
     (fileId: Id<"files">) => {
@@ -537,42 +544,46 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
   // Save cursor state before switching tabs
   const previousFileIdRef = useRef<Id<"files"> | null>(null);
+  const hydratedFileIdRef = useRef<Id<"files"> | null>(null);
 
-  const handleActivateTab = useCallback(
-    (fileId: Id<"files">) => {
-      // Save current cursor state before switching
-      if (previousFileIdRef.current) {
-        saveCursorState(previousFileIdRef.current, cursorState);
-      }
-      setActive(fileId);
-      fetchFileForTab(fileId);
-    },
-    [setActive, fetchFileForTab, saveCursorState, cursorState],
-  );
+  const handleActivateTab = (fileId: Id<"files">) => {
+    if (fileId !== selectedFileId) {
+      flushPendingAutoSave();
+    }
+
+    // Save current cursor state before switching
+    if (previousFileIdRef.current) {
+      saveCursorState(previousFileIdRef.current, cursorState);
+    }
+    setActive(fileId);
+    fetchFileForTab(fileId);
+  };
 
   // Track the active file for cursor state saving
   useEffect(() => {
     previousFileIdRef.current = selectedFileId;
   }, [selectedFileId]);
 
-  const handlePinTab = useCallback(
-    (fileId: Id<"files">) => {
-      openPermanent(fileId);
-      fetchFileForTab(fileId);
-    },
-    [openPermanent, fetchFileForTab],
-  );
+  const handlePinTab = (fileId: Id<"files">) => {
+    if (fileId !== selectedFileId) {
+      flushPendingAutoSave();
+    }
 
-  const handleCloseTab = useCallback(
-    (fileId: Id<"files">) => {
-      // Save cursor state before closing
-      if (fileId === selectedFileId) {
-        saveCursorState(fileId, cursorState);
-      }
-      close(fileId);
-    },
-    [close, selectedFileId, saveCursorState, cursorState],
-  );
+    openPermanent(fileId);
+    fetchFileForTab(fileId);
+  };
+
+  const handleCloseTab = (fileId: Id<"files">) => {
+    if (fileId === selectedFileId) {
+      flushPendingAutoSave();
+    }
+
+    // Save cursor state before closing
+    if (fileId === selectedFileId) {
+      saveCursorState(fileId, cursorState);
+    }
+    close(fileId);
+  };
 
   const fileNameById = useMemo(
     () => new Map((projectFiles ?? []).map((item) => [item._id, item.name])),
@@ -596,9 +607,24 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
   useEffect(() => {
     if (selectedFile?.type === "file") {
-      setDraftContent(selectedFile.content ?? "");
+      const content = selectedFile.content ?? "";
+      const isNewFile = hydratedFileIdRef.current !== selectedFile._id;
+      hydratedFileIdRef.current = selectedFile._id;
+
+      setDraftContent((currentDraft) => {
+        if (isNewFile || currentDraft === lastSavedContentRef.current) {
+          return content;
+        }
+
+        return currentDraft;
+      });
+      setLastSavedContent(content);
+      setAutoSaveError(null);
     } else {
+      hydratedFileIdRef.current = null;
       setDraftContent("");
+      setLastSavedContent("");
+      setAutoSaveError(null);
     }
   }, [selectedFile?._id, selectedFile?.content, selectedFile?.type]);
 
@@ -606,36 +632,86 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     if (!selectedFile || selectedFile.type !== "file") {
       return false;
     }
-    return draftContent !== (selectedFile.content ?? "");
-  }, [selectedFile, draftContent]);
+    return draftContent !== lastSavedContent;
+  }, [selectedFile, draftContent, lastSavedContent]);
 
-  const handleSave = async () => {
+  const persistFileContent = useCallback(
+    async (fileId: Id<"files">, content: string) => {
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      setIsAutoSaving(true);
+      setAutoSaveError(null);
+
+      try {
+        await updateFile({
+          id: fileId,
+          content,
+        });
+
+        if (isMountedRef.current && selectedFileId === fileId) {
+          setLastSavedContent(content);
+        }
+      } catch (error) {
+        if (isMountedRef.current) {
+          setAutoSaveError(
+            getErrorMessage(error, "Auto-save failed. Changes will retry."),
+          );
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setIsAutoSaving(false);
+        }
+      }
+    },
+    [selectedFileId, updateFile],
+  );
+
+  function flushPendingAutoSave() {
     if (!selectedFile || selectedFile.type !== "file" || !isDirty) {
       return;
     }
 
-    setIsSaving(true);
-    try {
-      await updateFile({
-        id: selectedFile._id,
-        content: draftContent,
-      });
-    } finally {
-      setIsSaving(false);
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
     }
-  };
 
-  const onWindowKeyDown = useEffectEvent((event: KeyboardEvent) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-      event.preventDefault();
-      void handleSave();
-    }
-  });
+    void persistFileContent(selectedFile._id, draftContent);
+  }
+
+  const selectedEditableFileId =
+    selectedFile?.type === "file" ? selectedFile._id : null;
 
   useEffect(() => {
-    window.addEventListener("keydown", onWindowKeyDown);
-    return () => window.removeEventListener("keydown", onWindowKeyDown);
-  }, []);
+    if (!selectedEditableFileId || !isDirty) {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+    }
+
+    const fileId = selectedEditableFileId;
+    const contentSnapshot = draftContent;
+
+    autoSaveTimerRef.current = setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void persistFileContent(fileId, contentSnapshot);
+    }, AUTO_SAVE_DELAY_MS);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [draftContent, isDirty, persistFileContent, selectedEditableFileId]);
 
   // Get initial cursor state for current file
   const initialCursorState = useMemo(() => {
@@ -675,25 +751,24 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         />
         <div className="ml-auto flex h-full items-center gap-2 px-2">
           {selectedFile?.type === "file" && (
-            <Badge variant={isDirty ? "secondary" : "outline"}>
-              {isDirty ? "Unsaved changes" : "Saved"}
+            <Badge
+              variant={
+                autoSaveError
+                  ? "destructive"
+                  : isAutoSaving || isDirty
+                    ? "secondary"
+                    : "outline"
+              }
+            >
+              {autoSaveError
+                ? "Auto-save failed"
+                : isAutoSaving
+                  ? "Auto-saving..."
+                  : isDirty
+                    ? "Pending changes"
+                    : "Auto-saved"}
             </Badge>
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void handleSave();
-            }}
-            disabled={!isDirty || isSaving || !selectedFileId}
-          >
-            {isSaving ? (
-              <Spinner className="size-3.5" />
-            ) : (
-              <SaveIcon className="size-3.5" />
-            )}
-            Save
-          </Button>
         </div>
       </nav>
       <div className="flex-1 relative">
@@ -717,6 +792,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   projectId={projectId}
                   selectedFileId={selectedFileId}
                   onSelectFile={(fileId, options) => {
+                    if (fileId !== selectedFileId) {
+                      flushPendingAutoSave();
+                    }
+
                     if (!fileId) {
                       if (activeTabId) {
                         close(activeTabId);
