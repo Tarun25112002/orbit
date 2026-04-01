@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { EditorSelection, type Text } from "@codemirror/state";
 import {
@@ -37,7 +37,6 @@ import {
   openSearchPanel,
   search,
 } from "@codemirror/search";
-import { showMinimap } from "@replit/codemirror-minimap";
 import { vscodeKeymap } from "@replit/codemirror-vscode-keymap";
 import { indentationMarkers } from "@replit/codemirror-indentation-markers";
 
@@ -51,6 +50,7 @@ import {
 } from "../utils/language-detection";
 import { editorTheme, editorHighlighting } from "../utils/editor-theme";
 import { EditorContextMenu } from "./editor-context-menu";
+import { EditorMinimap } from "./editor-minimap";
 
 const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
@@ -90,6 +90,23 @@ const positionFromLineCol = (doc: Text, line: number, col: number) => {
 
 const getLineEnding = (text: string): "LF" | "CRLF" =>
   text.includes("\r\n") ? "CRLF" : "LF";
+
+const normalizeWheelDelta = (
+  delta: number,
+  deltaMode: number,
+  lineHeight: number,
+  pageHeight: number,
+) => {
+  if (deltaMode === 1) {
+    return delta * lineHeight;
+  }
+
+  if (deltaMode === 2) {
+    return delta * pageHeight;
+  }
+
+  return delta;
+};
 
 const areSelectionsEqual = (
   left: CursorState["selections"],
@@ -133,6 +150,9 @@ export const CodeEditor = ({
   onMetaChange,
 }: CodeEditorProps) => {
   const editorRef = useRef<EditorView | null>(null);
+  const [editorView, setEditorView] = useState<EditorView | null>(null);
+  const detachNativeWheelRef = useRef<(() => void) | null>(null);
+  const wheelCarryRef = useRef({ x: 0, y: 0 });
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
 
@@ -194,6 +214,110 @@ export const CodeEditor = ({
     [emitState],
   );
 
+  const applyWheelScroll = useCallback(
+    ({
+      view,
+      deltaX,
+      deltaY,
+      deltaMode,
+      shiftKey,
+    }: {
+      view: EditorView;
+      deltaX: number;
+      deltaY: number;
+      deltaMode: number;
+      shiftKey: boolean;
+    }) => {
+      const scroller = view.scrollDOM;
+      const previousScrollTop = scroller.scrollTop;
+      const previousScrollLeft = scroller.scrollLeft;
+
+      const lineHeightStyle = window.getComputedStyle(
+        view.contentDOM,
+      ).lineHeight;
+      const parsedLineHeight = Number.parseFloat(lineHeightStyle);
+      const lineHeight = Number.isFinite(parsedLineHeight)
+        ? parsedLineHeight
+        : settings.fontSize * 1.6;
+      const pageHeight = Math.max(scroller.clientHeight, lineHeight * 8);
+
+      const pixelDeltaY = normalizeWheelDelta(
+        deltaY,
+        deltaMode,
+        lineHeight,
+        pageHeight,
+      );
+      const pixelDeltaX = normalizeWheelDelta(
+        deltaX,
+        deltaMode,
+        lineHeight,
+        pageHeight,
+      );
+      const horizontalDeltaRaw =
+        shiftKey && pixelDeltaX === 0 ? pixelDeltaY : pixelDeltaX;
+      const verticalDeltaRaw = shiftKey && pixelDeltaX === 0 ? 0 : pixelDeltaY;
+
+      const xWithCarry = wheelCarryRef.current.x + horizontalDeltaRaw;
+      const yWithCarry = wheelCarryRef.current.y + verticalDeltaRaw;
+
+      const horizontalDelta =
+        xWithCarry > 0 ? Math.floor(xWithCarry) : Math.ceil(xWithCarry);
+      const verticalDelta =
+        yWithCarry > 0 ? Math.floor(yWithCarry) : Math.ceil(yWithCarry);
+
+      wheelCarryRef.current.x = xWithCarry - horizontalDelta;
+      wheelCarryRef.current.y = yWithCarry - verticalDelta;
+
+      if (verticalDelta !== 0) {
+        scroller.scrollTop += verticalDelta;
+      }
+
+      if (horizontalDelta !== 0) {
+        scroller.scrollLeft += horizontalDelta;
+      }
+
+      return (
+        previousScrollTop !== scroller.scrollTop ||
+        previousScrollLeft !== scroller.scrollLeft
+      );
+    },
+    [settings.fontSize],
+  );
+
+  const attachNativeWheelListener = useCallback(
+    (view: EditorView) => {
+      detachNativeWheelRef.current?.();
+
+      const handleNativeWheel = (event: WheelEvent) => {
+        if (event.defaultPrevented) {
+          return;
+        }
+
+        const didScroll = applyWheelScroll({
+          view,
+          deltaX: event.deltaX,
+          deltaY: event.deltaY,
+          deltaMode: event.deltaMode,
+          shiftKey: event.shiftKey,
+        });
+
+        if (didScroll) {
+          event.preventDefault();
+        }
+      };
+
+      view.scrollDOM.addEventListener("wheel", handleNativeWheel, {
+        passive: false,
+      });
+
+      detachNativeWheelRef.current = () => {
+        view.scrollDOM.removeEventListener("wheel", handleNativeWheel);
+        detachNativeWheelRef.current = null;
+      };
+    },
+    [applyWheelScroll],
+  );
+
   const insertTextAtSelections = useCallback(
     (view: EditorView, text: string) => {
       const changes = view.state.changeByRange((range) => ({
@@ -230,7 +354,7 @@ export const CodeEditor = ({
           return;
         }
       } catch {
-        // Fallback below keeps browser-native paste behavior when permissions deny clipboard read.
+        // Keep browser-native paste behavior when clipboard permissions deny access.
       }
 
       document.execCommand("paste");
@@ -327,29 +451,7 @@ export const CodeEditor = ({
           minHeight: "100%",
           minWidth: settings.wordWrap ? "100%" : "max-content",
         },
-        ".cm-minimap-gutter": {
-          backgroundColor: "#0f0f0f !important",
-          borderLeft: "1px solid #242424",
-        },
-        ".cm-minimap-inner, .cm-minimap-inner canvas": {
-          backgroundColor: "#0f0f0f !important",
-        },
       }),
-
-      settings.minimap
-        ? showMinimap.of({
-            create: (view) => {
-              const dom = view.dom.ownerDocument.createElement("div");
-              dom.style.height = "100%";
-              dom.style.background = "#0f0f0f";
-              dom.style.borderLeft = "1px solid #242424";
-              dom.style.overflow = "hidden";
-              return { dom };
-            },
-            displayText: "characters",
-            showOverlay: "always",
-          })
-        : [],
 
       keymap.of([...vscodeKeymap, indentWithTab]),
 
@@ -361,7 +463,6 @@ export const CodeEditor = ({
     readOnly,
     settings.fontSize,
     settings.insertSpaces,
-    settings.minimap,
     settings.tabSize,
     settings.wordWrap,
     whitespaceExtensions,
@@ -397,13 +498,36 @@ export const CodeEditor = ({
       });
 
       requestAnimationFrame(() => {
-        view.scrollDOM.scrollTop = initialCursorState.scrollTop;
-        view.scrollDOM.scrollLeft = initialCursorState.scrollLeft;
-        emitState(view);
+        requestAnimationFrame(() => {
+          const maxScrollTop = Math.max(
+            0,
+            view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight,
+          );
+          const maxScrollLeft = Math.max(
+            0,
+            view.scrollDOM.scrollWidth - view.scrollDOM.clientWidth,
+          );
+
+          view.scrollDOM.scrollTop = Math.min(
+            Math.max(0, initialCursorState.scrollTop),
+            maxScrollTop,
+          );
+          view.scrollDOM.scrollLeft = Math.min(
+            Math.max(0, initialCursorState.scrollLeft),
+            maxScrollLeft,
+          );
+          emitState(view);
+        });
       });
     },
     [emitState, initialCursorState],
   );
+
+  useEffect(() => {
+    return () => {
+      detachNativeWheelRef.current?.();
+    };
+  }, []);
 
   return (
     <EditorContextMenu
@@ -422,58 +546,74 @@ export const CodeEditor = ({
         // Formatting requires external formatter wiring by language.
       }}
     >
-      <div className="size-full overflow-hidden min-h-0 [&_.cm-editor]:h-full [&_.cm-editor]:min-h-0 [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-auto!">
-        <CodeMirror
-          key={filename}
-          value={value}
-          onChange={onChange}
-          extensions={extensions}
-          theme="none"
-          height="100%"
-          onCreateEditor={(view) => {
-            editorRef.current = view;
-            restoreInitialState(view);
-            requestAnimationFrame(() => {
-              view.requestMeasure();
-            });
-          }}
-          onUpdate={(update) => {
-            if (
-              update.docChanged ||
-              update.selectionSet ||
-              update.viewportChanged ||
-              update.geometryChanged
-            ) {
-              emitState(update.view, update.docChanged);
-            }
-          }}
-          basicSetup={{
-            lineNumbers: false,
-            highlightActiveLineGutter: false,
-            highlightActiveLine: false,
-            history: true,
-            drawSelection: false,
-            dropCursor: false,
-            allowMultipleSelections: true,
-            syntaxHighlighting: true,
-            defaultKeymap: false,
-            historyKeymap: false,
-            searchKeymap: false,
-            foldKeymap: false,
-            completionKeymap: false,
-            lintKeymap: false,
-            bracketMatching: false,
-            closeBrackets: false,
-            autocompletion: false,
-            crosshairCursor: false,
-            rectangularSelection: false,
-            highlightSelectionMatches: false,
-            closeBracketsKeymap: false,
-            foldGutter: false,
-            indentOnInput: false,
-            tabSize: settings.tabSize,
-          }}
-        />
+      <div className="flex size-full overflow-hidden">
+        <div className="flex-1 h-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-auto">
+          <CodeMirror
+            value={value}
+            onChange={onChange}
+            extensions={extensions}
+            theme="none"
+            onCreateEditor={(view) => {
+              editorRef.current = view;
+              setEditorView(view);
+              attachNativeWheelListener(view);
+              restoreInitialState(view);
+
+              requestAnimationFrame(() => {
+                view.requestMeasure();
+              });
+            }}
+            onUpdate={(update) => {
+              if (update.view !== editorRef.current) {
+                editorRef.current = update.view;
+                setEditorView(update.view);
+                attachNativeWheelListener(update.view);
+              }
+
+              if (
+                update.docChanged ||
+                update.selectionSet ||
+                update.viewportChanged ||
+                update.geometryChanged
+              ) {
+                emitState(update.view, update.docChanged);
+              }
+            }}
+            basicSetup={{
+              lineNumbers: false,
+              highlightActiveLineGutter: false,
+              highlightActiveLine: false,
+              history: true,
+              drawSelection: false,
+              dropCursor: false,
+              allowMultipleSelections: true,
+              syntaxHighlighting: true,
+              defaultKeymap: false,
+              historyKeymap: false,
+              searchKeymap: false,
+              foldKeymap: false,
+              completionKeymap: false,
+              lintKeymap: false,
+              bracketMatching: false,
+              closeBrackets: false,
+              autocompletion: false,
+              crosshairCursor: false,
+              rectangularSelection: false,
+              highlightSelectionMatches: false,
+              closeBracketsKeymap: false,
+              foldGutter: false,
+              indentOnInput: false,
+              tabSize: settings.tabSize,
+            }}
+          />
+        </div>
+
+        {settings.minimap ? (
+          <EditorMinimap
+            code={value}
+            editorElement={editorView ? editorView.scrollDOM : null}
+          />
+        ) : null}
       </div>
     </EditorContextMenu>
   );
