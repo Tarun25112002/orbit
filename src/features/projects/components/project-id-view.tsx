@@ -767,7 +767,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                     )}
 
                     {/* Editor content */}
-                    <div className="min-h-0 flex-1 overflow-auto">
+                    <div className="min-h-0 flex-1 overflow-hidden">
                       {!selectedFileId && <WelcomeTab />}
                       {selectedFileId && selectedFile === undefined && (
                         <div className="h-full w-full flex items-center justify-center">

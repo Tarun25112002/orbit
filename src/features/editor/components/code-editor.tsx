@@ -1,57 +1,22 @@
 "use client";
 
-import { useCallback, useMemo, useRef } from "react";
-import CodeMirror from "@uiw/react-codemirror";
-import { EditorSelection, type Text } from "@codemirror/state";
-import {
-  EditorView,
-  drawSelection,
-  dropCursor,
-  highlightActiveLine,
-  highlightActiveLineGutter,
-  highlightTrailingWhitespace,
-  highlightWhitespace,
-  lineNumbers,
-  rectangularSelection,
-  keymap,
-} from "@codemirror/view";
-import {
-  indentWithTab,
-  selectAll,
-  toggleBlockComment,
-  toggleComment,
-} from "@codemirror/commands";
-import {
-  bracketMatching,
-  foldCode,
-  foldGutter,
-  indentOnInput,
-  indentUnit,
-  unfoldCode,
-} from "@codemirror/language";
-import { autocompletion, closeBrackets } from "@codemirror/autocomplete";
-import {
-  gotoLine,
-  highlightSelectionMatches,
-  openSearchPanel,
-  search,
-} from "@codemirror/search";
-import { vscodeKeymap } from "@replit/codemirror-vscode-keymap";
-import { indentationMarkers } from "@replit/codemirror-indentation-markers";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import MonacoEditor, { type OnMount } from "@monaco-editor/react";
+import type * as Monaco from "monaco-editor";
 
 import {
   type CursorState,
   type EditorSettings,
 } from "../store/use-editor-store";
 import {
-  getLanguageExtension,
   getLanguageName,
+  getMonacoLanguage,
 } from "../utils/language-detection";
-import { editorTheme, editorHighlighting } from "../utils/editor-theme";
 import { EditorContextMenu } from "./editor-context-menu";
 
 const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
+  minimap: true,
   fontSize: 13,
   tabSize: 2,
   insertSpaces: true,
@@ -76,17 +41,11 @@ interface CodeEditorProps {
   onMetaChange?: (meta: EditorRuntimeMeta) => void;
 }
 
-const clampPosition = (doc: Text, position: number) =>
-  Math.max(0, Math.min(position, doc.length));
+const clampOffset = (offset: number, max: number) =>
+  Math.max(0, Math.min(offset, max));
 
-const positionFromLineCol = (doc: Text, line: number, col: number) => {
-  const safeLine = Math.max(1, Math.min(line, doc.lines));
-  const lineInfo = doc.line(safeLine);
-  return clampPosition(doc, lineInfo.from + Math.max(0, col - 1));
-};
-
-const getLineEnding = (text: string): "LF" | "CRLF" =>
-  text.includes("\r\n") ? "CRLF" : "LF";
+const getLineEnding = (eol: string): "LF" | "CRLF" =>
+  eol === "\r\n" ? "CRLF" : "LF";
 
 const areSelectionsEqual = (
   left: CursorState["selections"],
@@ -127,22 +86,54 @@ export const CodeEditor = ({
   onCursorStateChange,
   onMetaChange,
 }: CodeEditorProps) => {
-  const editorRef = useRef<EditorView | null>(null);
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const disposablesRef = useRef<Monaco.IDisposable[]>([]);
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
 
+  useEffect(() => {
+    return () => {
+      disposablesRef.current.forEach((disposable) => disposable.dispose());
+      disposablesRef.current = [];
+    };
+  }, []);
+
   const emitState = useCallback(
-    (view: EditorView, docChanged = false) => {
-      const mainHead = view.state.selection.main.head;
-      const lineInfo = view.state.doc.lineAt(mainHead);
-      const selections = view.state.selection.ranges.map((range) => ({
-        anchor: range.anchor,
-        head: range.head,
-      }));
+    (docChanged = false) => {
+      const editor = editorRef.current;
+      if (!editor) {
+        return;
+      }
+
+      const model = editor.getModel();
+      if (!model) {
+        return;
+      }
+
+      const cursor = editor.getPosition() ?? { lineNumber: 1, column: 1 };
+      const rawSelections = editor.getSelections() ?? [];
+      const selections =
+        rawSelections.length > 0
+          ? rawSelections.map((selection) => ({
+              anchor: model.getOffsetAt({
+                lineNumber: selection.selectionStartLineNumber,
+                column: selection.selectionStartColumn,
+              }),
+              head: model.getOffsetAt({
+                lineNumber: selection.positionLineNumber,
+                column: selection.positionColumn,
+              }),
+            }))
+          : [
+              {
+                anchor: model.getOffsetAt(cursor),
+                head: model.getOffsetAt(cursor),
+              },
+            ];
 
       const nextCursorState: CursorState = {
-        line: lineInfo.number,
-        col: mainHead - lineInfo.from + 1,
+        line: cursor.lineNumber,
+        col: cursor.column,
         selectionCount: selections.length,
         selections,
       };
@@ -161,10 +152,10 @@ export const CodeEditor = ({
 
       const previousMeta = lastMetaRef.current;
       const nextMeta: EditorRuntimeMeta = {
-        totalLines: view.state.doc.lines,
+        totalLines: model.getLineCount(),
         lineEnding:
           docChanged || !previousMeta
-            ? getLineEnding(view.state.doc.toString())
+            ? getLineEnding(model.getEOL())
             : previousMeta.lineEnding,
         language: getLanguageName(filename),
       };
@@ -177,270 +168,245 @@ export const CodeEditor = ({
     [filename, onCursorStateChange, onMetaChange],
   );
 
-  const runEditorCommand = useCallback(
-    (command: (view: EditorView) => boolean) => {
-      const view = editorRef.current;
-      if (!view) return;
-      command(view);
-      emitState(view);
-    },
-    [emitState],
-  );
+  const runEditorAction = useCallback((actionId: string) => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const action = editor.getAction(actionId);
+    if (action) {
+      void action.run();
+    }
+  }, []);
 
   const insertTextAtSelections = useCallback(
-    (view: EditorView, text: string) => {
-      const changes = view.state.changeByRange((range) => ({
-        changes: { from: range.from, to: range.to, insert: text },
-        range: EditorSelection.cursor(range.from + text.length),
-      }));
+    (text: string) => {
+      const editor = editorRef.current;
+      if (!editor || readOnly) {
+        return;
+      }
 
-      view.dispatch({
-        changes: changes.changes,
-        selection: changes.selection,
-        userEvent: "input.paste",
-      });
-      emitState(view, true);
+      const selections = editor.getSelections();
+      if (!selections || selections.length === 0) {
+        return;
+      }
+
+      editor.executeEdits(
+        "orbit-paste",
+        selections.map((selection) => ({
+          range: selection,
+          text,
+          forceMoveMarkers: true,
+        })),
+      );
+
+      emitState(true);
     },
-    [emitState],
+    [emitState, readOnly],
   );
 
   const executeClipboardAction = useCallback(
     async (action: "copy" | "cut" | "paste") => {
-      if (action !== "paste") {
-        document.execCommand(action);
+      if (action === "copy") {
+        runEditorAction("editor.action.clipboardCopyAction");
         return;
       }
 
-      const view = editorRef.current;
-      if (!view || readOnly) {
+      if (action === "cut") {
+        if (readOnly) {
+          return;
+        }
+
+        runEditorAction("editor.action.clipboardCutAction");
+        return;
+      }
+
+      if (readOnly) {
         return;
       }
 
       try {
         const text = await navigator.clipboard.readText();
         if (text.length > 0) {
-          insertTextAtSelections(view, text);
+          insertTextAtSelections(text);
           return;
         }
       } catch {
-        // Keep browser-native paste behavior when clipboard permissions deny access.
+        // Keep native paste fallback if clipboard permissions are blocked.
       }
 
-      document.execCommand("paste");
+      runEditorAction("editor.action.clipboardPasteAction");
     },
-    [insertTextAtSelections, readOnly],
+    [insertTextAtSelections, readOnly, runEditorAction],
   );
 
-  const lineNumberExtensions = useMemo(() => {
-    if (settings.lineNumbers === "off") {
-      return [];
-    }
-
-    return [
-      lineNumbers({
-        formatNumber: (lineNo, state) => {
-          if (settings.lineNumbers !== "relative") {
-            return String(lineNo);
-          }
-
-          const activeLine = state.doc.lineAt(state.selection.main.head).number;
-          if (lineNo === activeLine) {
-            return String(lineNo);
-          }
-
-          return String(Math.abs(lineNo - activeLine));
-        },
-      }),
-      highlightActiveLineGutter(),
-    ];
-  }, [settings.lineNumbers]);
-
-  const whitespaceExtensions = useMemo(() => {
-    if (settings.renderWhitespace === "none") {
-      return [];
-    }
-
-    if (settings.renderWhitespace === "boundary") {
-      return [highlightTrailingWhitespace()];
-    }
-
-    return [highlightWhitespace(), highlightTrailingWhitespace()];
-  }, [settings.renderWhitespace]);
-
-  const extensions = useMemo(() => {
-    const langExt = getLanguageExtension(filename);
-
-    return [
-      editorTheme,
-      editorHighlighting,
-      ...langExt,
-      ...lineNumberExtensions,
-      ...whitespaceExtensions,
-
-      indentUnit.of(
-        settings.insertSpaces ? " ".repeat(settings.tabSize) : "\t",
-      ),
-      indentOnInput(),
-      bracketMatching(),
-      closeBrackets(),
-      foldGutter(),
-      highlightActiveLine(),
-      highlightSelectionMatches(),
-      autocompletion(),
-      search({ top: true }),
-      drawSelection(),
-      dropCursor(),
-      rectangularSelection(),
-      indentationMarkers({
-        hideFirstIndent: true,
-        markerType: "codeOnly",
-        thickness: 1,
-      }),
-
-      settings.wordWrap ? EditorView.lineWrapping : [],
-
-      EditorView.theme({
-        "&": {
-          height: "100%",
-          fontSize: `${settings.fontSize}px`,
-        },
-        ".cm-editor": {
-          height: "100%",
-          overflow: "hidden",
-        },
-        ".cm-content": {
-          minHeight: "100%",
-          minWidth: settings.wordWrap ? "100%" : "max-content",
-        },
-      }),
-
-      keymap.of([...vscodeKeymap, indentWithTab]),
-
-      readOnly ? EditorView.editable.of(false) : [],
-    ];
-  }, [
-    filename,
-    lineNumberExtensions,
-    readOnly,
-    settings.fontSize,
-    settings.insertSpaces,
-    settings.tabSize,
-    settings.wordWrap,
-    whitespaceExtensions,
-  ]);
-
   const restoreInitialState = useCallback(
-    (view: EditorView) => {
-      if (!initialCursorState) {
-        emitState(view);
+    (editor: Monaco.editor.IStandaloneCodeEditor, monacoApi: typeof Monaco) => {
+      const model = editor.getModel();
+      if (!model) {
+        emitState();
         return;
       }
 
+      if (!initialCursorState) {
+        emitState();
+        return;
+      }
+
+      const maxOffset = model.getValueLength();
+
       const selections =
         initialCursorState.selections.length > 0
-          ? initialCursorState.selections.map((range) =>
-              EditorSelection.range(
-                clampPosition(view.state.doc, range.anchor),
-                clampPosition(view.state.doc, range.head),
-              ),
-            )
-          : [
-              EditorSelection.cursor(
-                positionFromLineCol(
-                  view.state.doc,
-                  initialCursorState.line,
-                  initialCursorState.col,
-                ),
-              ),
-            ];
+          ? initialCursorState.selections.map((range) => {
+              const anchor = model.getPositionAt(
+                clampOffset(range.anchor, maxOffset),
+              );
+              const head = model.getPositionAt(
+                clampOffset(range.head, maxOffset),
+              );
 
-      view.dispatch({
-        selection: EditorSelection.create(selections, 0),
-      });
+              return new monacoApi.Selection(
+                anchor.lineNumber,
+                anchor.column,
+                head.lineNumber,
+                head.column,
+              );
+            })
+          : (() => {
+              const line = Math.max(
+                1,
+                Math.min(initialCursorState.line, model.getLineCount()),
+              );
+              const col = Math.max(
+                1,
+                Math.min(initialCursorState.col, model.getLineMaxColumn(line)),
+              );
 
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          emitState(view);
-        });
-      });
+              return [new monacoApi.Selection(line, col, line, col)];
+            })();
+
+      editor.setSelections(selections);
+
+      const position = editor.getPosition();
+      if (position) {
+        editor.revealPositionInCenter(
+          position,
+          monacoApi.editor.ScrollType.Immediate,
+        );
+      }
+
+      emitState();
     },
     [emitState, initialCursorState],
   );
 
+  const handleMount = useCallback<OnMount>(
+    (editor, monacoApi) => {
+      editorRef.current = editor;
+
+      disposablesRef.current.forEach((disposable) => disposable.dispose());
+      disposablesRef.current = [
+        editor.onDidChangeCursorSelection(() => {
+          emitState(false);
+        }),
+        editor.onDidChangeModelContent(() => {
+          emitState(true);
+        }),
+        editor.onDidChangeModel(() => {
+          emitState(true);
+        }),
+      ];
+
+      restoreInitialState(editor, monacoApi);
+    },
+    [emitState, restoreInitialState],
+  );
+
+  const language = useMemo(() => getMonacoLanguage(filename), [filename]);
+
+  const options = useMemo<Monaco.editor.IStandaloneEditorConstructionOptions>(
+    () => ({
+      automaticLayout: true,
+      readOnly,
+      wordWrap: settings.wordWrap ? "on" : "off",
+      lineNumbers: settings.lineNumbers,
+      renderWhitespace: settings.renderWhitespace,
+      fontSize: settings.fontSize,
+      tabSize: settings.tabSize,
+      insertSpaces: settings.insertSpaces,
+      minimap: {
+        enabled: settings.minimap,
+        showSlider: "always",
+        renderCharacters: true,
+        autohide: "none",
+      },
+      scrollbar: {
+        alwaysConsumeMouseWheel: false,
+      },
+      smoothScrolling: true,
+      scrollBeyondLastLine: true,
+      cursorBlinking: "blink",
+      folding: true,
+      contextmenu: false,
+      quickSuggestions: {
+        other: true,
+        comments: true,
+        strings: true,
+      },
+      suggestOnTriggerCharacters: true,
+      guides: {
+        indentation: true,
+        highlightActiveIndentation: true,
+      },
+      formatOnPaste: true,
+      formatOnType: true,
+      glyphMargin: true,
+      links: true,
+    }),
+    [readOnly, settings],
+  );
+
+  const handleChange = useCallback(
+    (nextValue: string | undefined) => {
+      onChange(nextValue ?? "");
+    },
+    [onChange],
+  );
+
   return (
     <EditorContextMenu
-      onCut={() => executeClipboardAction("cut")}
-      onCopy={() => executeClipboardAction("copy")}
-      onPaste={() => executeClipboardAction("paste")}
-      onSelectAll={() => runEditorCommand(selectAll)}
-      onFind={() => runEditorCommand(openSearchPanel)}
-      onReplace={() => runEditorCommand(openSearchPanel)}
-      onGoToLine={() => runEditorCommand(gotoLine)}
-      onToggleLineComment={() => runEditorCommand(toggleComment)}
-      onToggleBlockComment={() => runEditorCommand(toggleBlockComment)}
-      onFold={() => runEditorCommand(foldCode)}
-      onUnfold={() => runEditorCommand(unfoldCode)}
-      onFormatDocument={() => {
-        // Formatting requires external formatter wiring by language.
+      onCut={() => {
+        void executeClipboardAction("cut");
       }}
+      onCopy={() => {
+        void executeClipboardAction("copy");
+      }}
+      onPaste={() => {
+        void executeClipboardAction("paste");
+      }}
+      onSelectAll={() => runEditorAction("editor.action.selectAll")}
+      onFind={() => runEditorAction("actions.find")}
+      onReplace={() => runEditorAction("editor.action.startFindReplaceAction")}
+      onGoToLine={() => runEditorAction("editor.action.gotoLine")}
+      onToggleLineComment={() => runEditorAction("editor.action.commentLine")}
+      onToggleBlockComment={() => runEditorAction("editor.action.blockComment")}
+      onFold={() => runEditorAction("editor.fold")}
+      onUnfold={() => runEditorAction("editor.unfold")}
+      onFormatDocument={() => runEditorAction("editor.action.formatDocument")}
     >
-      <div className="flex size-full overflow-hidden">
-        <div className="flex-1 h-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none">
-          <CodeMirror
-            value={value}
-            onChange={onChange}
-            extensions={extensions}
-            theme="none"
-            onCreateEditor={(view) => {
-              editorRef.current = view;
-              restoreInitialState(view);
-
-              requestAnimationFrame(() => {
-                view.requestMeasure();
-              });
-            }}
-            onUpdate={(update) => {
-              if (update.view !== editorRef.current) {
-                editorRef.current = update.view;
-              }
-
-              if (
-                update.docChanged ||
-                update.selectionSet ||
-                update.viewportChanged ||
-                update.geometryChanged
-              ) {
-                emitState(update.view, update.docChanged);
-              }
-            }}
-            basicSetup={{
-              lineNumbers: false,
-              highlightActiveLineGutter: false,
-              highlightActiveLine: false,
-              history: true,
-              drawSelection: false,
-              dropCursor: false,
-              allowMultipleSelections: true,
-              syntaxHighlighting: true,
-              defaultKeymap: false,
-              historyKeymap: false,
-              searchKeymap: false,
-              foldKeymap: false,
-              completionKeymap: false,
-              lintKeymap: false,
-              bracketMatching: false,
-              closeBrackets: false,
-              autocompletion: false,
-              crosshairCursor: false,
-              rectangularSelection: false,
-              highlightSelectionMatches: false,
-              closeBracketsKeymap: false,
-              foldGutter: false,
-              indentOnInput: false,
-              tabSize: settings.tabSize,
-            }}
-          />
-        </div>
+      <div className="size-full overflow-hidden">
+        <MonacoEditor
+          height="100%"
+          width="100%"
+          value={value}
+          language={language}
+          path={filename}
+          theme="vs-dark"
+          options={options}
+          onMount={handleMount}
+          onChange={handleChange}
+        />
       </div>
     </EditorContextMenu>
   );

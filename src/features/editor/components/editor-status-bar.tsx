@@ -6,6 +6,7 @@ import {
   IndentIncreaseIcon,
   TypeIcon,
   WrapTextIcon,
+  MapIcon,
 } from "lucide-react";
 
 import type { CursorState, EditorSettings } from "../store/use-editor-store";
@@ -110,6 +111,10 @@ export const EditorStatusBar = ({
   const toggleWordWrap = useCallback(() => {
     onUpdateSettings({ wordWrap: !settings.wordWrap });
   }, [onUpdateSettings, settings.wordWrap]);
+
+  const toggleMinimap = useCallback(() => {
+    onUpdateSettings({ minimap: !settings.minimap });
+  }, [onUpdateSettings, settings.minimap]);
 
   const toggleIndentType = useCallback(() => {
     onUpdateSettings({ insertSpaces: !settings.insertSpaces });
@@ -233,6 +238,15 @@ export const EditorStatusBar = ({
             : settings.wordWrap
               ? "Wrap"
               : "No Wrap"}
+        </StatusItem>
+
+        <StatusItem onClick={toggleMinimap} title="Toggle minimap">
+          <MapIcon className="size-3" />
+          {compactMode === "xs"
+            ? "Map"
+            : settings.minimap
+              ? "Minimap"
+              : "No Map"}
         </StatusItem>
 
         {/* Language */}

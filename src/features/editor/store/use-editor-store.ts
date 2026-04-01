@@ -33,6 +33,7 @@ const defaultTabState: TabState = {
 // ── Editor settings ─────────────────────────────────────────────
 export interface EditorSettings {
   wordWrap: boolean;
+  minimap: boolean;
   fontSize: number;
   tabSize: number;
   insertSpaces: boolean;
@@ -42,6 +43,7 @@ export interface EditorSettings {
 
 const defaultEditorSettings: EditorSettings = {
   wordWrap: false,
+  minimap: true,
   fontSize: 13,
   tabSize: 2,
   insertSpaces: true,
