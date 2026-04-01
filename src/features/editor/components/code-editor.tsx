@@ -91,6 +91,37 @@ const positionFromLineCol = (doc: Text, line: number, col: number) => {
 const getLineEnding = (text: string): "LF" | "CRLF" =>
   text.includes("\r\n") ? "CRLF" : "LF";
 
+const areSelectionsEqual = (
+  left: CursorState["selections"],
+  right: CursorState["selections"],
+) => {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every(
+    (range, index) =>
+      range.anchor === right[index]?.anchor &&
+      range.head === right[index]?.head,
+  );
+};
+
+const isCursorStateEqual = (left: CursorState, right: CursorState) =>
+  left.line === right.line &&
+  left.col === right.col &&
+  left.scrollTop === right.scrollTop &&
+  left.scrollLeft === right.scrollLeft &&
+  left.selectionCount === right.selectionCount &&
+  areSelectionsEqual(left.selections, right.selections);
+
+const isRuntimeMetaEqual = (
+  left: EditorRuntimeMeta,
+  right: EditorRuntimeMeta,
+) =>
+  left.totalLines === right.totalLines &&
+  left.lineEnding === right.lineEnding &&
+  left.language === right.language;
+
 export const CodeEditor = ({
   value,
   onChange,
@@ -102,9 +133,11 @@ export const CodeEditor = ({
   onMetaChange,
 }: CodeEditorProps) => {
   const editorRef = useRef<EditorView | null>(null);
+  const lastCursorStateRef = useRef<CursorState | null>(null);
+  const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
 
   const emitState = useCallback(
-    (view: EditorView) => {
+    (view: EditorView, docChanged = false) => {
       const mainHead = view.state.selection.main.head;
       const lineInfo = view.state.doc.lineAt(mainHead);
       const selections = view.state.selection.ranges.map((range) => ({
@@ -112,20 +145,41 @@ export const CodeEditor = ({
         head: range.head,
       }));
 
-      onCursorStateChange?.({
+      const nextCursorState: CursorState = {
         line: lineInfo.number,
         col: mainHead - lineInfo.from + 1,
         scrollTop: view.scrollDOM.scrollTop,
         scrollLeft: view.scrollDOM.scrollLeft,
         selectionCount: selections.length,
         selections,
-      });
+      };
 
-      onMetaChange?.({
+      if (
+        !lastCursorStateRef.current ||
+        !isCursorStateEqual(lastCursorStateRef.current, nextCursorState)
+      ) {
+        lastCursorStateRef.current = nextCursorState;
+        onCursorStateChange?.(nextCursorState);
+      }
+
+      if (!onMetaChange) {
+        return;
+      }
+
+      const previousMeta = lastMetaRef.current;
+      const nextMeta: EditorRuntimeMeta = {
         totalLines: view.state.doc.lines,
-        lineEnding: getLineEnding(view.state.doc.toString()),
+        lineEnding:
+          docChanged || !previousMeta
+            ? getLineEnding(view.state.doc.toString())
+            : previousMeta.lineEnding,
         language: getLanguageName(filename),
-      });
+      };
+
+      if (!previousMeta || !isRuntimeMetaEqual(previousMeta, nextMeta)) {
+        lastMetaRef.current = nextMeta;
+        onMetaChange(nextMeta);
+      }
     },
     [filename, onCursorStateChange, onMetaChange],
   );
@@ -140,11 +194,48 @@ export const CodeEditor = ({
     [emitState],
   );
 
-  const executeClipboardAction = useCallback(
-    (action: "copy" | "cut" | "paste") => {
-      document.execCommand(action);
+  const insertTextAtSelections = useCallback(
+    (view: EditorView, text: string) => {
+      const changes = view.state.changeByRange((range) => ({
+        changes: { from: range.from, to: range.to, insert: text },
+        range: EditorSelection.cursor(range.from + text.length),
+      }));
+
+      view.dispatch({
+        changes: changes.changes,
+        selection: changes.selection,
+        userEvent: "input.paste",
+      });
+      emitState(view, true);
     },
-    [],
+    [emitState],
+  );
+
+  const executeClipboardAction = useCallback(
+    async (action: "copy" | "cut" | "paste") => {
+      if (action !== "paste") {
+        document.execCommand(action);
+        return;
+      }
+
+      const view = editorRef.current;
+      if (!view || readOnly) {
+        return;
+      }
+
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text.length > 0) {
+          insertTextAtSelections(view, text);
+          return;
+        }
+      } catch {
+        // Fallback below keeps browser-native paste behavior when permissions deny clipboard read.
+      }
+
+      document.execCommand("paste");
+    },
+    [insertTextAtSelections, readOnly],
   );
 
   const lineNumberExtensions = useMemo(() => {
@@ -236,12 +327,26 @@ export const CodeEditor = ({
           minHeight: "100%",
           minWidth: settings.wordWrap ? "100%" : "max-content",
         },
+        ".cm-minimap-gutter": {
+          backgroundColor: "#0f0f0f !important",
+          borderLeft: "1px solid #242424",
+        },
+        ".cm-minimap-inner, .cm-minimap-inner canvas": {
+          backgroundColor: "#0f0f0f !important",
+        },
       }),
 
       settings.minimap
         ? showMinimap.of({
-            create: () => ({ dom: document.createElement("div") }),
-            displayText: "blocks",
+            create: (view) => {
+              const dom = view.dom.ownerDocument.createElement("div");
+              dom.style.height = "100%";
+              dom.style.background = "#0f0f0f";
+              dom.style.borderLeft = "1px solid #242424";
+              dom.style.overflow = "hidden";
+              return { dom };
+            },
+            displayText: "characters",
             showOverlay: "always",
           })
         : [],
@@ -317,7 +422,7 @@ export const CodeEditor = ({
         // Formatting requires external formatter wiring by language.
       }}
     >
-      <div className="size-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none">
+      <div className="size-full overflow-hidden min-h-0 [&_.cm-editor]:h-full [&_.cm-editor]:min-h-0 [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-auto!">
         <CodeMirror
           key={filename}
           value={value}
@@ -328,6 +433,9 @@ export const CodeEditor = ({
           onCreateEditor={(view) => {
             editorRef.current = view;
             restoreInitialState(view);
+            requestAnimationFrame(() => {
+              view.requestMeasure();
+            });
           }}
           onUpdate={(update) => {
             if (
@@ -336,7 +444,7 @@ export const CodeEditor = ({
               update.viewportChanged ||
               update.geometryChanged
             ) {
-              emitState(update.view);
+              emitState(update.view, update.docChanged);
             }
           }}
           basicSetup={{

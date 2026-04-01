@@ -5,22 +5,6 @@ import { api } from "../../../../convex/_generated/api";
 import { Doc, Id } from "../../../../convex/_generated/dataModel";
 import { patchProjectCaches } from "./use-projects";
 
-type UseFolderContentsArgs = {
-  projectId: Id<"projects">;
-  parentId?: Id<"files">;
-  enabled?: boolean;
-};
-
-export const useFolderContents = ({
-  projectId,
-  parentId,
-  enabled = true,
-}: UseFolderContentsArgs) =>
-  useQuery(
-    api.files.getFolderContents,
-    enabled ? { projectId, parentId } : "skip",
-  );
-
 export const useProjectFiles = ({
   projectId,
   enabled = true,
@@ -86,10 +70,7 @@ const updateProjectFiles = (
   );
 };
 
-const collectDescendantIds = (
-  files: Doc<"files">[],
-  rootId: Id<"files">,
-) => {
+const collectDescendantIds = (files: Doc<"files">[], rootId: Id<"files">) => {
   const idsToDelete = new Set<Id<"files">>([rootId]);
   let didExpand = true;
 
@@ -97,7 +78,11 @@ const collectDescendantIds = (
     didExpand = false;
 
     for (const file of files) {
-      if (file.parentId && idsToDelete.has(file.parentId) && !idsToDelete.has(file._id)) {
+      if (
+        file.parentId &&
+        idsToDelete.has(file.parentId) &&
+        !idsToDelete.has(file._id)
+      ) {
         idsToDelete.add(file._id);
         didExpand = true;
       }

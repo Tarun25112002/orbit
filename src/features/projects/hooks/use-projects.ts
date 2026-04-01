@@ -98,10 +98,14 @@ export const patchProjectCaches = (
     id: projectId,
   });
   if (existing) {
-    localStore.setQuery(api.projects.getById, { id: projectId }, {
-      ...existing,
-      ...patch,
-    });
+    localStore.setQuery(
+      api.projects.getById,
+      { id: projectId },
+      {
+        ...existing,
+        ...patch,
+      },
+    );
   }
 
   const allProjects = localStore.getQuery(api.projects.get, {});
@@ -164,26 +168,3 @@ export const useRenameProject = (projectId: Id<"projects">) =>
       name: args.name,
     });
   });
-
-export const useTouchProject = () =>
-  useMutation(api.projects.touch).withOptimisticUpdate((localStore, args) => {
-    patchProjectCaches(localStore, {
-      projectId: args.projectId,
-    });
-  });
-
-export const useStartGithubImport = () =>
-  useMutation(api.projects.startGithubImport).withOptimisticUpdate(
-    (localStore, args) => {
-      const existing = localStore.getQuery(api.projects.getById, {
-        id: args.projectId,
-      });
-      if (existing) {
-        localStore.setQuery(
-          api.projects.getById,
-          { id: args.projectId },
-          { ...existing, importStatus: "importing" as const },
-        );
-      }
-    },
-  );

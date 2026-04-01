@@ -41,12 +41,3 @@ export const orbit = inngest.createFunction(
     });
   },
 );
-
-export const orbitError = inngest.createFunction(
-  { id: "orbit-error", triggers: [{ event: "orbit/error" }] },
-  async ({ step }) => {
-    await step.run("fail", async () => {
-      throw new Error("Inngest error: Background job failed!");
-    });
-  },
-);
