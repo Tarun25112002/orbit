@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Allotment } from "allotment";
 import { useConvex } from "convex/react";
-import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
+import {
+  Clock3Icon,
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CloudIcon,
+  LoaderCircleIcon,
+  XIcon,
+} from "lucide-react";
 import type { Doc } from "../../../../convex/_generated/dataModel";
 
 import { cn } from "@/lib/utils";
@@ -736,6 +744,23 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     return new TextEncoder().encode(draftContent).length;
   }, [draftContent]);
 
+  const autoSaveStatus = autoSaveError
+    ? "error"
+    : isAutoSaving
+      ? "saving"
+      : isDirty
+        ? "pending"
+        : "saved";
+
+  const autoSaveStatusTitle =
+    autoSaveStatus === "error"
+      ? "Auto-save failed"
+      : autoSaveStatus === "saving"
+        ? "Auto-saving"
+        : autoSaveStatus === "pending"
+          ? "Waiting to auto-save"
+          : "Auto-saved";
+
   return (
     <div className="h-full flex flex-col">
       <nav className="h-8.75 flex items-center bg-sidebar border-b">
@@ -752,21 +777,42 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         <div className="ml-auto flex h-full items-center gap-2 px-2">
           {selectedFile?.type === "file" && (
             <Badge
-              variant={
-                autoSaveError
-                  ? "destructive"
-                  : isAutoSaving || isDirty
-                    ? "secondary"
-                    : "outline"
-              }
+              variant="outline"
+              className={cn(
+                "relative px-2.5 py-0.5 transition-colors",
+                autoSaveStatus === "error" &&
+                  "border-destructive/40 bg-destructive/10 text-destructive",
+                autoSaveStatus === "saving" &&
+                  "border-sky-500/40 bg-sky-500/10 text-sky-300",
+                autoSaveStatus === "pending" &&
+                  "border-amber-500/40 bg-amber-500/10 text-amber-300",
+                autoSaveStatus === "saved" &&
+                  "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
+              )}
+              title={autoSaveStatusTitle}
             >
-              {autoSaveError
-                ? "Auto-save failed"
-                : isAutoSaving
-                  ? "Auto-saving..."
-                  : isDirty
-                    ? "Pending changes"
-                    : "Auto-saved"}
+              <span className="relative inline-flex size-4 items-center justify-center">
+                {autoSaveStatus === "saving" && (
+                  <span className="absolute inset-0 animate-ping rounded-full border border-sky-400/60" />
+                )}
+                <CloudIcon
+                  className={cn(
+                    "relative z-10 size-4 transition-all",
+                    autoSaveStatus === "saving" && "scale-105",
+                    autoSaveStatus === "saved" &&
+                      "drop-shadow-[0_0_4px_rgba(16,185,129,0.45)]",
+                  )}
+                />
+                {autoSaveStatus === "error" ? (
+                  <XIcon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-destructive/20 p-0.5" />
+                ) : autoSaveStatus === "saving" ? (
+                  <LoaderCircleIcon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 animate-spin rounded-full bg-sky-500/20 p-0.5" />
+                ) : autoSaveStatus === "pending" ? (
+                  <Clock3Icon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-amber-500/20 p-0.5" />
+                ) : (
+                  <CheckIcon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-emerald-500/20 p-0.5" />
+                )}
+              </span>
             </Badge>
           )}
         </div>
