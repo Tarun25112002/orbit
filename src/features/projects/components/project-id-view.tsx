@@ -494,8 +494,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [cursorState, setCursorState] = useState<CursorState>({
     line: 1,
     col: 1,
-    scrollTop: 0,
-    scrollLeft: 0,
     selectionCount: 1,
     selections: [{ anchor: 0, head: 0 }],
   });
@@ -769,7 +767,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                     )}
 
                     {/* Editor content */}
-                    <div className="min-h-0 flex-1">
+                    <div className="min-h-0 flex-1 overflow-auto">
                       {!selectedFileId && <WelcomeTab />}
                       {selectedFileId && selectedFile === undefined && (
                         <div className="h-full w-full flex items-center justify-center">

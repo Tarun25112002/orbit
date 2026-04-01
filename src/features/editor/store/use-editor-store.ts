@@ -6,8 +6,6 @@ import { Id } from "../../../../convex/_generated/dataModel";
 export interface CursorState {
   line: number;
   col: number;
-  scrollTop: number;
-  scrollLeft: number;
   selectionCount: number;
   selections: Array<{ anchor: number; head: number }>;
 }
@@ -15,8 +13,6 @@ export interface CursorState {
 const defaultCursorState: CursorState = {
   line: 1,
   col: 1,
-  scrollTop: 0,
-  scrollLeft: 0,
   selectionCount: 1,
   selections: [{ anchor: 0, head: 0 }],
 };
@@ -37,7 +33,6 @@ const defaultTabState: TabState = {
 // ── Editor settings ─────────────────────────────────────────────
 export interface EditorSettings {
   wordWrap: boolean;
-  minimap: boolean;
   fontSize: number;
   tabSize: number;
   insertSpaces: boolean;
@@ -47,7 +42,6 @@ export interface EditorSettings {
 
 const defaultEditorSettings: EditorSettings = {
   wordWrap: false,
-  minimap: true,
   fontSize: 13,
   tabSize: 2,
   insertSpaces: true,

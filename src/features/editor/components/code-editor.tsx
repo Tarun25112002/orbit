@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { EditorSelection, type Text } from "@codemirror/state";
 import {
@@ -13,7 +13,6 @@ import {
   highlightWhitespace,
   lineNumbers,
   rectangularSelection,
-  scrollPastEnd,
   keymap,
 } from "@codemirror/view";
 import {
@@ -50,11 +49,9 @@ import {
 } from "../utils/language-detection";
 import { editorTheme, editorHighlighting } from "../utils/editor-theme";
 import { EditorContextMenu } from "./editor-context-menu";
-import { EditorMinimap } from "./editor-minimap";
 
 const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
-  minimap: true,
   fontSize: 13,
   tabSize: 2,
   insertSpaces: true,
@@ -91,23 +88,6 @@ const positionFromLineCol = (doc: Text, line: number, col: number) => {
 const getLineEnding = (text: string): "LF" | "CRLF" =>
   text.includes("\r\n") ? "CRLF" : "LF";
 
-const normalizeWheelDelta = (
-  delta: number,
-  deltaMode: number,
-  lineHeight: number,
-  pageHeight: number,
-) => {
-  if (deltaMode === 1) {
-    return delta * lineHeight;
-  }
-
-  if (deltaMode === 2) {
-    return delta * pageHeight;
-  }
-
-  return delta;
-};
-
 const areSelectionsEqual = (
   left: CursorState["selections"],
   right: CursorState["selections"],
@@ -126,8 +106,6 @@ const areSelectionsEqual = (
 const isCursorStateEqual = (left: CursorState, right: CursorState) =>
   left.line === right.line &&
   left.col === right.col &&
-  left.scrollTop === right.scrollTop &&
-  left.scrollLeft === right.scrollLeft &&
   left.selectionCount === right.selectionCount &&
   areSelectionsEqual(left.selections, right.selections);
 
@@ -150,9 +128,6 @@ export const CodeEditor = ({
   onMetaChange,
 }: CodeEditorProps) => {
   const editorRef = useRef<EditorView | null>(null);
-  const [editorView, setEditorView] = useState<EditorView | null>(null);
-  const detachNativeWheelRef = useRef<(() => void) | null>(null);
-  const wheelCarryRef = useRef({ x: 0, y: 0 });
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
 
@@ -168,8 +143,6 @@ export const CodeEditor = ({
       const nextCursorState: CursorState = {
         line: lineInfo.number,
         col: mainHead - lineInfo.from + 1,
-        scrollTop: view.scrollDOM.scrollTop,
-        scrollLeft: view.scrollDOM.scrollLeft,
         selectionCount: selections.length,
         selections,
       };
@@ -212,110 +185,6 @@ export const CodeEditor = ({
       emitState(view);
     },
     [emitState],
-  );
-
-  const applyWheelScroll = useCallback(
-    ({
-      view,
-      deltaX,
-      deltaY,
-      deltaMode,
-      shiftKey,
-    }: {
-      view: EditorView;
-      deltaX: number;
-      deltaY: number;
-      deltaMode: number;
-      shiftKey: boolean;
-    }) => {
-      const scroller = view.scrollDOM;
-      const previousScrollTop = scroller.scrollTop;
-      const previousScrollLeft = scroller.scrollLeft;
-
-      const lineHeightStyle = window.getComputedStyle(
-        view.contentDOM,
-      ).lineHeight;
-      const parsedLineHeight = Number.parseFloat(lineHeightStyle);
-      const lineHeight = Number.isFinite(parsedLineHeight)
-        ? parsedLineHeight
-        : settings.fontSize * 1.6;
-      const pageHeight = Math.max(scroller.clientHeight, lineHeight * 8);
-
-      const pixelDeltaY = normalizeWheelDelta(
-        deltaY,
-        deltaMode,
-        lineHeight,
-        pageHeight,
-      );
-      const pixelDeltaX = normalizeWheelDelta(
-        deltaX,
-        deltaMode,
-        lineHeight,
-        pageHeight,
-      );
-      const horizontalDeltaRaw =
-        shiftKey && pixelDeltaX === 0 ? pixelDeltaY : pixelDeltaX;
-      const verticalDeltaRaw = shiftKey && pixelDeltaX === 0 ? 0 : pixelDeltaY;
-
-      const xWithCarry = wheelCarryRef.current.x + horizontalDeltaRaw;
-      const yWithCarry = wheelCarryRef.current.y + verticalDeltaRaw;
-
-      const horizontalDelta =
-        xWithCarry > 0 ? Math.floor(xWithCarry) : Math.ceil(xWithCarry);
-      const verticalDelta =
-        yWithCarry > 0 ? Math.floor(yWithCarry) : Math.ceil(yWithCarry);
-
-      wheelCarryRef.current.x = xWithCarry - horizontalDelta;
-      wheelCarryRef.current.y = yWithCarry - verticalDelta;
-
-      if (verticalDelta !== 0) {
-        scroller.scrollTop += verticalDelta;
-      }
-
-      if (horizontalDelta !== 0) {
-        scroller.scrollLeft += horizontalDelta;
-      }
-
-      return (
-        previousScrollTop !== scroller.scrollTop ||
-        previousScrollLeft !== scroller.scrollLeft
-      );
-    },
-    [settings.fontSize],
-  );
-
-  const attachNativeWheelListener = useCallback(
-    (view: EditorView) => {
-      detachNativeWheelRef.current?.();
-
-      const handleNativeWheel = (event: WheelEvent) => {
-        if (event.defaultPrevented) {
-          return;
-        }
-
-        const didScroll = applyWheelScroll({
-          view,
-          deltaX: event.deltaX,
-          deltaY: event.deltaY,
-          deltaMode: event.deltaMode,
-          shiftKey: event.shiftKey,
-        });
-
-        if (didScroll) {
-          event.preventDefault();
-        }
-      };
-
-      view.scrollDOM.addEventListener("wheel", handleNativeWheel, {
-        passive: false,
-      });
-
-      detachNativeWheelRef.current = () => {
-        view.scrollDOM.removeEventListener("wheel", handleNativeWheel);
-        detachNativeWheelRef.current = null;
-      };
-    },
-    [applyWheelScroll],
   );
 
   const insertTextAtSelections = useCallback(
@@ -422,7 +291,6 @@ export const CodeEditor = ({
       drawSelection(),
       dropCursor(),
       rectangularSelection(),
-      scrollPastEnd(),
       indentationMarkers({
         hideFirstIndent: true,
         markerType: "codeOnly",
@@ -439,13 +307,6 @@ export const CodeEditor = ({
         ".cm-editor": {
           height: "100%",
           overflow: "hidden",
-        },
-        ".cm-scroller": {
-          height: "100%",
-          overflow: "auto",
-          overscrollBehavior: "contain",
-          scrollbarGutter: "stable",
-          WebkitOverflowScrolling: "touch",
         },
         ".cm-content": {
           minHeight: "100%",
@@ -499,35 +360,12 @@ export const CodeEditor = ({
 
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          const maxScrollTop = Math.max(
-            0,
-            view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight,
-          );
-          const maxScrollLeft = Math.max(
-            0,
-            view.scrollDOM.scrollWidth - view.scrollDOM.clientWidth,
-          );
-
-          view.scrollDOM.scrollTop = Math.min(
-            Math.max(0, initialCursorState.scrollTop),
-            maxScrollTop,
-          );
-          view.scrollDOM.scrollLeft = Math.min(
-            Math.max(0, initialCursorState.scrollLeft),
-            maxScrollLeft,
-          );
           emitState(view);
         });
       });
     },
     [emitState, initialCursorState],
   );
-
-  useEffect(() => {
-    return () => {
-      detachNativeWheelRef.current?.();
-    };
-  }, []);
 
   return (
     <EditorContextMenu
@@ -547,7 +385,7 @@ export const CodeEditor = ({
       }}
     >
       <div className="flex size-full overflow-hidden">
-        <div className="flex-1 h-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none [&_.cm-scroller]:overflow-auto">
+        <div className="flex-1 h-full overflow-hidden [&_.cm-editor]:h-full [&_.cm-editor]:outline-none">
           <CodeMirror
             value={value}
             onChange={onChange}
@@ -555,8 +393,6 @@ export const CodeEditor = ({
             theme="none"
             onCreateEditor={(view) => {
               editorRef.current = view;
-              setEditorView(view);
-              attachNativeWheelListener(view);
               restoreInitialState(view);
 
               requestAnimationFrame(() => {
@@ -566,8 +402,6 @@ export const CodeEditor = ({
             onUpdate={(update) => {
               if (update.view !== editorRef.current) {
                 editorRef.current = update.view;
-                setEditorView(update.view);
-                attachNativeWheelListener(update.view);
               }
 
               if (
@@ -607,13 +441,6 @@ export const CodeEditor = ({
             }}
           />
         </div>
-
-        {settings.minimap ? (
-          <EditorMinimap
-            code={value}
-            editorElement={editorView ? editorView.scrollDOM : null}
-          />
-        ) : null}
       </div>
     </EditorContextMenu>
   );

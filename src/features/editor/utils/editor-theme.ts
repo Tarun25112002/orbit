@@ -161,57 +161,12 @@ export const editorTheme: Extension = EditorView.theme(
         display: "none",
       },
     },
-    ".cm-scroller": {
-      lineHeight: "20px",
-      overflowY: "auto",
-      overflowX: "auto",
-      overscrollBehavior: "contain",
-      scrollbarGutter: "stable",
-      "&::-webkit-scrollbar": {
-        width: "14px",
-        height: "14px",
-      },
-      "&::-webkit-scrollbar-track": {
-        backgroundColor: "#1a1a1a",
-      },
-      "&::-webkit-scrollbar-thumb": {
-        backgroundColor: "#4b4b4b",
-        borderRadius: "7px",
-        border: "3px solid #1a1a1a",
-      },
-      "&::-webkit-scrollbar-thumb:hover": {
-        backgroundColor: "#646464",
-      },
-    },
     ".cm-indent-markers::before": {
       borderColor: "#2f3440",
     },
     ".cm-indent-markers-active::before": {
       borderColor: "#4a90e2",
     },
-    ".cm-minimap-gutter": {
-      backgroundColor: "#1f1f1f",
-      borderLeft: "1px solid #2b2b2b",
-      width: "120px",
-    },
-    ".cm-minimap-inner": {
-      background: "linear-gradient(180deg, #1f1f1f 0%, #1b1b1b 100%)",
-    },
-    ".cm-minimap-inner canvas": {
-      filter: "saturate(1.25) contrast(1.08)",
-      opacity: "0.95",
-    },
-    ".cm-minimap-overlay": {
-      background: "rgba(128, 138, 158, 0.22) !important",
-      border: "1px solid rgba(173, 216, 255, 0.25)",
-      boxSizing: "border-box",
-      backdropFilter: "blur(1px)",
-    },
-    ".cm-minimap-overlay-container.cm-minimap-overlay-active .cm-minimap-overlay":
-      {
-        background: "rgba(107, 163, 255, 0.28) !important",
-        borderColor: "rgba(156, 201, 255, 0.35)",
-      },
   },
   { dark: true },
 );
