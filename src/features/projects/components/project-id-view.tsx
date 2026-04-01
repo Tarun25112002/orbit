@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Allotment } from "allotment";
-import { useConvex } from "convex/react";
+import { useConvex, useConvexConnectionState } from "convex/react";
 import {
   Clock3Icon,
   CheckIcon,
@@ -527,6 +527,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const projectFiles = useProjectFiles({ projectId });
   const updateFile = useUpdateFile();
   const convex = useConvex();
+  const connectionState = useConvexConnectionState();
+  const isBackendConnected = connectionState.isWebSocketConnected;
   const autoSaveDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -633,6 +635,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   }, [selectedFileId, selectedFile, close]);
 
   useEffect(() => {
+    if (selectedFile === undefined) {
+      // Preserve local draft/autosave state while backend query is reconnecting.
+      return;
+    }
+
     if (selectedFile?.type === "file") {
       const content = selectedFile.content ?? "";
       const isNewFile = hydratedFileIdRef.current !== selectedFile._id;
@@ -652,14 +659,21 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       setLastSavedContent("");
       setAutoSaveError(null);
     }
-  }, [selectedFile?._id, selectedFile?.content, selectedFile?.type]);
+  }, [selectedFile]);
+
+  const hasEditableFileInSession =
+    selectedFile?.type === "file" ||
+    (selectedFile === undefined &&
+      !!selectedFileId &&
+      hydratedFileIdRef.current === selectedFileId);
 
   const isDirty = useMemo(() => {
-    if (!selectedFile || selectedFile.type !== "file") {
+    if (!hasEditableFileInSession) {
       return false;
     }
+
     return draftContent !== lastSavedContent;
-  }, [selectedFile, draftContent, lastSavedContent]);
+  }, [draftContent, hasEditableFileInSession, lastSavedContent]);
 
   useEffect(() => {
     draftContentRef.current = draftContent;
@@ -766,11 +780,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const selectedEditableFileId =
     selectedFile?.type === "file"
       ? selectedFile._id
-      : selectedFile === null ||
-          selectedFile?.type === "folder" ||
-          !selectedFileId
-        ? null
-        : selectedEditableFileIdRef.current;
+      : selectedFile === undefined
+        ? hydratedFileIdRef.current === selectedFileId
+          ? selectedEditableFileIdRef.current
+          : null
+        : selectedFile === null ||
+            selectedFile?.type === "folder" ||
+            !selectedFileId
+          ? null
+          : selectedEditableFileIdRef.current;
 
   useEffect(() => {
     selectedEditableFileIdRef.current = selectedEditableFileId;
@@ -809,6 +827,23 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     };
   }, [clearAutoSaveRetry, draftContent, isDirty, selectedEditableFileId]);
 
+  useEffect(() => {
+    if (!isBackendConnected) {
+      return;
+    }
+
+    const fileId = selectedEditableFileIdRef.current;
+    if (!fileId || !isDirtyRef.current || saveInFlightRef.current) {
+      return;
+    }
+
+    if (autoSaveDebounceRef.current || autoSaveRetryRef.current) {
+      return;
+    }
+
+    void persistFileContentRef.current(fileId, draftContentRef.current);
+  }, [isBackendConnected]);
+
   // Get initial cursor state for current file
   const initialCursorState = useMemo(() => {
     if (!selectedFileId) return undefined;
@@ -832,22 +867,28 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     return new TextEncoder().encode(draftContent).length;
   }, [draftContent]);
 
+  const isOfflineWithUnsavedChanges = isDirty && !isBackendConnected;
+
   const autoSaveStatus = autoSaveError
     ? "error"
-    : isAutoSaving
-      ? "saving"
-      : isDirty
-        ? "pending"
-        : "saved";
+    : isOfflineWithUnsavedChanges
+      ? "offline"
+      : isAutoSaving
+        ? "saving"
+        : isDirty
+          ? "pending"
+          : "saved";
 
   const autoSaveStatusTitle =
     autoSaveStatus === "error"
       ? "Auto-save failed"
-      : autoSaveStatus === "saving"
-        ? "Auto-saving"
-        : autoSaveStatus === "pending"
-          ? "Waiting to auto-save"
-          : "Auto-saved";
+      : autoSaveStatus === "offline"
+        ? "Disconnected from backend. Will save when reconnected"
+        : autoSaveStatus === "saving"
+          ? "Auto-saving"
+          : autoSaveStatus === "pending"
+            ? "Waiting to auto-save"
+            : "Auto-saved";
 
   return (
     <div className="h-full flex flex-col">
@@ -863,13 +904,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           onClick={() => setActiveView("preview")}
         />
         <div className="ml-auto flex h-full items-center gap-2 px-2">
-          {selectedFile?.type === "file" && (
+          {selectedEditableFileId && (
             <Badge
               variant="outline"
               className={cn(
                 "relative px-2.5 py-0.5 transition-colors",
                 autoSaveStatus === "error" &&
                   "border-destructive/40 bg-destructive/10 text-destructive",
+                autoSaveStatus === "offline" &&
+                  "border-zinc-500/40 bg-zinc-500/10 text-zinc-300",
                 autoSaveStatus === "saving" &&
                   "border-sky-500/40 bg-sky-500/10 text-sky-300",
                 autoSaveStatus === "pending" &&
@@ -893,6 +936,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                 />
                 {autoSaveStatus === "error" ? (
                   <XIcon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-destructive/20 p-0.5" />
+                ) : autoSaveStatus === "offline" ? (
+                  <Clock3Icon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-zinc-500/20 p-0.5" />
                 ) : autoSaveStatus === "saving" ? (
                   <LoaderCircleIcon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 animate-spin rounded-full bg-sky-500/20 p-0.5" />
                 ) : autoSaveStatus === "pending" ? (
