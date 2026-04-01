@@ -363,6 +363,24 @@ export const CodeEditor = ({
         editor.onDidChangeModel(() => {
           emitState(true);
         }),
+        editor.onMouseDown((event) => {
+          if (
+            event.target.type !==
+            monacoApi.editor.MouseTargetType.GUTTER_LINE_NUMBERS
+          ) {
+            return;
+          }
+
+          const lineNumber = event.target.position?.lineNumber;
+          if (!lineNumber) {
+            return;
+          }
+
+          editor.setPosition({ lineNumber, column: 1 });
+          editor.revealLineInCenterIfOutsideViewport(lineNumber);
+          editor.focus();
+          emitState(false);
+        }),
       ];
 
       restoreInitialState(editor, monacoApi);
@@ -380,6 +398,7 @@ export const CodeEditor = ({
       lineNumbers: settings.lineNumbers,
       renderWhitespace: settings.renderWhitespace,
       fontSize: settings.fontSize,
+      lineHeight: Math.max(18, Math.round(settings.fontSize * 1.6)),
       tabSize: settings.tabSize,
       insertSpaces: settings.insertSpaces,
       minimap: {
