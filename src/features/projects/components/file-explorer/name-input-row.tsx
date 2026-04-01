@@ -37,7 +37,7 @@ const getNameValidationError = (
     }
 
     if (segments.some((segment) => segment === "." || segment === "..")) {
-      return "Path segments cannot be \".\" or \"..\".";
+      return 'Path segments cannot be "." or "..".';
     }
   }
 
@@ -104,9 +104,7 @@ export const NameInputRow = ({
       await onSubmit(nextValue);
     } catch (submitError) {
       isSubmittingRef.current = false;
-      setError(
-        getErrorMessage(submitError, `Unable to ${mode} this ${type}.`),
-      );
+      setError(getErrorMessage(submitError, `Unable to ${mode} this ${type}.`));
       setIsSubmitting(false);
     }
   };
@@ -114,7 +112,10 @@ export const NameInputRow = ({
   return (
     <div className="relative">
       {guideOffsets.length > 0 && (
-        <div aria-hidden className="pointer-events-none absolute inset-y-0 left-0">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0"
+        >
           {guideOffsets.map((offset) => (
             <span
               key={offset}
@@ -125,7 +126,7 @@ export const NameInputRow = ({
         </div>
       )}
       <div
-        className="relative flex h-6 items-center gap-1 rounded-md border border-border/60 bg-accent/35 pr-1 text-foreground shadow-[inset_1px_0_0_theme(colors.ring)]"
+        className="relative flex h-6 items-center gap-1 rounded-md border border-border/60 bg-accent/35 pr-1 text-foreground shadow-[inset_1px_0_0_var(--color-ring)]"
         style={{ paddingLeft: getItemPadding(level, type === "file") }}
       >
         <div className="flex items-center gap-0.5">

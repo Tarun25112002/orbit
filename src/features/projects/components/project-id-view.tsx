@@ -190,13 +190,13 @@ const EditorTabStrip = ({
   }
 
   return (
-    <div className="relative flex h-[35px] items-end border-b border-[#252526] bg-[#252526]">
+    <div className="relative flex h-8.75 items-end border-b border-[#252526] bg-[#252526]">
       {/* Left scroll button */}
       {canScrollLeft && (
         <button
           type="button"
           onClick={() => scroll("left")}
-          className="absolute left-0 z-10 flex h-full w-6 items-center justify-center bg-gradient-to-r from-[#252526] to-transparent text-[#858585] hover:text-[#cccccc]"
+          className="absolute left-0 z-10 flex h-full w-6 items-center justify-center bg-linear-to-r from-[#252526] to-transparent text-[#858585] hover:text-[#cccccc]"
           aria-label="Scroll tabs left"
         >
           <ChevronLeftIcon className="size-3.5" />
@@ -220,7 +220,7 @@ const EditorTabStrip = ({
               onMouseDown={(e) => handleMouseDown(e, tab.id)}
               onContextMenu={(e) => handleContextMenu(e, tab.id)}
               className={cn(
-                "group relative flex h-[35px] w-[160px] shrink-0 items-center gap-1.5 border-r border-[#252526] px-2.5",
+                "group relative flex h-8.75 w-40 shrink-0 items-center gap-1.5 border-r border-[#252526] px-2.5",
                 isActive
                   ? "bg-[#1e1e1e] text-[#ffffff]"
                   : "bg-[#2d2d2d] text-[#969696] hover:bg-[#2d2d2dee]",
@@ -228,7 +228,7 @@ const EditorTabStrip = ({
             >
               {/* Active tab top border accent */}
               {isActive && (
-                <div className="absolute top-0 left-0 right-0 h-[1px] bg-[#007acc]" />
+                <div className="absolute top-0 left-0 right-0 h-px bg-[#007acc]" />
               )}
 
               {/* File-type icon */}
@@ -252,7 +252,7 @@ const EditorTabStrip = ({
                   e.stopPropagation();
                   onClose(tab.id);
                 }}
-                className="shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-70 hover:!opacity-100 hover:bg-[#ffffff15]"
+                className="shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-70 hover:opacity-100! hover:bg-[#ffffff15]"
                 aria-label={`Close ${tab.label}`}
               >
                 <XIcon className="size-3.5" />
@@ -267,7 +267,7 @@ const EditorTabStrip = ({
         <button
           type="button"
           onClick={() => scroll("right")}
-          className="absolute right-0 z-10 flex h-full w-6 items-center justify-center bg-gradient-to-l from-[#252526] to-transparent text-[#858585] hover:text-[#cccccc]"
+          className="absolute right-0 z-10 flex h-full w-6 items-center justify-center bg-linear-to-l from-[#252526] to-transparent text-[#858585] hover:text-[#cccccc]"
           aria-label="Scroll tabs right"
         >
           <ChevronRightIcon className="size-3.5" />
@@ -277,7 +277,7 @@ const EditorTabStrip = ({
       {/* Context menu */}
       {contextMenu && (
         <div
-          className="fixed z-50 min-w-[180px] rounded-md border border-[#454545] bg-[#252526] py-1 shadow-lg"
+          className="fixed z-50 min-w-45 rounded-md border border-[#454545] bg-[#252526] py-1 shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           {[
@@ -394,7 +394,7 @@ const BreadcrumbSegment = ({
             type={isLast ? ancestor.type : "folder"}
             name={ancestor.name}
             isOpen={!isLast}
-            className="!size-3.5"
+            className="size-3.5!"
           />
         </span>
         <span className="text-[11px]">{ancestor.name}</span>
@@ -428,7 +428,7 @@ const BreadcrumbSegment = ({
                 <ItemIcon
                   type={item.type}
                   name={item.name}
-                  className="!size-4"
+                  className="size-4!"
                 />
               </span>
               <span className="min-w-0 truncate">{item.name}</span>
@@ -458,7 +458,7 @@ const BreadcrumbBar = ({
 
   return (
     <div
-      className="flex h-[22px] items-center gap-0.5 border-b border-[#2d2d2d] bg-[#1e1e1e] px-2 overflow-x-auto scrollbar-none"
+      className="flex h-5.5 items-center gap-0.5 border-b border-[#2d2d2d] bg-[#1e1e1e] px-2 overflow-x-auto scrollbar-none"
       style={{ scrollbarWidth: "none" }}
     >
       {ancestors.map((ancestor, index) => {
@@ -553,6 +553,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   // Save cursor state before switching tabs
   const previousFileIdRef = useRef<Id<"files"> | null>(null);
   const hydratedFileIdRef = useRef<Id<"files"> | null>(null);
+  const activeFileIdRef = useRef<Id<"files"> | null>(null);
 
   const handleActivateTab = (fileId: Id<"files">) => {
     if (fileId !== selectedFileId) {
@@ -570,6 +571,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   // Track the active file for cursor state saving
   useEffect(() => {
     previousFileIdRef.current = selectedFileId;
+    activeFileIdRef.current = selectedFileId;
   }, [selectedFileId]);
 
   const handlePinTab = (fileId: Id<"files">) => {
@@ -658,7 +660,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           content,
         });
 
-        if (isMountedRef.current && selectedFileId === fileId) {
+        if (isMountedRef.current && activeFileIdRef.current === fileId) {
           setLastSavedContent(content);
         }
       } catch (error) {
@@ -673,7 +675,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         }
       }
     },
-    [selectedFileId, updateFile],
+    [updateFile],
   );
 
   function flushPendingAutoSave() {
