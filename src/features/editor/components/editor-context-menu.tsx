@@ -14,6 +14,12 @@ interface EditorContextMenuProps {
   onCut: () => void;
   onCopy: () => void;
   onPaste: () => void;
+  onCommandPalette: () => void;
+  onGoToSymbol: () => void;
+  onGoToDefinition: () => void;
+  onPeekDefinition: () => void;
+  onRenameSymbol: () => void;
+  onQuickFix: () => void;
   onSelectAll: () => void;
   onFind: () => void;
   onReplace: () => void;
@@ -30,6 +36,12 @@ export const EditorContextMenu = ({
   onCut,
   onCopy,
   onPaste,
+  onCommandPalette,
+  onGoToSymbol,
+  onGoToDefinition,
+  onPeekDefinition,
+  onRenameSymbol,
+  onQuickFix,
   onSelectAll,
   onFind,
   onReplace,
@@ -63,6 +75,10 @@ export const EditorContextMenu = ({
           Select All
           <ContextMenuShortcut>Ctrl+A</ContextMenuShortcut>
         </ContextMenuItem>
+        <ContextMenuItem onClick={onCommandPalette}>
+          Command Palette
+          <ContextMenuShortcut>F1</ContextMenuShortcut>
+        </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onClick={onFind}>
           Find
@@ -75,6 +91,26 @@ export const EditorContextMenu = ({
         <ContextMenuItem onClick={onGoToLine}>
           Go to Line
           <ContextMenuShortcut>Ctrl+G</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onGoToSymbol}>
+          Go to Symbol
+          <ContextMenuShortcut>Ctrl+Shift+O</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onGoToDefinition}>
+          Go to Definition
+          <ContextMenuShortcut>F12</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onPeekDefinition}>
+          Peek Definition
+          <ContextMenuShortcut>Alt+F12</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onRenameSymbol}>
+          Rename Symbol
+          <ContextMenuShortcut>F2</ContextMenuShortcut>
+        </ContextMenuItem>
+        <ContextMenuItem onClick={onQuickFix}>
+          Quick Fix
+          <ContextMenuShortcut>Ctrl+.</ContextMenuShortcut>
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onClick={onToggleLineComment}>

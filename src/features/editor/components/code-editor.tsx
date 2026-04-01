@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import MonacoEditor, { type OnMount } from "@monaco-editor/react";
+import MonacoEditor, {
+  type BeforeMount,
+  type OnMount,
+} from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 
 import {
@@ -301,6 +304,50 @@ export const CodeEditor = ({
     [emitState, initialCursorState],
   );
 
+  const handleBeforeMount = useCallback<BeforeMount>((monacoApi) => {
+    const compilerOptions = {
+      target: monacoApi.languages.typescript.ScriptTarget.ESNext,
+      module: monacoApi.languages.typescript.ModuleKind.ESNext,
+      moduleResolution:
+        monacoApi.languages.typescript.ModuleResolutionKind.NodeJs,
+      jsx: monacoApi.languages.typescript.JsxEmit.ReactJSX,
+      allowNonTsExtensions: true,
+      allowJs: true,
+      checkJs: false,
+      strict: false,
+      noEmit: true,
+      skipLibCheck: true,
+      resolveJsonModule: true,
+      isolatedModules: true,
+      allowSyntheticDefaultImports: true,
+      esModuleInterop: true,
+      lib: ["esnext", "dom", "dom.iterable"],
+    };
+
+    const diagnosticsOptions = {
+      noSemanticValidation: false,
+      noSyntaxValidation: false,
+      noSuggestionDiagnostics: false,
+    };
+
+    monacoApi.languages.typescript.typescriptDefaults.setEagerModelSync(true);
+    monacoApi.languages.typescript.javascriptDefaults.setEagerModelSync(true);
+
+    monacoApi.languages.typescript.typescriptDefaults.setCompilerOptions(
+      compilerOptions,
+    );
+    monacoApi.languages.typescript.javascriptDefaults.setCompilerOptions(
+      compilerOptions,
+    );
+
+    monacoApi.languages.typescript.typescriptDefaults.setDiagnosticsOptions(
+      diagnosticsOptions,
+    );
+    monacoApi.languages.typescript.javascriptDefaults.setDiagnosticsOptions(
+      diagnosticsOptions,
+    );
+  }, []);
+
   const handleMount = useCallback<OnMount>(
     (editor, monacoApi) => {
       editorRef.current = editor;
@@ -340,25 +387,65 @@ export const CodeEditor = ({
         showSlider: "always",
         renderCharacters: true,
         autohide: "none",
+        side: "right",
+        maxColumn: 140,
+        size: "proportional",
+        scale: 1,
       },
       scrollbar: {
         alwaysConsumeMouseWheel: false,
+        useShadows: false,
+        verticalScrollbarSize: 12,
+        horizontalScrollbarSize: 12,
       },
       smoothScrolling: true,
       scrollBeyondLastLine: true,
+      scrollBeyondLastColumn: 4,
       cursorBlinking: "blink",
+      cursorSmoothCaretAnimation: "on",
+      cursorSurroundingLines: 2,
       folding: true,
       contextmenu: false,
+      dragAndDrop: true,
+      mouseWheelZoom: true,
+      multiCursorModifier: "alt",
+      autoClosingBrackets: "languageDefined",
+      autoClosingQuotes: "languageDefined",
+      autoClosingDelete: "auto",
+      autoClosingOvertype: "auto",
+      autoSurround: "languageDefined",
+      tabCompletion: "on",
       quickSuggestions: {
         other: true,
         comments: true,
         strings: true,
       },
       suggestOnTriggerCharacters: true,
+      suggestSelection: "first",
+      acceptSuggestionOnEnter: "smart",
+      snippetSuggestions: "inline",
+      wordBasedSuggestions: "currentDocument",
+      inlayHints: {
+        enabled: "on",
+      },
       guides: {
         indentation: true,
         highlightActiveIndentation: true,
+        bracketPairs: true,
+        bracketPairsHorizontal: true,
       },
+      bracketPairColorization: {
+        enabled: true,
+        independentColorPoolPerBracketType: true,
+      },
+      stickyScroll: {
+        enabled: true,
+      },
+      matchBrackets: "always",
+      renderLineHighlight: "all",
+      renderLineHighlightOnlyWhenFocus: false,
+      selectionHighlight: true,
+      occurrencesHighlight: "singleFile",
       formatOnPaste: true,
       formatOnType: true,
       glyphMargin: true,
@@ -385,6 +472,12 @@ export const CodeEditor = ({
       onPaste={() => {
         void executeClipboardAction("paste");
       }}
+      onCommandPalette={() => runEditorAction("editor.action.quickCommand")}
+      onGoToSymbol={() => runEditorAction("editor.action.quickOutline")}
+      onGoToDefinition={() => runEditorAction("editor.action.revealDefinition")}
+      onPeekDefinition={() => runEditorAction("editor.action.peekDefinition")}
+      onRenameSymbol={() => runEditorAction("editor.action.rename")}
+      onQuickFix={() => runEditorAction("editor.action.quickFix")}
       onSelectAll={() => runEditorAction("editor.action.selectAll")}
       onFind={() => runEditorAction("actions.find")}
       onReplace={() => runEditorAction("editor.action.startFindReplaceAction")}
@@ -397,6 +490,7 @@ export const CodeEditor = ({
     >
       <div className="size-full overflow-hidden">
         <MonacoEditor
+          beforeMount={handleBeforeMount}
           height="100%"
           width="100%"
           value={value}
