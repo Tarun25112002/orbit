@@ -37,7 +37,7 @@ import { ItemIcon } from "./file-explorer/item-icon";
 import {
   CodeEditor,
   type EditorRuntimeMeta,
-} from "../../editor/components/code-editor";
+} from "@/features/editor/components/code-editor";
 import { EditorStatusBar } from "../../editor/components/editor-status-bar";
 import { WelcomeTab } from "../../editor/components/welcome-tab";
 import type { CursorState } from "../../editor/store/use-editor-store";
