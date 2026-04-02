@@ -10,6 +10,8 @@ import { Spinner } from "@/components/ui/spinner";
 
 import { Id } from "../../../../convex/_generated/dataModel";
 import { useProject, useRenameProject } from "../hooks/use-projects";
+import { AutoSaveBadge } from "./auto-save-badge";
+import { useProjectHeaderContext } from "./project-header-context";
 
 interface NavbarProps {
   projectId: Id<"projects">;
@@ -88,6 +90,7 @@ const ProjectNameEditor = ({
 
 export const Navbar = ({ projectId }: NavbarProps) => {
   const project = useProject(projectId);
+  const { badge } = useProjectHeaderContext();
 
   return (
     <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-white/4 bg-background/90 px-4 backdrop-blur-sm">
@@ -109,6 +112,9 @@ export const Navbar = ({ projectId }: NavbarProps) => {
           <div className="flex items-center gap-2">
             <ProjectNameEditor projectId={projectId} name={project.name} />
             <LastUpdated updatedAt={project.updatedAt} />
+            {badge && (
+              <AutoSaveBadge status={badge.status} title={badge.title} />
+            )}
           </div>
         )}
       </div>

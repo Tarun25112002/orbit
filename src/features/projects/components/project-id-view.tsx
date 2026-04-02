@@ -3,20 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Allotment } from "allotment";
 import { useConvex, useConvexConnectionState } from "convex/react";
-import {
-  Clock3Icon,
-  CheckIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  CloudIcon,
-  LoaderCircleIcon,
-  XIcon,
-} from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
 import type { Doc } from "../../../../convex/_generated/dataModel";
 
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/errors";
-import { Badge } from "@/components/ui/badge";
 import {
   Popover,
   PopoverContent,
@@ -37,6 +28,7 @@ import {
 import { EditorStatusBar } from "../../editor/components/editor-status-bar";
 import { WelcomeTab } from "../../editor/components/welcome-tab";
 import type { CursorState } from "../../editor/store/use-editor-store";
+import { useProjectHeaderContext } from "./project-header-context";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
@@ -185,7 +177,6 @@ const EditorTabStrip = ({
 
   return (
     <div className="relative flex h-8.75 items-end border-b border-[#252526] bg-[#252526]">
-
       {canScrollLeft && (
         <button
           type="button"
@@ -219,7 +210,6 @@ const EditorTabStrip = ({
                   : "bg-[#2d2d2d] text-[#969696] hover:bg-[#2d2d2dee]",
               )}
             >
-
               {isActive && (
                 <div className="absolute top-0 left-0 right-0 h-px bg-[#007acc]" />
               )}
@@ -472,6 +462,7 @@ const BreadcrumbBar = ({
 };
 
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
+  const { setBadge } = useProjectHeaderContext();
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
   const [draftContent, setDraftContent] = useState("");
   const [isAutoSaving, setIsAutoSaving] = useState(false);
@@ -869,6 +860,24 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             ? "Waiting to auto-save"
             : "Auto-saved";
 
+  useEffect(() => {
+    if (!selectedEditableFileId) {
+      setBadge(null);
+      return;
+    }
+
+    setBadge({
+      status: autoSaveStatus,
+      title: autoSaveStatusTitle,
+    });
+  }, [autoSaveStatus, autoSaveStatusTitle, selectedEditableFileId, setBadge]);
+
+  useEffect(() => {
+    return () => {
+      setBadge(null);
+    };
+  }, [setBadge]);
+
   return (
     <div className="h-full flex flex-col">
       <nav className="h-8.75 flex items-center bg-sidebar border-b">
@@ -882,52 +891,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           isActive={activeView === "preview"}
           onClick={() => setActiveView("preview")}
         />
-        <div className="ml-auto flex h-full items-center gap-2 px-2">
-          {selectedEditableFileId && (
-            <Badge
-              variant="outline"
-              className={cn(
-                "relative px-2.5 py-0.5 transition-colors",
-                autoSaveStatus === "error" &&
-                  "border-destructive/40 bg-destructive/10 text-destructive",
-                autoSaveStatus === "offline" &&
-                  "border-zinc-500/40 bg-zinc-500/10 text-zinc-300",
-                autoSaveStatus === "saving" &&
-                  "border-sky-500/40 bg-sky-500/10 text-sky-300",
-                autoSaveStatus === "pending" &&
-                  "border-amber-500/40 bg-amber-500/10 text-amber-300",
-                autoSaveStatus === "saved" &&
-                  "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-              )}
-              title={autoSaveStatusTitle}
-            >
-              <span className="relative inline-flex size-4 items-center justify-center">
-                {autoSaveStatus === "saving" && (
-                  <span className="absolute inset-0 animate-ping rounded-full border border-sky-400/60" />
-                )}
-                <CloudIcon
-                  className={cn(
-                    "relative z-10 size-4 transition-all",
-                    autoSaveStatus === "saving" && "scale-105",
-                    autoSaveStatus === "saved" &&
-                      "drop-shadow-[0_0_4px_rgba(16,185,129,0.45)]",
-                  )}
-                />
-                {autoSaveStatus === "error" ? (
-                  <XIcon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-destructive/20 p-0.5" />
-                ) : autoSaveStatus === "offline" ? (
-                  <Clock3Icon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-zinc-500/20 p-0.5" />
-                ) : autoSaveStatus === "saving" ? (
-                  <LoaderCircleIcon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 animate-spin rounded-full bg-sky-500/20 p-0.5" />
-                ) : autoSaveStatus === "pending" ? (
-                  <Clock3Icon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-amber-500/20 p-0.5" />
-                ) : (
-                  <CheckIcon className="absolute -right-1.5 -bottom-1.5 z-20 size-3 rounded-full bg-emerald-500/20 p-0.5" />
-                )}
-              </span>
-            </Badge>
-          )}
-        </div>
       </nav>
       <div className="flex-1 relative">
         <div
@@ -972,7 +935,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               </Allotment.Pane>
               <Allotment.Pane>
                 <div className="relative h-full flex flex-col">
-
                   <div className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2">
                     <span className="select-none text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[0.14em] text-white/3">
                       Orbit
@@ -980,7 +942,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   </div>
 
                   <div className="relative z-10 flex h-full min-h-0 flex-col">
-
                     <EditorTabStrip
                       tabs={editorTabs}
                       activeTabId={activeTabId}
