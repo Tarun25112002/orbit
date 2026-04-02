@@ -268,7 +268,7 @@ export const CodeEditor = ({
           return;
         }
       } catch {
-        // Keep native paste fallback if clipboard permissions are blocked.
+        
       }
 
       runEditorAction("editor.action.clipboardPasteAction");

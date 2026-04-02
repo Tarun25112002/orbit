@@ -45,7 +45,7 @@ const DEFAULT_MAIN_SIZE = 1000;
 const AUTO_SAVE_DELAY_MS = 2000;
 const AUTO_SAVE_RETRY_DELAY_MS = 3000;
 
-// ── Empty state ─────────────────────────────────────────────────
+
 const EmptyState = ({ label }: { label: string }) => {
   return (
     <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">
@@ -54,7 +54,7 @@ const EmptyState = ({ label }: { label: string }) => {
   );
 };
 
-// ── Top view tab ────────────────────────────────────────────────
+
 const Tab = ({
   label,
   isActive,
@@ -80,7 +80,7 @@ const Tab = ({
 
 const SCROLL_AMOUNT = 200;
 
-// ── Editor tab strip with context menu ──────────────────────────
+
 const EditorTabStrip = ({
   tabs,
   activeTabId,
@@ -131,7 +131,7 @@ const EditorTabStrip = ({
     };
   }, [updateScrollState, tabs.length]);
 
-  // Auto-scroll active tab into view
+
   useEffect(() => {
     if (!activeTabId || !scrollRef.current) return;
     const activeEl = scrollRef.current.querySelector(
@@ -146,7 +146,7 @@ const EditorTabStrip = ({
     }
   }, [activeTabId]);
 
-  // Close context menu on click outside
+
   useEffect(() => {
     if (!contextMenu) return;
     const handler = () => setContextMenu(null);
@@ -165,7 +165,7 @@ const EditorTabStrip = ({
     });
   }, []);
 
-  // Middle-click to close tab
+
   const handleMouseDown = useCallback(
     (e: React.MouseEvent, fileId: Id<"files">) => {
       if (e.button === 1) {
@@ -176,7 +176,7 @@ const EditorTabStrip = ({
     [onClose],
   );
 
-  // Right-click context menu
+
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, fileId: Id<"files">) => {
       e.preventDefault();
@@ -192,7 +192,7 @@ const EditorTabStrip = ({
 
   return (
     <div className="relative flex h-8.75 items-end border-b border-[#252526] bg-[#252526]">
-      {/* Left scroll button */}
+
       {canScrollLeft && (
         <button
           type="button"
@@ -204,7 +204,7 @@ const EditorTabStrip = ({
         </button>
       )}
 
-      {/* Scrollable tab container */}
+
       <div
         ref={scrollRef}
         className="flex h-full w-full items-end overflow-x-auto scrollbar-none"
@@ -227,12 +227,12 @@ const EditorTabStrip = ({
                   : "bg-[#2d2d2d] text-[#969696] hover:bg-[#2d2d2dee]",
               )}
             >
-              {/* Active tab top border accent */}
+
               {isActive && (
                 <div className="absolute top-0 left-0 right-0 h-px bg-[#007acc]" />
               )}
 
-              {/* File-type icon */}
+
               <span className="shrink-0">
                 <ItemIcon type="file" name={tab.label} />
               </span>
@@ -246,7 +246,7 @@ const EditorTabStrip = ({
                 <span className={cn(isPreview && "italic")}>{tab.label}</span>
               </button>
 
-              {/* Modified indicator + close button */}
+
               <button
                 type="button"
                 onClick={(e) => {
@@ -263,7 +263,7 @@ const EditorTabStrip = ({
         })}
       </div>
 
-      {/* Right scroll button */}
+
       {canScrollRight && (
         <button
           type="button"
@@ -275,7 +275,7 @@ const EditorTabStrip = ({
         </button>
       )}
 
-      {/* Context menu */}
+
       {contextMenu && (
         <div
           className="fixed z-50 min-w-45 rounded-md border border-[#454545] bg-[#252526] py-1 shadow-lg"
@@ -337,7 +337,7 @@ const EditorTabStrip = ({
   );
 };
 
-// ── Breadcrumb helpers ──────────────────────────────────────────
+
 const buildFileAncestors = (
   file: Doc<"files">,
   allFiles: Doc<"files">[],
@@ -484,7 +484,7 @@ const BreadcrumbBar = ({
   );
 };
 
-// ── Main component ──────────────────────────────────────────────
+
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
   const [draftContent, setDraftContent] = useState("");
@@ -570,7 +570,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [convex],
   );
 
-  // Save cursor state before switching tabs
+
   const previousFileIdRef = useRef<Id<"files"> | null>(null);
   const hydratedFileIdRef = useRef<Id<"files"> | null>(null);
   const activeFileIdRef = useRef<Id<"files"> | null>(null);
@@ -580,7 +580,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       flushPendingAutoSave();
     }
 
-    // Save current cursor state before switching
+
     if (previousFileIdRef.current) {
       saveCursorState(previousFileIdRef.current, cursorState);
     }
@@ -588,7 +588,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     fetchFileForTab(fileId);
   };
 
-  // Track the active file for cursor state saving
+
   useEffect(() => {
     previousFileIdRef.current = selectedFileId;
     activeFileIdRef.current = selectedFileId;
@@ -608,7 +608,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       flushPendingAutoSave();
     }
 
-    // Save cursor state before closing
+
     if (fileId === selectedFileId) {
       saveCursorState(fileId, cursorState);
     }
@@ -637,7 +637,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
   useEffect(() => {
     if (selectedFile === undefined) {
-      // Preserve local draft/autosave state while backend query is reconnecting.
       return;
     }
 
@@ -845,13 +844,13 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     void persistFileContentRef.current(fileId, draftContentRef.current);
   }, [isBackendConnected]);
 
-  // Get initial cursor state for current file
+
   const initialCursorState = useMemo(() => {
     if (!selectedFileId) return undefined;
     return restoreCursorState(selectedFileId);
   }, [selectedFileId, restoreCursorState]);
 
-  // Handle cursor changes from the editor
+
   const handleCursorStateChange = useCallback(
     (state: CursorState) => {
       setCursorState(state);
@@ -862,7 +861,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [selectedFileId, saveCursorState],
   );
 
-  // Compute file size for status bar
+
   const fileSize = useMemo(() => {
     if (!draftContent) return 0;
     return new TextEncoder().encode(draftContent).length;
@@ -994,16 +993,16 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               </Allotment.Pane>
               <Allotment.Pane>
                 <div className="relative h-full flex flex-col">
-                  {/* Watermark behind everything */}
+
                   <div className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2">
                     <span className="select-none text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[0.14em] text-white/3">
                       Orbit
                     </span>
                   </div>
 
-                  {/* Content area */}
+
                   <div className="relative z-10 flex h-full min-h-0 flex-col">
-                    {/* Tab strip */}
+
                     <EditorTabStrip
                       tabs={editorTabs}
                       activeTabId={activeTabId}
@@ -1016,7 +1015,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       onCloseAll={closeAll}
                     />
 
-                    {/* Breadcrumb */}
+
                     {selectedFile && (
                       <BreadcrumbBar
                         file={selectedFile}
@@ -1025,7 +1024,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       />
                     )}
 
-                    {/* Editor content */}
+
                     <div className="min-h-0 flex-1 overflow-hidden">
                       {!selectedFileId && (
                         <WelcomeTab
@@ -1058,7 +1057,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       )}
                     </div>
 
-                    {/* Status bar */}
+
                     {selectedFile?.type === "file" && (
                       <EditorStatusBar
                         filename={selectedFile.name}

@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 import { Id } from "../../../../convex/_generated/dataModel";
 
-// ── Per-file cursor/viewport state ──────────────────────────────
+
 export interface CursorState {
   line: number;
   col: number;
@@ -17,7 +17,6 @@ const defaultCursorState: CursorState = {
   selections: [{ anchor: 0, head: 0 }],
 };
 
-// ── Tab state per project ───────────────────────────────────────
 interface TabState {
   openTabs: Id<"files">[];
   activeTabId: Id<"files"> | null;
@@ -30,7 +29,6 @@ const defaultTabState: TabState = {
   previewTabId: null,
 };
 
-// ── Editor settings ─────────────────────────────────────────────
 export interface EditorSettings {
   wordWrap: boolean;
   minimap: boolean;
@@ -51,10 +49,9 @@ const defaultEditorSettings: EditorSettings = {
   renderWhitespace: "none",
 };
 
-// ── Store ───────────────────────────────────────────────────────
 interface EditorStore {
   tabs: Map<Id<"projects">, TabState>;
-  cursorStates: Map<string, CursorState>; // keyed by fileId
+  cursorStates: Map<string, CursorState>;
   settings: EditorSettings;
 
   getTabState: (projectId: Id<"projects">) => TabState;

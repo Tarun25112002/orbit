@@ -1,12 +1,9 @@
-// Base padding for root level items (after project header)
 const BASE_PADDING = 12;
-// Additional padding per nesting level
 const LEVEL_PADDING = 12;
-// Vertical guide offset inside the indentation gutter
 const INDENT_GUIDE_OFFSET = BASE_PADDING + 7;
 
 export const getItemPadding = (level: number, isFile: boolean) => {
-  // Files need extra padding since they don't have the chevron
+
   const fileOffset = isFile ? 16 : 0;
   return BASE_PADDING + level * LEVEL_PADDING + fileOffset;
 };
