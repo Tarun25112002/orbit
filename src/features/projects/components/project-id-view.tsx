@@ -45,7 +45,6 @@ const DEFAULT_MAIN_SIZE = 1000;
 const AUTO_SAVE_DELAY_MS = 2000;
 const AUTO_SAVE_RETRY_DELAY_MS = 3000;
 
-
 const EmptyState = ({ label }: { label: string }) => {
   return (
     <div className="h-full w-full flex items-center justify-center text-muted-foreground text-sm">
@@ -53,7 +52,6 @@ const EmptyState = ({ label }: { label: string }) => {
     </div>
   );
 };
-
 
 const Tab = ({
   label,
@@ -79,7 +77,6 @@ const Tab = ({
 };
 
 const SCROLL_AMOUNT = 200;
-
 
 const EditorTabStrip = ({
   tabs,
@@ -131,7 +128,6 @@ const EditorTabStrip = ({
     };
   }, [updateScrollState, tabs.length]);
 
-
   useEffect(() => {
     if (!activeTabId || !scrollRef.current) return;
     const activeEl = scrollRef.current.querySelector(
@@ -145,7 +141,6 @@ const EditorTabStrip = ({
       });
     }
   }, [activeTabId]);
-
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -165,7 +160,6 @@ const EditorTabStrip = ({
     });
   }, []);
 
-
   const handleMouseDown = useCallback(
     (e: React.MouseEvent, fileId: Id<"files">) => {
       if (e.button === 1) {
@@ -175,7 +169,6 @@ const EditorTabStrip = ({
     },
     [onClose],
   );
-
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, fileId: Id<"files">) => {
@@ -204,7 +197,6 @@ const EditorTabStrip = ({
         </button>
       )}
 
-
       <div
         ref={scrollRef}
         className="flex h-full w-full items-end overflow-x-auto scrollbar-none"
@@ -232,7 +224,6 @@ const EditorTabStrip = ({
                 <div className="absolute top-0 left-0 right-0 h-px bg-[#007acc]" />
               )}
 
-
               <span className="shrink-0">
                 <ItemIcon type="file" name={tab.label} />
               </span>
@@ -245,7 +236,6 @@ const EditorTabStrip = ({
               >
                 <span className={cn(isPreview && "italic")}>{tab.label}</span>
               </button>
-
 
               <button
                 type="button"
@@ -263,7 +253,6 @@ const EditorTabStrip = ({
         })}
       </div>
 
-
       {canScrollRight && (
         <button
           type="button"
@@ -274,7 +263,6 @@ const EditorTabStrip = ({
           <ChevronRightIcon className="size-3.5" />
         </button>
       )}
-
 
       {contextMenu && (
         <div
@@ -336,7 +324,6 @@ const EditorTabStrip = ({
     </div>
   );
 };
-
 
 const buildFileAncestors = (
   file: Doc<"files">,
@@ -484,7 +471,6 @@ const BreadcrumbBar = ({
   );
 };
 
-
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
   const [draftContent, setDraftContent] = useState("");
@@ -570,7 +556,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [convex],
   );
 
-
   const previousFileIdRef = useRef<Id<"files"> | null>(null);
   const hydratedFileIdRef = useRef<Id<"files"> | null>(null);
   const activeFileIdRef = useRef<Id<"files"> | null>(null);
@@ -580,14 +565,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       flushPendingAutoSave();
     }
 
-
     if (previousFileIdRef.current) {
       saveCursorState(previousFileIdRef.current, cursorState);
     }
     setActive(fileId);
     fetchFileForTab(fileId);
   };
-
 
   useEffect(() => {
     previousFileIdRef.current = selectedFileId;
@@ -607,7 +590,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     if (fileId === selectedFileId) {
       flushPendingAutoSave();
     }
-
 
     if (fileId === selectedFileId) {
       saveCursorState(fileId, cursorState);
@@ -844,12 +826,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     void persistFileContentRef.current(fileId, draftContentRef.current);
   }, [isBackendConnected]);
 
-
   const initialCursorState = useMemo(() => {
     if (!selectedFileId) return undefined;
     return restoreCursorState(selectedFileId);
   }, [selectedFileId, restoreCursorState]);
-
 
   const handleCursorStateChange = useCallback(
     (state: CursorState) => {
@@ -860,7 +840,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     },
     [selectedFileId, saveCursorState],
   );
-
 
   const fileSize = useMemo(() => {
     if (!draftContent) return 0;
@@ -1000,7 +979,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                     </span>
                   </div>
 
-
                   <div className="relative z-10 flex h-full min-h-0 flex-col">
 
                     <EditorTabStrip
@@ -1015,7 +993,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       onCloseAll={closeAll}
                     />
 
-
                     {selectedFile && (
                       <BreadcrumbBar
                         file={selectedFile}
@@ -1023,7 +1000,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                         onOpenFile={handlePinTab}
                       />
                     )}
-
 
                     <div className="min-h-0 flex-1 overflow-hidden">
                       {!selectedFileId && (
@@ -1056,7 +1032,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                         </div>
                       )}
                     </div>
-
 
                     {selectedFile?.type === "file" && (
                       <EditorStatusBar

@@ -2,7 +2,6 @@ import { create } from "zustand";
 
 import { Id } from "../../../../convex/_generated/dataModel";
 
-
 export interface CursorState {
   line: number;
   col: number;
