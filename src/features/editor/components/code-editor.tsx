@@ -39,6 +39,7 @@ const EMMET_HTML_LANGUAGES = [
 ];
 const EMMET_CSS_LANGUAGES = ["css", "less", "scss"];
 const EMMET_JSX_LANGUAGES = ["javascript", "typescript", "mdx"];
+const EMMET_OPTIONS = { tokenizer: "standard" as const };
 
 const initializeEmmet = (monacoApi: typeof Monaco) => {
   const globalState = globalThis as typeof globalThis & {
@@ -49,9 +50,9 @@ const initializeEmmet = (monacoApi: typeof Monaco) => {
     return;
   }
 
-  emmetHTML(monacoApi, EMMET_HTML_LANGUAGES);
-  emmetCSS(monacoApi, EMMET_CSS_LANGUAGES);
-  emmetJSX(monacoApi, EMMET_JSX_LANGUAGES);
+  emmetHTML(monacoApi, EMMET_HTML_LANGUAGES, EMMET_OPTIONS);
+  emmetCSS(monacoApi, EMMET_CSS_LANGUAGES, EMMET_OPTIONS);
+  emmetJSX(monacoApi, EMMET_JSX_LANGUAGES, EMMET_OPTIONS);
 
   globalState[EMMET_INIT_FLAG] = true;
 };

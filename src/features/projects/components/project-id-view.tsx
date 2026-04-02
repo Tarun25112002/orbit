@@ -551,6 +551,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   }, [lastSavedContent]);
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       if (autoSaveDebounceRef.current) {
