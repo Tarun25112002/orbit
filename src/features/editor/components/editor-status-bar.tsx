@@ -28,7 +28,6 @@ const formatFileSize = (bytes: number): string => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-
 const StatusItem = ({
   children,
   onClick,
@@ -152,13 +151,11 @@ export const EditorStatusBar = ({
       className="flex h-5.5 items-center border-t border-[#1e1e1e] bg-[#007acc] text-white select-none whitespace-nowrap overflow-hidden"
     >
       <div className="flex h-full min-w-0 items-center overflow-hidden">
-
         {isDirty && (
           <StatusItem title="File has unsaved changes">
             <span className="inline-block size-1.5 rounded-full bg-white/80" />
           </StatusItem>
         )}
-
 
         <StatusItem title="Go to Line (Ctrl+G)">
           Ln {cursorState.line}, Col {cursorState.col}
@@ -173,7 +170,6 @@ export const EditorStatusBar = ({
       </div>
 
       <div className="ml-auto flex h-full min-w-0 items-center overflow-hidden">
-
         <StatusItem onClick={toggleIndentType} title="Toggle indent type">
           <IndentIncreaseIcon className="size-3" />
           {settings.insertSpaces
@@ -183,7 +179,6 @@ export const EditorStatusBar = ({
             : "Tabs"}
         </StatusItem>
 
-
         {isSmOrWider && (
           <StatusItem onClick={cycleTabSize} title="Change tab size">
             {compactMode === "sm"
@@ -192,14 +187,11 @@ export const EditorStatusBar = ({
           </StatusItem>
         )}
 
-
         {isMdOrWider && <StatusItem title="File encoding">UTF-8</StatusItem>}
-
 
         {isMdOrWider && (
           <StatusItem title="End of line sequence">{lineEnding}</StatusItem>
         )}
-
 
         {isMdOrWider && (
           <StatusItem
@@ -215,7 +207,6 @@ export const EditorStatusBar = ({
           </StatusItem>
         )}
 
-
         {isFull && (
           <StatusItem
             onClick={cycleWhitespace}
@@ -224,7 +215,6 @@ export const EditorStatusBar = ({
             WS: {settings.renderWhitespace}
           </StatusItem>
         )}
-
 
         <StatusItem onClick={toggleWordWrap} title="Toggle Word Wrap (Alt+Z)">
           <WrapTextIcon className="size-3" />
@@ -244,12 +234,10 @@ export const EditorStatusBar = ({
               : "No Map"}
         </StatusItem>
 
-
         <StatusItem title="Select language mode">
           <BracesIcon className="size-3" />
           {compactMode === "xs" ? languageName.split(" ")[0] : languageName}
         </StatusItem>
-
 
         {fileSize !== undefined && isMdOrWider && (
           <StatusItem title="File size">
