@@ -985,6 +985,48 @@ export const CodeEditor = ({
     );
   }, []);
 
+  const commitInlineSuggestionAtCursor = useCallback(() => {
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    const position = editor?.getPosition();
+    const selection = editor?.getSelection();
+    const suggestion = inlineSuggestionRef.current;
+
+    if (!editor || !model || !position || !suggestion) {
+      return false;
+    }
+
+    if (selection && !selection.isEmpty()) {
+      return false;
+    }
+
+    if (model.getVersionId() !== suggestion.modelVersionId) {
+      return false;
+    }
+
+    if (
+      position.lineNumber !== suggestion.lineNumber ||
+      position.column !== suggestion.column
+    ) {
+      return false;
+    }
+
+    if (model.getOffsetAt(position) !== suggestion.offset) {
+      return false;
+    }
+
+    const startPosition = position;
+    editor.trigger("orbit-inline", "editor.action.inlineSuggest.commit", {});
+    clearInlineSuggestion(true);
+
+    const endPosition = editor.getPosition();
+    if (endPosition) {
+      void formatInsertedRange(startPosition, endPosition);
+    }
+
+    return true;
+  }, [clearInlineSuggestion, formatInsertedRange]);
+
   const handleMount = useCallback<OnMount>(
     (editor, monacoApi) => {
       editorRef.current = editor;
@@ -998,18 +1040,7 @@ export const CodeEditor = ({
         keybindings: [monacoApi.KeyCode.Tab],
         precondition: "inlineSuggestionVisible && !editorHasSelection",
         run: () => {
-          const startPosition = editor.getPosition();
-          editor.trigger(
-            "orbit-inline",
-            "editor.action.inlineSuggest.commit",
-            {},
-          );
-          clearInlineSuggestion(true);
-
-          const endPosition = editor.getPosition();
-          if (startPosition && endPosition) {
-            void formatInsertedRange(startPosition, endPosition);
-          }
+          void commitInlineSuggestionAtCursor();
         },
       });
 
@@ -1077,6 +1108,20 @@ export const CodeEditor = ({
           clearInlineSuggestion();
           onBlur?.();
         }),
+        editor.onKeyDown((event) => {
+          if (event.keyCode !== monacoApi.KeyCode.Tab || readOnly) {
+            return;
+          }
+
+          const didCommit = commitInlineSuggestionAtCursor();
+          if (didCommit) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+          }
+
+          scheduleInlineSuggestion();
+        }),
         editor.onMouseDown((event) => {
           if (
             event.target.type !==
@@ -1106,9 +1151,10 @@ export const CodeEditor = ({
     },
     [
       clearInlineSuggestion,
+      commitInlineSuggestionAtCursor,
       emitState,
-      formatInsertedRange,
       onBlur,
+      readOnly,
       registerInlineCompletionsProvider,
       restoreInitialState,
       scheduleInlineSuggestion,
