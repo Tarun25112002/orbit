@@ -59,6 +59,8 @@ interface SuggestionApiResponse {
   suggestion?: string;
   sugegstions?: string;
   error?: string;
+  detail?: string;
+  retryAfterSeconds?: number;
 }
 
 interface InlineSuggestionState {
@@ -172,6 +174,9 @@ export const CodeEditor = ({
     null,
   );
   const inlineSuggestionRef = useRef<InlineSuggestionState | null>(null);
+  const inlineChangeNotifierRef = useRef<(() => void) | null>(null);
+  const inlineBackoffUntilRef = useRef(0);
+  const inlineLastRateLimitToastAtRef = useRef(0);
   const lastInlineRequestKeyRef = useRef("");
   const inlineRequestCounterRef = useRef(0);
   const lastCursorStateRef = useRef<CursorState | null>(null);
@@ -329,6 +334,8 @@ export const CodeEditor = ({
   );
 
   const triggerInlineSuggestionWidget = useCallback(() => {
+    inlineChangeNotifierRef.current?.();
+
     const editor = editorRef.current;
     if (!editor) {
       return;
@@ -409,6 +416,10 @@ export const CodeEditor = ({
 
   const requestInlineSuggestion = useCallback(async () => {
     if (readOnly) {
+      return;
+    }
+
+    if (Date.now() < inlineBackoffUntilRef.current) {
       return;
     }
 
@@ -514,6 +525,32 @@ export const CodeEditor = ({
       });
 
       if (!response.ok) {
+        const payload = (await response
+          .json()
+          .catch(() => null)) as SuggestionApiResponse | null;
+
+        if (response.status === 429) {
+          const retryHeader = Number.parseFloat(
+            response.headers.get("Retry-After") ?? "",
+          );
+          const retryAfterSeconds = Number.isFinite(retryHeader)
+            ? retryHeader
+            : (payload?.retryAfterSeconds ?? 30);
+
+          inlineBackoffUntilRef.current =
+            Date.now() + Math.max(1, retryAfterSeconds) * 1_000;
+
+          const now = Date.now();
+          if (now - inlineLastRateLimitToastAtRef.current > 15_000) {
+            toast.error(
+              `AI suggestions are temporarily rate-limited. Retrying in ${Math.ceil(
+                Math.max(1, retryAfterSeconds),
+              )}s.`,
+            );
+            inlineLastRateLimitToastAtRef.current = now;
+          }
+        }
+
         clearInlineSuggestion();
         return;
       }
@@ -662,6 +699,14 @@ export const CodeEditor = ({
             };
           },
           disposeInlineCompletions: () => {},
+          onDidChangeInlineCompletions: (listener) => {
+            inlineChangeNotifierRef.current = listener;
+            return {
+              dispose: () => {
+                inlineChangeNotifierRef.current = null;
+              },
+            };
+          },
         },
       );
   }, []);
@@ -737,10 +782,21 @@ export const CodeEditor = ({
         suggestion?: string;
         sugegstions?: string;
         error?: string;
+        detail?: string;
+        retryAfterSeconds?: number;
       } | null;
 
       if (!response.ok) {
-        throw new Error(payload?.error ?? "Failed to process selected code.");
+        const detail = payload?.detail?.trim();
+        const retryAfterSeconds = payload?.retryAfterSeconds;
+        const retryHint =
+          typeof retryAfterSeconds === "number" && retryAfterSeconds > 0
+            ? ` Retry in ${Math.ceil(retryAfterSeconds)}s.`
+            : "";
+
+        throw new Error(
+          `${payload?.error ?? "Failed to process selected code."}${retryHint}${detail ? ` ${detail}` : ""}`,
+        );
       }
 
       const replacement = payload?.suggestion ?? payload?.sugegstions ?? "";

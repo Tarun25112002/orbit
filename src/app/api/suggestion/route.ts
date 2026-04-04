@@ -1,17 +1,23 @@
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { generateText, Output } from "ai";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-
-/** Set `GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local` for Gemini (see @ai-sdk/google). */
+import {
+  OpenRouterRequestError,
+  requestOpenRouterCompletion,
+  type OpenRouterChatMessage,
+} from "@/lib/openrouter";
 
 const MAX_CONTEXT_CHARS = 5_000;
 const MAX_CODE_WINDOW_CHARS = 24_000;
 const MAX_SUGGESTION_CHARS = 1_200;
-const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
-const GEMINI_API_KEY =
-  process.env.GOOGLE_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-const gemini = createGoogleGenerativeAI({ apiKey: GEMINI_API_KEY });
+const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL?.trim() || "qwen/qwen3.6-plus:free";
+const OPENROUTER_FALLBACK_MODELS = (
+  process.env.OPENROUTER_FALLBACK_MODELS ?? ""
+)
+  .split(",")
+  .map((model) => model.trim())
+  .filter((model) => model.length > 0);
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim();
 
 const requestSchema = z
   .object({
@@ -49,14 +55,6 @@ const requestSchema = z
       }
     }
   });
-
-const suggestionSchema = z.object({
-  suggestion: z
-    .string()
-    .describe(
-      "The exact code insertion/replacement text. Return an empty string if no suggestion is appropriate.",
-    ),
-});
 
 const limitContext = (value: string, max: number, fromEnd = false) => {
   if (value.length <= max) {
@@ -200,13 +198,58 @@ const normalizeSuggestion = (
   return normalized;
 };
 
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+
+const getRetryAfterSeconds = (message: string) => {
+  const retryInMatch = message.match(/retry in\s+([\d.]+)s/i);
+  if (retryInMatch?.[1]) {
+    const seconds = Number.parseFloat(retryInMatch[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return seconds;
+    }
+  }
+
+  return null;
+};
+
+const isRateLimitedError = (message: string) =>
+  /(quota exceeded|rate limit|resource_exhausted|too many requests|status\s*429)/i.test(
+    message,
+  );
+
+const buildReasoningContinuationMessages = (
+  prompt: string,
+  content: string,
+  reasoningDetails: unknown,
+) => {
+  const messages: OpenRouterChatMessage[] = [
+    {
+      role: "user",
+      content: prompt,
+    },
+    {
+      role: "assistant",
+      content,
+      reasoning_details: reasoningDetails,
+    },
+    {
+      role: "user",
+      content:
+        "Return only the final code suggestion now. Do not include markdown fences, explanations, or extra commentary.",
+    },
+  ];
+
+  return messages;
+};
+
 export async function POST(request: Request) {
   try {
-    if (!GEMINI_API_KEY) {
+    if (!OPENROUTER_API_KEY) {
       return NextResponse.json(
         {
           error:
-            "Missing Gemini API key. Set GOOGLE_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY) in your environment.",
+            "Missing OpenRouter API key. Set OPENROUTER_API_KEY in your environment.",
         },
         { status: 500 },
       );
@@ -235,36 +278,91 @@ export async function POST(request: Request) {
         ? buildTransformPrompt(input)
         : buildAutocompletePrompt(input);
 
-    const { output } = await generateText({
-      model: gemini(GEMINI_MODEL),
-      output: Output.object({ schema: suggestionSchema }),
-      prompt,
-      experimental_telemetry: {
-        isEnabled: true,
-        recordInputs: true,
-        recordOutputs: true,
-      },
-    });
-
-    const suggestion = normalizeSuggestion(
-      output.suggestion,
-      mode,
-      input.textAfterCursor ?? "",
+    const modelCandidates = Array.from(
+      new Set([OPENROUTER_MODEL, ...OPENROUTER_FALLBACK_MODELS]),
     );
 
-    return NextResponse.json({
-      mode,
-      suggestion,
-      sugegstions: suggestion,
-    });
+    let lastError: unknown = null;
+
+    for (const modelName of modelCandidates) {
+      try {
+        const firstResponse = await requestOpenRouterCompletion({
+          apiKey: OPENROUTER_API_KEY,
+          model: modelName,
+          messages: [{ role: "user", content: prompt }],
+          enableReasoning: true,
+        });
+
+        let suggestion = normalizeSuggestion(
+          firstResponse.message.content,
+          mode,
+          input.textAfterCursor ?? "",
+        );
+
+        if (!suggestion.trim() && firstResponse.message.reasoning_details) {
+          const continuationResponse = await requestOpenRouterCompletion({
+            apiKey: OPENROUTER_API_KEY,
+            model: modelName,
+            messages: buildReasoningContinuationMessages(
+              prompt,
+              firstResponse.message.content,
+              firstResponse.message.reasoning_details,
+            ),
+            enableReasoning: false,
+          });
+
+          suggestion = normalizeSuggestion(
+            continuationResponse.message.content,
+            mode,
+            input.textAfterCursor ?? "",
+          );
+        }
+
+        return NextResponse.json({
+          mode,
+          suggestion,
+          sugegstions: suggestion,
+          model: modelName,
+        });
+      } catch (structuredError) {
+        lastError = structuredError;
+      }
+    }
+
+    throw lastError ?? new Error("Suggestion generation failed");
   } catch (error) {
-    console.error("Suggestion error:", error);
+    const errorMessage = getErrorMessage(error);
+    const openRouterError =
+      error instanceof OpenRouterRequestError ? error : null;
+
+    const retryAfterSeconds =
+      openRouterError?.retryAfterSeconds ?? getRetryAfterSeconds(errorMessage);
+    const rateLimited =
+      (openRouterError?.status ?? 0) === 429 ||
+      isRateLimitedError(errorMessage);
+
+    console.error("Suggestion error:", errorMessage, error);
 
     return NextResponse.json(
       {
-        error: "Failed to generate suggestion",
+        error: rateLimited
+          ? "Suggestion service is rate-limited right now."
+          : "Failed to generate suggestion",
+        detail: errorMessage,
+        retryAfterSeconds,
       },
-      { status: 500 },
+      {
+        status: rateLimited
+          ? 429
+          : openRouterError && openRouterError.status >= 400
+            ? openRouterError.status
+            : 500,
+        headers: retryAfterSeconds
+          ? {
+              "Retry-After": String(Math.ceil(retryAfterSeconds)),
+            }
+          : undefined,
+      },
     );
   }
 }

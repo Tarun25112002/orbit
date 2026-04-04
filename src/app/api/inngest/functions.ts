@@ -1,12 +1,16 @@
 import { inngest } from "@/inngest/client";
 import { firecrawl } from "@/lib/firecrawl";
-import { generateText } from "ai";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { requestOpenRouterCompletion } from "@/lib/openrouter";
 
-const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
-const GEMINI_API_KEY =
-  process.env.GOOGLE_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-const gemini = createGoogleGenerativeAI({ apiKey: GEMINI_API_KEY });
+const OPENROUTER_MODEL =
+  process.env.OPENROUTER_MODEL?.trim() || "qwen/qwen3.6-plus:free";
+const OPENROUTER_FALLBACK_MODELS = (
+  process.env.OPENROUTER_FALLBACK_MODELS ?? ""
+)
+  .split(",")
+  .map((model) => model.trim())
+  .filter((model) => model.length > 0);
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim();
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 export const orbit = inngest.createFunction(
   { id: "orbit-generate", triggers: [{ event: "orbit/generate" }] },
@@ -33,22 +37,38 @@ export const orbit = inngest.createFunction(
     const finalPrompt = scrapedContent
       ? `Context:\n${scrapedContent}\n\nQuestion: ${prompt}`
       : prompt;
+
     await step.run("generate-text", async () => {
-      if (!GEMINI_API_KEY) {
-        throw new Error(
-          "Missing Gemini API key. Set GOOGLE_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY).",
-        );
+      if (!OPENROUTER_API_KEY) {
+        throw new Error("Missing OpenRouter API key. Set OPENROUTER_API_KEY.");
       }
 
-      return await generateText({
-        model: gemini(GEMINI_MODEL),
-        prompt: finalPrompt,
-        experimental_telemetry: {
-          isEnabled: true,
-          recordInputs: true,
-          recordOutputs: true,
-        },
-      });
+      const modelCandidates = Array.from(
+        new Set([OPENROUTER_MODEL, ...OPENROUTER_FALLBACK_MODELS]),
+      );
+
+      let lastError: unknown = null;
+
+      for (const modelName of modelCandidates) {
+        try {
+          const completion = await requestOpenRouterCompletion({
+            apiKey: OPENROUTER_API_KEY,
+            model: modelName,
+            messages: [{ role: "user", content: finalPrompt }],
+            enableReasoning: true,
+          });
+
+          return {
+            model: modelName,
+            content: completion.message.content,
+            reasoning_details: completion.message.reasoning_details,
+          };
+        } catch (error) {
+          lastError = error;
+        }
+      }
+
+      throw lastError ?? new Error("OpenRouter generation failed");
     });
   },
 );
