@@ -56,20 +56,8 @@ const EMMET_HTML_LANGUAGES = [
 const EMMET_CSS_LANGUAGES = ["css", "less", "scss"];
 const EMMET_JSX_LANGUAGES = ["javascript", "typescript", "mdx"];
 const EMMET_OPTIONS = { tokenizer: "standard" as const };
-const INLINE_SUGGESTION_DEBOUNCE_MS = 320;
-const INLINE_SUGGESTION_CONTEXT_LINES = 40;
-const INLINE_SUGGESTION_MAX_BEFORE = 2_000;
-const INLINE_SUGGESTION_MAX_AFTER = 1_200;
 const ASYNC_SUGGESTION_POLL_INTERVAL_MS = 400;
 const ASYNC_SUGGESTION_TIMEOUT_MS = 180_000;
-
-interface InlineSuggestionState {
-  offset: number;
-  lineNumber: number;
-  column: number;
-  modelVersionId: number;
-  text: string;
-}
 
 const initializeEmmet = (monacoApi: typeof Monaco) => {
   const globalState = globalThis as typeof globalThis & {
@@ -113,20 +101,6 @@ const clampOffset = (offset: number, max: number) =>
 
 const getLineEnding = (eol: string): "LF" | "CRLF" =>
   eol === "\r\n" ? "CRLF" : "LF";
-
-const sanitizeInlineSuggestion = (value: string) =>
-  value
-    .replace(/^```[a-zA-Z0-9_-]*\n?/, "")
-    .replace(/\n?```$/, "")
-    .replace(/\r\n/g, "\n");
-
-const clampContextText = (value: string, max: number, fromEnd = false) => {
-  if (value.length <= max) {
-    return value;
-  }
-
-  return fromEnd ? value.slice(value.length - max) : value.slice(0, max);
-};
 
 const hasAsyncSuggestionHandle = (
   payload: SuggestionApiResponse | null,
@@ -194,17 +168,6 @@ export const CodeEditor = ({
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
   const disposablesRef = useRef<Monaco.IDisposable[]>([]);
-  const inlineProviderDisposableRef = useRef<Monaco.IDisposable | null>(null);
-  const inlineRequestAbortRef = useRef<AbortController | null>(null);
-  const inlineDebounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const inlineSuggestionRef = useRef<InlineSuggestionState | null>(null);
-  const inlineChangeNotifierRef = useRef<(() => void) | null>(null);
-  const inlineBackoffUntilRef = useRef(0);
-  const inlineLastRateLimitToastAtRef = useRef(0);
-  const lastInlineRequestKeyRef = useRef("");
-  const inlineRequestCounterRef = useRef(0);
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
 
@@ -291,17 +254,6 @@ export const CodeEditor = ({
     return () => {
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
-
-      inlineProviderDisposableRef.current?.dispose();
-      inlineProviderDisposableRef.current = null;
-
-      if (inlineDebounceTimeoutRef.current) {
-        clearTimeout(inlineDebounceTimeoutRef.current);
-        inlineDebounceTimeoutRef.current = null;
-      }
-
-      inlineRequestAbortRef.current?.abort();
-      inlineRequestAbortRef.current = null;
     };
   }, []);
 
@@ -373,33 +325,6 @@ export const CodeEditor = ({
       }
     },
     [currentFileReference, onCursorStateChange, onMetaChange],
-  );
-
-  const triggerInlineSuggestionWidget = useCallback(() => {
-    inlineChangeNotifierRef.current?.();
-
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-
-    const action = editor.getAction("editor.action.inlineSuggest.trigger");
-    if (action) {
-      void action.run();
-    }
-  }, []);
-
-  const clearInlineSuggestion = useCallback(
-    (resetRequestKey = false) => {
-      inlineSuggestionRef.current = null;
-
-      if (resetRequestKey) {
-        lastInlineRequestKeyRef.current = "";
-      }
-
-      triggerInlineSuggestionWidget();
-    },
-    [triggerInlineSuggestionWidget],
   );
 
   const formatInsertedRange = useCallback(
@@ -544,7 +469,6 @@ export const CodeEditor = ({
         }
       >,
       signal?: AbortSignal,
-      onChunk?: (suggestion: string) => void,
     ) => {
       if (typeof EventSource === "undefined") {
         return pollBackgroundSuggestion(handle.pollUrl!, signal);
@@ -579,18 +503,6 @@ export const CodeEditor = ({
         };
 
         signal?.addEventListener("abort", onAbort, { once: true });
-
-        eventSource.addEventListener("chunk", (event) => {
-          const payload = JSON.parse(
-            (event as MessageEvent<string>).data,
-          ) as SuggestionApiResponse;
-          const suggestionText = sanitizeInlineSuggestion(
-            payload.suggestion ?? payload.sugegstions ?? "",
-          );
-          if (suggestionText) {
-            onChunk?.(suggestionText);
-          }
-        });
 
         eventSource.addEventListener("complete", (event) => {
           const payload = JSON.parse(
@@ -629,384 +541,6 @@ export const CodeEditor = ({
     },
     [pollBackgroundSuggestion],
   );
-
-  const requestInlineSuggestion = useCallback(async () => {
-    if (readOnly) {
-      return;
-    }
-
-    if (Date.now() < inlineBackoffUntilRef.current) {
-      return;
-    }
-
-    const editor = editorRef.current;
-    const monacoApi = monacoRef.current;
-    if (!editor || !monacoApi || !editor.hasTextFocus()) {
-      return;
-    }
-
-    const model = editor.getModel();
-    const position = editor.getPosition();
-    if (!model || !position) {
-      return;
-    }
-
-    const selection = editor.getSelection();
-    if (selection && !selection.isEmpty()) {
-      clearInlineSuggestion();
-      return;
-    }
-
-    const cursorOffset = model.getOffsetAt(position);
-    const currentLine = model.getLineContent(position.lineNumber);
-    const textBeforeCursor = clampContextText(
-      currentLine.slice(0, position.column - 1),
-      INLINE_SUGGESTION_MAX_BEFORE,
-      true,
-    );
-    const textAfterCursor = clampContextText(
-      currentLine.slice(position.column - 1),
-      INLINE_SUGGESTION_MAX_AFTER,
-    );
-
-    if (
-      textBeforeCursor.trim().length === 0 &&
-      textAfterCursor.trim().length === 0
-    ) {
-      clearInlineSuggestion();
-      return;
-    }
-
-    const modelVersionId = model.getVersionId();
-    const requestKey = `${model.uri.toString()}:${modelVersionId}:${cursorOffset}`;
-    if (lastInlineRequestKeyRef.current === requestKey) {
-      return;
-    }
-
-    lastInlineRequestKeyRef.current = requestKey;
-    inlineRequestCounterRef.current += 1;
-    const requestId = inlineRequestCounterRef.current;
-
-    const previousStartLine = Math.max(
-      1,
-      position.lineNumber - INLINE_SUGGESTION_CONTEXT_LINES,
-    );
-    const nextEndLine = Math.min(
-      model.getLineCount(),
-      position.lineNumber + INLINE_SUGGESTION_CONTEXT_LINES,
-    );
-
-    const previousLines =
-      previousStartLine < position.lineNumber
-        ? model.getValueInRange(
-            new monacoApi.Range(previousStartLine, 1, position.lineNumber, 1),
-          )
-        : "";
-
-    const nextLines =
-      position.lineNumber < nextEndLine
-        ? model.getValueInRange(
-            new monacoApi.Range(
-              position.lineNumber + 1,
-              1,
-              nextEndLine,
-              model.getLineMaxColumn(nextEndLine),
-            ),
-          )
-        : "";
-
-    inlineRequestAbortRef.current?.abort();
-    const abortController = new AbortController();
-    inlineRequestAbortRef.current = abortController;
-
-    try {
-      const fullCode = model.getValue();
-      const response = await fetch("/api/suggestion", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        signal: abortController.signal,
-        body: JSON.stringify({
-          mode: "autocomplete",
-          fileName: currentFileReference,
-          language: getLanguageName(currentFileReference),
-          code: fullCode,
-          lineNumber: position.lineNumber,
-          currentLine,
-          previousLines,
-          nextLines,
-          textBeforeCursor,
-          textAfterCursor,
-          cursorOffset,
-          projectContext: buildRequestProjectContext(fullCode),
-        }),
-      });
-
-      if (!response.ok) {
-        const payload = (await response
-          .json()
-          .catch(() => null)) as SuggestionApiResponse | null;
-
-        if (response.status === 429) {
-          const retryHeader = Number.parseFloat(
-            response.headers.get("Retry-After") ?? "",
-          );
-          const retryAfterSeconds = Number.isFinite(retryHeader)
-            ? retryHeader
-            : (payload?.retryAfterSeconds ?? 30);
-
-          inlineBackoffUntilRef.current =
-            Date.now() + Math.max(1, retryAfterSeconds) * 1_000;
-
-          const now = Date.now();
-          if (now - inlineLastRateLimitToastAtRef.current > 15_000) {
-            toast.error(
-              `AI suggestions are temporarily rate-limited. Retrying in ${Math.ceil(
-                Math.max(1, retryAfterSeconds),
-              )}s.`,
-            );
-            inlineLastRateLimitToastAtRef.current = now;
-          }
-        }
-
-        clearInlineSuggestion();
-        return;
-      }
-
-      let payload = (await response.json()) as SuggestionApiResponse;
-
-      if (hasAsyncSuggestionHandle(payload)) {
-        const backgroundPayload = await streamBackgroundSuggestion(
-          payload,
-          abortController.signal,
-          (partialSuggestion) => {
-            const latestEditor = editorRef.current;
-            const latestModel = latestEditor?.getModel();
-            const latestPosition = latestEditor?.getPosition();
-            const latestSelection = latestEditor?.getSelection();
-
-            if (
-              !latestEditor ||
-              !latestModel ||
-              !latestPosition ||
-              requestId !== inlineRequestCounterRef.current ||
-              abortController.signal.aborted
-            ) {
-              return;
-            }
-
-            if (latestSelection && !latestSelection.isEmpty()) {
-              return;
-            }
-
-            if (latestModel.uri.toString() !== model.uri.toString()) {
-              return;
-            }
-
-            if (latestModel.getVersionId() !== modelVersionId) {
-              return;
-            }
-
-            if (latestModel.getOffsetAt(latestPosition) !== cursorOffset) {
-              return;
-            }
-
-            inlineSuggestionRef.current = {
-              offset: cursorOffset,
-              lineNumber: latestPosition.lineNumber,
-              column: latestPosition.column,
-              modelVersionId,
-              text: partialSuggestion,
-            };
-
-            triggerInlineSuggestionWidget();
-          },
-        );
-
-        if (!backgroundPayload) {
-          clearInlineSuggestion();
-          return;
-        }
-
-        payload = backgroundPayload;
-      }
-
-      const suggestionText = sanitizeInlineSuggestion(
-        payload.suggestion ?? payload.sugegstions ?? "",
-      );
-
-      if (!suggestionText) {
-        clearInlineSuggestion();
-        return;
-      }
-
-      const latestEditor = editorRef.current;
-      if (
-        !latestEditor ||
-        requestId !== inlineRequestCounterRef.current ||
-        abortController.signal.aborted
-      ) {
-        return;
-      }
-
-      const latestModel = latestEditor.getModel();
-      const latestPosition = latestEditor.getPosition();
-      const latestSelection = latestEditor.getSelection();
-
-      if (!latestModel || !latestPosition) {
-        return;
-      }
-
-      if (latestSelection && !latestSelection.isEmpty()) {
-        clearInlineSuggestion();
-        return;
-      }
-
-      if (latestModel.uri.toString() !== model.uri.toString()) {
-        return;
-      }
-
-      if (latestModel.getVersionId() !== modelVersionId) {
-        return;
-      }
-
-      if (latestModel.getOffsetAt(latestPosition) !== cursorOffset) {
-        return;
-      }
-
-      inlineSuggestionRef.current = {
-        offset: cursorOffset,
-        lineNumber: latestPosition.lineNumber,
-        column: latestPosition.column,
-        modelVersionId,
-        text: suggestionText,
-      };
-
-      triggerInlineSuggestionWidget();
-    } catch {
-      if (!abortController.signal.aborted) {
-        clearInlineSuggestion();
-      }
-    } finally {
-      if (inlineRequestAbortRef.current === abortController) {
-        inlineRequestAbortRef.current = null;
-      }
-    }
-  }, [
-    buildRequestProjectContext,
-    clearInlineSuggestion,
-    currentFileReference,
-    readOnly,
-    streamBackgroundSuggestion,
-    triggerInlineSuggestionWidget,
-  ]);
-
-  const scheduleInlineSuggestion = useCallback(() => {
-    if (readOnly) {
-      return;
-    }
-
-    if (inlineDebounceTimeoutRef.current) {
-      clearTimeout(inlineDebounceTimeoutRef.current);
-    }
-
-    inlineDebounceTimeoutRef.current = setTimeout(() => {
-      inlineDebounceTimeoutRef.current = null;
-      void requestInlineSuggestion();
-    }, INLINE_SUGGESTION_DEBOUNCE_MS);
-  }, [readOnly, requestInlineSuggestion]);
-
-  const registerInlineCompletionsProvider = useCallback(() => {
-    const editor = editorRef.current;
-    const monacoApi = monacoRef.current;
-    if (!editor || !monacoApi) {
-      return;
-    }
-
-    const model = editor.getModel();
-    if (!model) {
-      return;
-    }
-
-    inlineProviderDisposableRef.current?.dispose();
-    inlineProviderDisposableRef.current =
-      monacoApi.languages.registerInlineCompletionsProvider(
-        model.getLanguageId(),
-        {
-          provideInlineCompletions: (providerModel, position) => {
-            const suggestion = inlineSuggestionRef.current;
-            const activeModel = editorRef.current?.getModel();
-
-            if (!suggestion || !activeModel) {
-              return { items: [] };
-            }
-
-            if (providerModel.uri.toString() !== activeModel.uri.toString()) {
-              return { items: [] };
-            }
-
-            if (providerModel.getVersionId() !== suggestion.modelVersionId) {
-              return { items: [] };
-            }
-
-            if (
-              position.lineNumber !== suggestion.lineNumber ||
-              position.column !== suggestion.column
-            ) {
-              return { items: [] };
-            }
-
-            if (providerModel.getOffsetAt(position) !== suggestion.offset) {
-              return { items: [] };
-            }
-
-            return {
-              items: [
-                {
-                  insertText: suggestion.text,
-                  range: new monacoApi.Range(
-                    position.lineNumber,
-                    position.column,
-                    position.lineNumber,
-                    position.column,
-                  ),
-                  completeBracketPairs: true,
-                },
-              ],
-            };
-          },
-          disposeInlineCompletions: () => {},
-          onDidChangeInlineCompletions: (listener) => {
-            inlineChangeNotifierRef.current = listener;
-            return {
-              dispose: () => {
-                inlineChangeNotifierRef.current = null;
-              },
-            };
-          },
-        },
-      );
-  }, []);
-
-  useEffect(() => {
-    registerInlineCompletionsProvider();
-  }, [currentFileReference, registerInlineCompletionsProvider]);
-
-  useEffect(() => {
-    if (!readOnly) {
-      return;
-    }
-
-    inlineRequestAbortRef.current?.abort();
-
-    if (inlineDebounceTimeoutRef.current) {
-      clearTimeout(inlineDebounceTimeoutRef.current);
-      inlineDebounceTimeoutRef.current = null;
-    }
-
-    clearInlineSuggestion(true);
-  }, [clearInlineSuggestion, readOnly]);
 
   const handleApplyAiTransform = useCallback(async () => {
     if (isApplyingAi || readOnly) {
@@ -1130,12 +664,10 @@ export const CodeEditor = ({
       }
 
       setAiInstruction("");
-      clearInlineSuggestion(true);
       emitState(true);
       toast.success("Applied AI update to selected code.");
       requestAnimationFrame(() => {
         updateSelectionBarLayout();
-        scheduleInlineSuggestion();
       });
     } catch (error) {
       toast.error(getErrorMessage(error, "Failed to update selected code."));
@@ -1149,9 +681,7 @@ export const CodeEditor = ({
     formatInsertedRange,
     isApplyingAi,
     readOnly,
-    clearInlineSuggestion,
     currentFileReference,
-    scheduleInlineSuggestion,
     streamBackgroundSuggestion,
     updateSelectionBarLayout,
   ]);
@@ -1333,106 +863,23 @@ export const CodeEditor = ({
     );
   }, []);
 
-  const commitInlineSuggestionAtCursor = useCallback(() => {
-    const editor = editorRef.current;
-    const model = editor?.getModel();
-    const position = editor?.getPosition();
-    const selection = editor?.getSelection();
-    const suggestion = inlineSuggestionRef.current;
-
-    if (!editor || !model || !position || !suggestion) {
-      return false;
-    }
-
-    if (selection && !selection.isEmpty()) {
-      return false;
-    }
-
-    if (model.getVersionId() !== suggestion.modelVersionId) {
-      return false;
-    }
-
-    if (
-      position.lineNumber !== suggestion.lineNumber ||
-      position.column !== suggestion.column
-    ) {
-      return false;
-    }
-
-    if (model.getOffsetAt(position) !== suggestion.offset) {
-      return false;
-    }
-
-    const startPosition = position;
-    editor.trigger("orbit-inline", "editor.action.inlineSuggest.commit", {});
-    clearInlineSuggestion(true);
-
-    const endPosition = editor.getPosition();
-    if (endPosition) {
-      void formatInsertedRange(startPosition, endPosition);
-    }
-
-    return true;
-  }, [clearInlineSuggestion, formatInsertedRange]);
-
   const handleMount = useCallback<OnMount>(
     (editor, monacoApi) => {
       editorRef.current = editor;
       monacoRef.current = monacoApi;
 
-      registerInlineCompletionsProvider();
-
-      const acceptInlineSuggestionAction = editor.addAction({
-        id: "orbit.inlineSuggest.accept",
-        label: "Accept AI inline suggestion",
-        keybindings: [monacoApi.KeyCode.Tab],
-        precondition: "inlineSuggestionVisible && !editorHasSelection",
-        run: () => {
-          void commitInlineSuggestionAtCursor();
-        },
-      });
-
-      const hideInlineSuggestionAction = editor.addAction({
-        id: "orbit.inlineSuggest.hide",
-        label: "Hide AI inline suggestion",
-        keybindings: [monacoApi.KeyCode.Escape],
-        precondition: "inlineSuggestionVisible",
-        run: () => {
-          editor.trigger(
-            "orbit-inline",
-            "editor.action.inlineSuggest.hide",
-            {},
-          );
-          clearInlineSuggestion(true);
-        },
-      });
-
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [
         editor.onDidChangeCursorSelection(() => {
           emitState(false);
-
-          const selection = editor.getSelection();
-          if (selection && !selection.isEmpty()) {
-            clearInlineSuggestion();
-          } else {
-            scheduleInlineSuggestion();
-          }
-
           updateSelectionBarLayout();
         }),
         editor.onDidChangeModelContent(() => {
           emitState(true);
-          clearInlineSuggestion();
-          scheduleInlineSuggestion();
           updateSelectionBarLayout();
         }),
         editor.onDidChangeModel(() => {
           emitState(true);
-          inlineRequestAbortRef.current?.abort();
-          clearInlineSuggestion(true);
-          registerInlineCompletionsProvider();
-          scheduleInlineSuggestion();
           updateSelectionBarLayout();
         }),
         editor.onDidScrollChange(() => {
@@ -1442,33 +889,10 @@ export const CodeEditor = ({
           updateSelectionBarLayout();
         }),
         editor.onDidFocusEditorText(() => {
-          scheduleInlineSuggestion();
           updateSelectionBarLayout();
         }),
         editor.onDidBlurEditorText(() => {
-          inlineRequestAbortRef.current?.abort();
-
-          if (inlineDebounceTimeoutRef.current) {
-            clearTimeout(inlineDebounceTimeoutRef.current);
-            inlineDebounceTimeoutRef.current = null;
-          }
-
-          clearInlineSuggestion();
           onBlur?.();
-        }),
-        editor.onKeyDown((event) => {
-          if (event.keyCode !== monacoApi.KeyCode.Tab || readOnly) {
-            return;
-          }
-
-          const didCommit = commitInlineSuggestionAtCursor();
-          if (didCommit) {
-            event.preventDefault();
-            event.stopPropagation();
-            return;
-          }
-
-          scheduleInlineSuggestion();
         }),
         editor.onMouseDown((event) => {
           if (
@@ -1487,27 +911,13 @@ export const CodeEditor = ({
           editor.revealLineInCenterIfOutsideViewport(lineNumber);
           editor.focus();
           emitState(false);
-          scheduleInlineSuggestion();
         }),
-        acceptInlineSuggestionAction,
-        hideInlineSuggestionAction,
       ];
 
       restoreInitialState(editor, monacoApi);
       updateSelectionBarLayout();
-      scheduleInlineSuggestion();
     },
-    [
-      clearInlineSuggestion,
-      commitInlineSuggestionAtCursor,
-      emitState,
-      onBlur,
-      readOnly,
-      registerInlineCompletionsProvider,
-      restoreInitialState,
-      scheduleInlineSuggestion,
-      updateSelectionBarLayout,
-    ],
+    [emitState, onBlur, restoreInitialState, updateSelectionBarLayout],
   );
 
   const language = useMemo(
@@ -1568,10 +978,7 @@ export const CodeEditor = ({
       suggestSelection: "first",
       acceptSuggestionOnEnter: "smart",
       inlineSuggest: {
-        enabled: !readOnly,
-        mode: "subword",
-        suppressSuggestions: false,
-        showToolbar: "onHover",
+        enabled: false,
       },
       snippetSuggestions: "inline",
       wordBasedSuggestions: "currentDocument",

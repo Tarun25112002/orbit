@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildSuggestionFingerprint,
   generateSuggestion,
+  normalizeSuggestion,
   prepareSuggestionRequest,
 } from "@/lib/suggestion-engine";
 
@@ -36,6 +37,17 @@ describe("suggestion-engine", () => {
     expect(request.mode).toBe("autocomplete");
     expect(request.input.language).toBe("TypeScript");
     expect(request.fingerprint).toBe(sameFingerprint);
+  });
+
+  it("normalizes autocomplete suggestions to suffix-only text", () => {
+    const result = normalizeSuggestion(
+      "return answer;",
+      "autocomplete",
+      "  return",
+      "",
+    );
+
+    expect(result).toBe(" answer;");
   });
 
   it("retries transient provider failures and returns the final suggestion", async () => {
@@ -93,7 +105,7 @@ describe("suggestion-engine", () => {
       lineNumber: 2,
     });
 
-    expect(result.suggestion).toBe("return answer;");
+    expect(result.suggestion).toBe(" answer;");
     expect(result.attempts).toBe(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });

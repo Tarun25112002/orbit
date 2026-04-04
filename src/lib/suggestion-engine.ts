@@ -187,6 +187,24 @@ const removeOverlapWithFollowingText = (
   return suggestion;
 };
 
+const removeOverlapWithLeadingText = (
+  suggestion: string,
+  textBefore: string,
+) => {
+  if (!suggestion || !textBefore) {
+    return suggestion;
+  }
+
+  const maxOverlap = Math.min(suggestion.length, textBefore.length, 200);
+  for (let overlap = maxOverlap; overlap > 0; overlap -= 1) {
+    if (textBefore.slice(-overlap) === suggestion.slice(0, overlap)) {
+      return suggestion.slice(overlap);
+    }
+  }
+
+  return suggestion;
+};
+
 const sanitizeProjectContext = (
   projectContext?: SuggestionProjectContext,
 ): SuggestionProjectContext | undefined => {
@@ -369,6 +387,7 @@ export const buildTransformPrompt = (
 export const normalizeSuggestion = (
   suggestion: string,
   mode: "autocomplete" | "transform",
+  textBeforeCursor: string,
   textAfterCursor: string,
 ) => {
   let normalized = trimTrailingWhitespace(
@@ -376,6 +395,7 @@ export const normalizeSuggestion = (
   ).slice(0, MAX_SUGGESTION_CHARS);
 
   if (mode === "autocomplete") {
+    normalized = removeOverlapWithLeadingText(normalized, textBeforeCursor);
     normalized = removeOverlapWithFollowingText(normalized, textAfterCursor);
   }
 
@@ -502,6 +522,7 @@ export const buildSuggestionExecutionInput = ({
   return {
     mode,
     llmPrompt,
+    textBeforeCursor: input.textBeforeCursor ?? "",
     textAfterCursor: input.textAfterCursor ?? "",
   };
 };
@@ -595,6 +616,7 @@ export async function generateSuggestion(
         let suggestion = normalizeSuggestion(
           firstResponse.message.content,
           mode,
+          execution.textBeforeCursor,
           execution.textAfterCursor,
         );
 
@@ -613,6 +635,7 @@ export async function generateSuggestion(
           suggestion = normalizeSuggestion(
             continuationResponse.message.content,
             mode,
+            execution.textBeforeCursor,
             execution.textAfterCursor,
           );
         }
