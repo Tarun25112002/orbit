@@ -1,12 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import MonacoEditor, {
   type BeforeMount,
   type OnMount,
 } from "@monaco-editor/react";
 import type * as Monaco from "monaco-editor";
 import { emmetCSS, emmetHTML, emmetJSX } from "emmet-monaco-es";
+import { toast } from "sonner";
 
 import {
   type CursorState,
@@ -17,6 +25,8 @@ import {
   getMonacoLanguage,
 } from "../utils/language-detection";
 import { EditorContextMenu } from "./editor-context-menu";
+import { EditorSelectionAiBar } from "./editor-selection-ai-bar";
+import { getErrorMessage } from "@/lib/errors";
 
 const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
@@ -167,6 +177,69 @@ export const CodeEditor = ({
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
 
+  const [selectionBar, setSelectionBar] = useState<{
+    top: number;
+    left: number;
+    charCount: number;
+  } | null>(null);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [isApplyingAi, setIsApplyingAi] = useState(false);
+
+  const updateSelectionBarLayout = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor || readOnly) {
+      setSelectionBar(null);
+      return;
+    }
+
+    const model = editor.getModel();
+    const sel = editor.getSelection();
+    if (!model || !sel || sel.isEmpty()) {
+      setSelectionBar(null);
+      return;
+    }
+
+    const endPos = sel.getEndPosition();
+    const coords = editor.getScrolledVisiblePosition(endPos);
+    if (!coords) {
+      setSelectionBar(null);
+      return;
+    }
+
+    const dom = editor.getDomNode();
+    if (!dom) {
+      setSelectionBar(null);
+      return;
+    }
+
+    const editorRect = dom.getBoundingClientRect();
+    const text = model.getValueInRange(sel);
+
+    const top = editorRect.top + coords.top + coords.height + 6;
+    const left = editorRect.left + coords.left;
+
+    setSelectionBar({
+      top,
+      left,
+      charCount: text.length,
+    });
+  }, [readOnly]);
+
+  useEffect(() => {
+    if (readOnly || !selectionBar) {
+      return;
+    }
+
+    const onResize = () => {
+      updateSelectionBarLayout();
+    };
+
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+    };
+  }, [readOnly, selectionBar, updateSelectionBarLayout]);
+
   useEffect(() => {
     return () => {
       disposablesRef.current.forEach((disposable) => disposable.dispose());
@@ -280,6 +353,60 @@ export const CodeEditor = ({
     [triggerInlineSuggestionWidget],
   );
 
+  const formatInsertedRange = useCallback(
+    async (startPosition: Monaco.Position, endPosition: Monaco.Position) => {
+      const editor = editorRef.current;
+      const monacoApi = monacoRef.current;
+      const model = editor?.getModel();
+      if (!editor || !monacoApi || !model || readOnly) {
+        return;
+      }
+
+      const startOffset = model.getOffsetAt(startPosition);
+      const endOffset = model.getOffsetAt(endPosition);
+      if (endOffset <= startOffset) {
+        return;
+      }
+
+      const start = model.getPositionAt(startOffset);
+      const end = model.getPositionAt(endOffset);
+
+      editor.setSelection(
+        new monacoApi.Selection(
+          start.lineNumber,
+          start.column,
+          end.lineNumber,
+          end.column,
+        ),
+      );
+
+      const formatSelectionAction = editor.getAction(
+        "editor.action.formatSelection",
+      );
+      if (formatSelectionAction) {
+        await formatSelectionAction.run();
+      } else {
+        const formatDocumentAction = editor.getAction(
+          "editor.action.formatDocument",
+        );
+        if (formatDocumentAction) {
+          await formatDocumentAction.run();
+        }
+      }
+
+      editor.setSelection(
+        new monacoApi.Selection(
+          end.lineNumber,
+          end.column,
+          end.lineNumber,
+          end.column,
+        ),
+      );
+      editor.setPosition(end);
+    },
+    [readOnly],
+  );
+
   const requestInlineSuggestion = useCallback(async () => {
     if (readOnly) {
       return;
@@ -315,7 +442,10 @@ export const CodeEditor = ({
       INLINE_SUGGESTION_MAX_AFTER,
     );
 
-    if (textBeforeCursor.trim().length === 0 && textAfterCursor.trim().length === 0) {
+    if (
+      textBeforeCursor.trim().length === 0 &&
+      textAfterCursor.trim().length === 0
+    ) {
       clearInlineSuggestion();
       return;
     }
@@ -345,6 +475,7 @@ export const CodeEditor = ({
             new monacoApi.Range(previousStartLine, 1, position.lineNumber, 1),
           )
         : "";
+
     const nextLines =
       position.lineNumber < nextEndLine
         ? model.getValueInRange(
@@ -449,7 +580,12 @@ export const CodeEditor = ({
         inlineRequestAbortRef.current = null;
       }
     }
-  }, [clearInlineSuggestion, filename, readOnly, triggerInlineSuggestionWidget]);
+  }, [
+    clearInlineSuggestion,
+    filename,
+    readOnly,
+    triggerInlineSuggestionWidget,
+  ]);
 
   const scheduleInlineSuggestion = useCallback(() => {
     if (readOnly) {
@@ -479,55 +615,60 @@ export const CodeEditor = ({
     }
 
     inlineProviderDisposableRef.current?.dispose();
-    inlineProviderDisposableRef.current = monacoApi.languages.registerInlineCompletionsProvider(
-      model.getLanguageId(),
-      {
-        provideInlineCompletions: (providerModel, position) => {
-          const suggestion = inlineSuggestionRef.current;
-          const activeModel = editorRef.current?.getModel();
+    inlineProviderDisposableRef.current =
+      monacoApi.languages.registerInlineCompletionsProvider(
+        model.getLanguageId(),
+        {
+          provideInlineCompletions: (providerModel, position) => {
+            const suggestion = inlineSuggestionRef.current;
+            const activeModel = editorRef.current?.getModel();
 
-          if (!suggestion || !activeModel) {
-            return { items: [] };
-          }
+            if (!suggestion || !activeModel) {
+              return { items: [] };
+            }
 
-          if (providerModel.uri.toString() !== activeModel.uri.toString()) {
-            return { items: [] };
-          }
+            if (providerModel.uri.toString() !== activeModel.uri.toString()) {
+              return { items: [] };
+            }
 
-          if (providerModel.getVersionId() !== suggestion.modelVersionId) {
-            return { items: [] };
-          }
+            if (providerModel.getVersionId() !== suggestion.modelVersionId) {
+              return { items: [] };
+            }
 
-          if (
-            position.lineNumber !== suggestion.lineNumber ||
-            position.column !== suggestion.column
-          ) {
-            return { items: [] };
-          }
+            if (
+              position.lineNumber !== suggestion.lineNumber ||
+              position.column !== suggestion.column
+            ) {
+              return { items: [] };
+            }
 
-          if (providerModel.getOffsetAt(position) !== suggestion.offset) {
-            return { items: [] };
-          }
+            if (providerModel.getOffsetAt(position) !== suggestion.offset) {
+              return { items: [] };
+            }
 
-          return {
-            items: [
-              {
-                insertText: suggestion.text,
-                range: new monacoApi.Range(
-                  position.lineNumber,
-                  position.column,
-                  position.lineNumber,
-                  position.column,
-                ),
-                completeBracketPairs: true,
-              },
-            ],
-          };
+            return {
+              items: [
+                {
+                  insertText: suggestion.text,
+                  range: new monacoApi.Range(
+                    position.lineNumber,
+                    position.column,
+                    position.lineNumber,
+                    position.column,
+                  ),
+                  completeBracketPairs: true,
+                },
+              ],
+            };
+          },
+          disposeInlineCompletions: () => {},
         },
-        freeInlineCompletions: () => {},
-      },
-    );
+      );
   }, []);
+
+  useEffect(() => {
+    registerInlineCompletionsProvider();
+  }, [filename, registerInlineCompletionsProvider]);
 
   useEffect(() => {
     if (!readOnly) {
@@ -544,9 +685,128 @@ export const CodeEditor = ({
     clearInlineSuggestion(true);
   }, [clearInlineSuggestion, readOnly]);
 
-  useEffect(() => {
-    registerInlineCompletionsProvider();
-  }, [filename, registerInlineCompletionsProvider]);
+  const handleApplyAiTransform = useCallback(async () => {
+    if (isApplyingAi || readOnly) {
+      return;
+    }
+
+    const editor = editorRef.current;
+    const model = editor?.getModel();
+    const sel = editor?.getSelection();
+    if (!editor || !model || !sel || sel.isEmpty()) {
+      toast.error("Select a piece of code first.");
+      return;
+    }
+
+    const instruction = aiInstruction.trim();
+    if (!instruction) {
+      toast.error("Describe what you want changed.");
+      return;
+    }
+
+    const selectedText = model.getValueInRange(sel);
+    const startOffset = model.getOffsetAt(sel.getStartPosition());
+    const endOffset = model.getOffsetAt(sel.getEndPosition());
+    const fullCode = model.getValue();
+    const lineNumber = sel.endLineNumber;
+
+    setIsApplyingAi(true);
+
+    try {
+      const response = await fetch("/api/suggestion", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mode: "transform",
+          fileName: filename,
+          code: fullCode,
+          instruction,
+          selectedCode: selectedText,
+          selectionStartOffset: startOffset,
+          selectionEndOffset: endOffset,
+          lineNumber,
+          textBeforeCursor: fullCode.slice(0, startOffset),
+          textAfterCursor: fullCode.slice(endOffset),
+          cursorOffset: startOffset,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as {
+        suggestion?: string;
+        sugegstions?: string;
+        error?: string;
+      } | null;
+
+      if (!response.ok) {
+        throw new Error(payload?.error ?? "Failed to process selected code.");
+      }
+
+      const replacement = payload?.suggestion ?? payload?.sugegstions ?? "";
+      if (!replacement) {
+        toast.error("AI did not return updated code for this selection.");
+        return;
+      }
+
+      const latestModel = editor.getModel();
+      const latestSel = editor.getSelection();
+      if (
+        !latestModel ||
+        !latestSel ||
+        latestSel.isEmpty() ||
+        latestModel.getValueInRange(latestSel) !== selectedText
+      ) {
+        toast.error(
+          "Selection changed before the response arrived. Try again.",
+        );
+        return;
+      }
+
+      editor.executeEdits("orbit-ai-transform", [
+        {
+          range: latestSel,
+          text: replacement,
+          forceMoveMarkers: true,
+        },
+      ]);
+
+      const transformedModel = editor.getModel();
+      if (transformedModel) {
+        const selectionStart = latestSel.getStartPosition();
+        const selectionStartOffset =
+          transformedModel.getOffsetAt(selectionStart);
+        const selectionEnd = transformedModel.getPositionAt(
+          selectionStartOffset + replacement.length,
+        );
+
+        await formatInsertedRange(selectionStart, selectionEnd);
+      }
+
+      setAiInstruction("");
+      clearInlineSuggestion(true);
+      emitState(true);
+      toast.success("Applied AI update to selected code.");
+      requestAnimationFrame(() => {
+        updateSelectionBarLayout();
+        scheduleInlineSuggestion();
+      });
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to update selected code."));
+    } finally {
+      setIsApplyingAi(false);
+    }
+  }, [
+    aiInstruction,
+    emitState,
+    filename,
+    formatInsertedRange,
+    isApplyingAi,
+    readOnly,
+    clearInlineSuggestion,
+    scheduleInlineSuggestion,
+    updateSelectionBarLayout,
+  ]);
 
   const runEditorAction = useCallback((actionId: string) => {
     const editor = editorRef.current;
@@ -738,12 +998,18 @@ export const CodeEditor = ({
         keybindings: [monacoApi.KeyCode.Tab],
         precondition: "inlineSuggestionVisible && !editorHasSelection",
         run: () => {
+          const startPosition = editor.getPosition();
           editor.trigger(
             "orbit-inline",
             "editor.action.inlineSuggest.commit",
             {},
           );
           clearInlineSuggestion(true);
+
+          const endPosition = editor.getPosition();
+          if (startPosition && endPosition) {
+            void formatInsertedRange(startPosition, endPosition);
+          }
         },
       });
 
@@ -753,7 +1019,11 @@ export const CodeEditor = ({
         keybindings: [monacoApi.KeyCode.Escape],
         precondition: "inlineSuggestionVisible",
         run: () => {
-          editor.trigger("orbit-inline", "editor.action.inlineSuggest.hide", {});
+          editor.trigger(
+            "orbit-inline",
+            "editor.action.inlineSuggest.hide",
+            {},
+          );
           clearInlineSuggestion(true);
         },
       });
@@ -766,15 +1036,17 @@ export const CodeEditor = ({
           const selection = editor.getSelection();
           if (selection && !selection.isEmpty()) {
             clearInlineSuggestion();
-            return;
+          } else {
+            scheduleInlineSuggestion();
           }
 
-          scheduleInlineSuggestion();
+          updateSelectionBarLayout();
         }),
         editor.onDidChangeModelContent(() => {
           emitState(true);
           clearInlineSuggestion();
           scheduleInlineSuggestion();
+          updateSelectionBarLayout();
         }),
         editor.onDidChangeModel(() => {
           emitState(true);
@@ -782,9 +1054,17 @@ export const CodeEditor = ({
           clearInlineSuggestion(true);
           registerInlineCompletionsProvider();
           scheduleInlineSuggestion();
+          updateSelectionBarLayout();
+        }),
+        editor.onDidScrollChange(() => {
+          updateSelectionBarLayout();
+        }),
+        editor.onDidLayoutChange(() => {
+          updateSelectionBarLayout();
         }),
         editor.onDidFocusEditorText(() => {
           scheduleInlineSuggestion();
+          updateSelectionBarLayout();
         }),
         editor.onDidBlurEditorText(() => {
           inlineRequestAbortRef.current?.abort();
@@ -821,15 +1101,18 @@ export const CodeEditor = ({
       ];
 
       restoreInitialState(editor, monacoApi);
+      updateSelectionBarLayout();
       scheduleInlineSuggestion();
     },
     [
       clearInlineSuggestion,
       emitState,
+      formatInsertedRange,
       onBlur,
       registerInlineCompletionsProvider,
       restoreInitialState,
       scheduleInlineSuggestion,
+      updateSelectionBarLayout,
     ],
   );
 
@@ -931,6 +1214,17 @@ export const CodeEditor = ({
     [onChange],
   );
 
+  const handleAiInstructionKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== "Enter" || isApplyingAi) {
+        return;
+      }
+      event.preventDefault();
+      void handleApplyAiTransform();
+    },
+    [handleApplyAiTransform, isApplyingAi],
+  );
+
   return (
     <EditorContextMenu
       onCut={() => {
@@ -974,6 +1268,18 @@ export const CodeEditor = ({
           onChange={handleChange}
         />
       </div>
+      {!readOnly && selectionBar && (
+        <EditorSelectionAiBar
+          top={selectionBar.top}
+          left={selectionBar.left}
+          selectedCharCount={selectionBar.charCount}
+          instruction={aiInstruction}
+          onInstructionChange={setAiInstruction}
+          onApply={handleApplyAiTransform}
+          onKeyDown={handleAiInstructionKeyDown}
+          isApplying={isApplyingAi}
+        />
+      )}
     </EditorContextMenu>
   );
 };

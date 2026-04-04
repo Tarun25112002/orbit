@@ -1,11 +1,17 @@
-import { google } from "@ai-sdk/google";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateText, Output } from "ai";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+/** Set `GOOGLE_GENERATIVE_AI_API_KEY` in `.env.local` for Gemini (see @ai-sdk/google). */
+
 const MAX_CONTEXT_CHARS = 5_000;
 const MAX_CODE_WINDOW_CHARS = 24_000;
 const MAX_SUGGESTION_CHARS = 1_200;
+const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+const GEMINI_API_KEY =
+  process.env.GOOGLE_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+const gemini = createGoogleGenerativeAI({ apiKey: GEMINI_API_KEY });
 
 const requestSchema = z
   .object({
@@ -84,6 +90,12 @@ const buildCodeWindow = (code: string, cursorOffset?: number) => {
 const removeCodeFence = (value: string) =>
   value.replace(/^```[a-zA-Z0-9_-]*\n?/, "").replace(/\n?```$/, "");
 
+const trimTrailingWhitespace = (value: string) =>
+  value
+    .split("\n")
+    .map((line) => line.replace(/[ \t]+$/g, ""))
+    .join("\n");
+
 const removeOverlapWithFollowingText = (
   suggestion: string,
   textAfter: string,
@@ -115,6 +127,7 @@ const buildAutocompletePrompt = (input: z.infer<typeof requestSchema>) => {
     "You are an inline code autocomplete engine.",
     "Generate only the code suffix that should be inserted at the cursor.",
     "Do not add markdown, explanations, or code fences.",
+    "The suggestion must be well formatted and match surrounding indentation and spacing style.",
     "Never repeat text that is already before the cursor.",
     "Avoid duplicating the text that already exists after the cursor.",
     "If no useful completion is appropriate, return an empty string.",
@@ -151,6 +164,7 @@ const buildTransformPrompt = (input: z.infer<typeof requestSchema>) => {
     "You rewrite selected code based on user instruction.",
     "Return only the replacement code for the selection.",
     "Do not add markdown, explanations, or code fences.",
+    "Return well-formatted code with consistent indentation, spacing, and line breaks.",
     "Preserve language syntax and indentation style.",
     "If the instruction is unsafe or not actionable, return the original selected code unchanged.",
     "",
@@ -175,7 +189,9 @@ const normalizeSuggestion = (
   mode: "autocomplete" | "transform",
   textAfterCursor: string,
 ) => {
-  let normalized = removeCodeFence(suggestion).slice(0, MAX_SUGGESTION_CHARS);
+  let normalized = trimTrailingWhitespace(
+    removeCodeFence(suggestion).replace(/\r\n/g, "\n"),
+  ).slice(0, MAX_SUGGESTION_CHARS);
 
   if (mode === "autocomplete") {
     normalized = removeOverlapWithFollowingText(normalized, textAfterCursor);
@@ -186,6 +202,16 @@ const normalizeSuggestion = (
 
 export async function POST(request: Request) {
   try {
+    if (!GEMINI_API_KEY) {
+      return NextResponse.json(
+        {
+          error:
+            "Missing Gemini API key. Set GOOGLE_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY) in your environment.",
+        },
+        { status: 500 },
+      );
+    }
+
     const body = await request.json();
     const parsed = requestSchema.safeParse(body);
 
@@ -210,7 +236,7 @@ export async function POST(request: Request) {
         : buildAutocompletePrompt(input);
 
     const { output } = await generateText({
-      model: google("gemini-2.5-flash"),
+      model: gemini(GEMINI_MODEL),
       output: Output.object({ schema: suggestionSchema }),
       prompt,
       experimental_telemetry: {

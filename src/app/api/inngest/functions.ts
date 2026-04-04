@@ -1,7 +1,12 @@
 import { inngest } from "@/inngest/client";
 import { firecrawl } from "@/lib/firecrawl";
 import { generateText } from "ai";
-import { google } from "@ai-sdk/google";
+import { createGoogleGenerativeAI } from "@ai-sdk/google";
+
+const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
+const GEMINI_API_KEY =
+  process.env.GOOGLE_API_KEY ?? process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+const gemini = createGoogleGenerativeAI({ apiKey: GEMINI_API_KEY });
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 export const orbit = inngest.createFunction(
   { id: "orbit-generate", triggers: [{ event: "orbit/generate" }] },
@@ -29,8 +34,14 @@ export const orbit = inngest.createFunction(
       ? `Context:\n${scrapedContent}\n\nQuestion: ${prompt}`
       : prompt;
     await step.run("generate-text", async () => {
+      if (!GEMINI_API_KEY) {
+        throw new Error(
+          "Missing Gemini API key. Set GOOGLE_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY).",
+        );
+      }
+
       return await generateText({
-        model: google("gemini-2.5-flash"),
+        model: gemini(GEMINI_MODEL),
         prompt: finalPrompt,
         experimental_telemetry: {
           isEnabled: true,
