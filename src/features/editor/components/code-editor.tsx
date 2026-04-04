@@ -54,6 +54,9 @@ const INLINE_SUGGESTION_DEBOUNCE_MS = 320;
 const INLINE_SUGGESTION_CONTEXT_LINES = 40;
 const INLINE_SUGGESTION_MAX_BEFORE = 2_000;
 const INLINE_SUGGESTION_MAX_AFTER = 1_200;
+const INNGEST_POLL_INTERVAL_MS = 400;
+/** LLM + Inngest durable run can exceed serverless timeouts; allow generous polling. */
+const INNGEST_POLL_TIMEOUT_MS = 180_000;
 
 interface SuggestionApiResponse {
   suggestion?: string;
@@ -61,6 +64,8 @@ interface SuggestionApiResponse {
   error?: string;
   detail?: string;
   retryAfterSeconds?: number;
+  run_id?: string;
+  token?: string;
 }
 
 interface InlineSuggestionState {
@@ -124,6 +129,17 @@ const clampContextText = (value: string, max: number, fromEnd = false) => {
 
   return fromEnd ? value.slice(value.length - max) : value.slice(0, max);
 };
+
+const hasInngestAsyncToken = (
+  payload: SuggestionApiResponse | null,
+): payload is SuggestionApiResponse & { run_id: string; token: string } =>
+  Boolean(
+    payload &&
+    typeof payload.run_id === "string" &&
+    payload.run_id.length > 0 &&
+    typeof payload.token === "string" &&
+    payload.token.length > 0,
+  );
 
 const areSelectionsEqual = (
   left: CursorState["selections"],
@@ -414,6 +430,75 @@ export const CodeEditor = ({
     [readOnly],
   );
 
+  const waitForPollTick = useCallback(
+    (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(new Error("Request aborted"));
+          return;
+        }
+
+        let timeout: ReturnType<typeof setTimeout> | null = null;
+
+        const cleanup = () => {
+          if (timeout) {
+            clearTimeout(timeout);
+          }
+          signal?.removeEventListener("abort", onAbort);
+        };
+
+        const onAbort = () => {
+          cleanup();
+          reject(new Error("Request aborted"));
+        };
+
+        timeout = setTimeout(() => {
+          cleanup();
+          resolve();
+        }, ms);
+
+        signal?.addEventListener("abort", onAbort, { once: true });
+      }),
+    [],
+  );
+
+  const pollBackgroundSuggestion = useCallback(
+    async (runId: string, token: string, signal?: AbortSignal) => {
+      const deadline = Date.now() + INNGEST_POLL_TIMEOUT_MS;
+
+      while (Date.now() < deadline) {
+        const response = await fetch(
+          `/api/suggestion/poll?runId=${encodeURIComponent(runId)}&token=${encodeURIComponent(token)}`,
+          {
+            method: "GET",
+            signal,
+          },
+        );
+
+        const payload = (await response
+          .json()
+          .catch(() => null)) as SuggestionApiResponse | null;
+
+        if (response.ok) {
+          return payload;
+        }
+
+        if ([202, 404, 409, 425, 429].includes(response.status)) {
+          await waitForPollTick(INNGEST_POLL_INTERVAL_MS, signal);
+          continue;
+        }
+
+        const detail = payload?.detail?.trim();
+        throw new Error(
+          `${payload?.error ?? "Failed to poll background suggestion."}${detail ? ` ${detail}` : ""}`,
+        );
+      }
+
+      throw new Error("Timed out waiting for background suggestion result.");
+    },
+    [waitForPollTick],
+  );
+
   const requestInlineSuggestion = useCallback(async () => {
     if (readOnly) {
       return;
@@ -555,7 +640,23 @@ export const CodeEditor = ({
         return;
       }
 
-      const payload = (await response.json()) as SuggestionApiResponse;
+      let payload = (await response.json()) as SuggestionApiResponse;
+
+      if (hasInngestAsyncToken(payload)) {
+        const backgroundPayload = await pollBackgroundSuggestion(
+          payload.run_id,
+          payload.token,
+          abortController.signal,
+        );
+
+        if (!backgroundPayload) {
+          clearInlineSuggestion();
+          return;
+        }
+
+        payload = backgroundPayload;
+      }
+
       const suggestionText = sanitizeInlineSuggestion(
         payload.suggestion ?? payload.sugegstions ?? "",
       );
@@ -620,6 +721,7 @@ export const CodeEditor = ({
   }, [
     clearInlineSuggestion,
     filename,
+    pollBackgroundSuggestion,
     readOnly,
     triggerInlineSuggestionWidget,
   ]);
@@ -778,13 +880,13 @@ export const CodeEditor = ({
         }),
       });
 
-      const payload = (await response.json().catch(() => null)) as {
-        suggestion?: string;
-        sugegstions?: string;
-        error?: string;
-        detail?: string;
-        retryAfterSeconds?: number;
-      } | null;
+      let payload = (await response
+        .json()
+        .catch(() => null)) as SuggestionApiResponse | null;
+
+      if (response.ok && hasInngestAsyncToken(payload)) {
+        payload = await pollBackgroundSuggestion(payload.run_id, payload.token);
+      }
 
       if (!response.ok) {
         const detail = payload?.detail?.trim();
@@ -858,6 +960,7 @@ export const CodeEditor = ({
     filename,
     formatInsertedRange,
     isApplyingAi,
+    pollBackgroundSuggestion,
     readOnly,
     clearInlineSuggestion,
     scheduleInlineSuggestion,

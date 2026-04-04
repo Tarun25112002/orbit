@@ -1,10 +1,15 @@
+import { NonRetriableError, step } from "inngest";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { inngest } from "@/inngest/client";
 import {
   OpenRouterRequestError,
   requestOpenRouterCompletion,
   type OpenRouterChatMessage,
 } from "@/lib/openrouter";
+
+/** Allow the sync portion of the durable endpoint to finish handoff to Inngest. */
+export const maxDuration = 120;
 
 const MAX_CONTEXT_CHARS = 5_000;
 const MAX_CODE_WINDOW_CHARS = 24_000;
@@ -17,7 +22,6 @@ const OPENROUTER_FALLBACK_MODELS = (
   .split(",")
   .map((model) => model.trim())
   .filter((model) => model.length > 0);
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim();
 
 const requestSchema = z
   .object({
@@ -243,126 +247,179 @@ const buildReasoningContinuationMessages = (
   return messages;
 };
 
-export async function POST(request: Request) {
-  try {
-    if (!OPENROUTER_API_KEY) {
-      return NextResponse.json(
-        {
-          error:
-            "Missing OpenRouter API key. Set OPENROUTER_API_KEY in your environment.",
-        },
-        { status: 500 },
+type SuggestionGenerationResult = {
+  modelName: string;
+  suggestion: string;
+};
+
+async function generateSuggestionInStep(
+  apiKey: string,
+  prompt: string,
+  mode: "autocomplete" | "transform",
+  textAfterCursor: string,
+): Promise<SuggestionGenerationResult> {
+  const modelCandidates = Array.from(
+    new Set([OPENROUTER_MODEL, ...OPENROUTER_FALLBACK_MODELS]),
+  );
+
+  let lastError: unknown = null;
+
+  for (const modelName of modelCandidates) {
+    try {
+      const firstResponse = await requestOpenRouterCompletion({
+        apiKey,
+        model: modelName,
+        messages: [{ role: "user", content: prompt }],
+        enableReasoning: true,
+      });
+
+      let suggestion = normalizeSuggestion(
+        firstResponse.message.content,
+        mode,
+        textAfterCursor,
       );
-    }
 
-    const body = await request.json();
-    const parsed = requestSchema.safeParse(body);
-
-    if (!parsed.success) {
-      return NextResponse.json(
-        {
-          error: "Invalid request body",
-          issues: parsed.error.issues.map((issue) => ({
-            path: issue.path.join("."),
-            message: issue.message,
-          })),
-        },
-        { status: 400 },
-      );
-    }
-
-    const input = parsed.data;
-    const mode = input.mode ?? "autocomplete";
-    const prompt =
-      mode === "transform"
-        ? buildTransformPrompt(input)
-        : buildAutocompletePrompt(input);
-
-    const modelCandidates = Array.from(
-      new Set([OPENROUTER_MODEL, ...OPENROUTER_FALLBACK_MODELS]),
-    );
-
-    let lastError: unknown = null;
-
-    for (const modelName of modelCandidates) {
-      try {
-        const firstResponse = await requestOpenRouterCompletion({
-          apiKey: OPENROUTER_API_KEY,
+      if (!suggestion.trim() && firstResponse.message.reasoning_details) {
+        const continuationResponse = await requestOpenRouterCompletion({
+          apiKey,
           model: modelName,
-          messages: [{ role: "user", content: prompt }],
-          enableReasoning: true,
+          messages: buildReasoningContinuationMessages(
+            prompt,
+            firstResponse.message.content,
+            firstResponse.message.reasoning_details,
+          ),
+          enableReasoning: false,
         });
 
-        let suggestion = normalizeSuggestion(
-          firstResponse.message.content,
+        suggestion = normalizeSuggestion(
+          continuationResponse.message.content,
           mode,
-          input.textAfterCursor ?? "",
+          textAfterCursor,
         );
+      }
 
-        if (!suggestion.trim() && firstResponse.message.reasoning_details) {
-          const continuationResponse = await requestOpenRouterCompletion({
-            apiKey: OPENROUTER_API_KEY,
-            model: modelName,
-            messages: buildReasoningContinuationMessages(
-              prompt,
-              firstResponse.message.content,
-              firstResponse.message.reasoning_details,
-            ),
-            enableReasoning: false,
-          });
-
-          suggestion = normalizeSuggestion(
-            continuationResponse.message.content,
-            mode,
-            input.textAfterCursor ?? "",
-          );
+      return {
+        modelName,
+        suggestion,
+      };
+    } catch (structuredError) {
+      lastError = structuredError;
+      if (structuredError instanceof OpenRouterRequestError) {
+        if (structuredError.status === 429) {
+          throw new NonRetriableError(structuredError.message);
         }
-
-        return NextResponse.json({
-          mode,
-          suggestion,
-          sugegstions: suggestion,
-          model: modelName,
-        });
-      } catch (structuredError) {
-        lastError = structuredError;
+        if (structuredError.status >= 400 && structuredError.status < 500) {
+          throw new NonRetriableError(structuredError.message);
+        }
       }
     }
+  }
 
-    throw lastError ?? new Error("Suggestion generation failed");
-  } catch (error) {
-    const errorMessage = getErrorMessage(error);
-    const openRouterError =
-      error instanceof OpenRouterRequestError ? error : null;
+  const fallbackMessage = getErrorMessage(lastError);
+  if (isRateLimitedError(fallbackMessage)) {
+    throw new NonRetriableError(fallbackMessage);
+  }
 
-    const retryAfterSeconds =
-      openRouterError?.retryAfterSeconds ?? getRetryAfterSeconds(errorMessage);
-    const rateLimited =
-      (openRouterError?.status ?? 0) === 429 ||
-      isRateLimitedError(errorMessage);
+  throw lastError ?? new Error("Suggestion generation failed");
+}
 
-    console.error("Suggestion error:", errorMessage, error);
+function mapGenerationErrorToResponse(error: unknown): NextResponse {
+  const errorMessage = getErrorMessage(error);
+  const openRouterError =
+    error instanceof OpenRouterRequestError ? error : null;
 
+  const retryAfterSeconds =
+    openRouterError?.retryAfterSeconds ?? getRetryAfterSeconds(errorMessage);
+  const rateLimited =
+    (openRouterError?.status ?? 0) === 429 ||
+    isRateLimitedError(errorMessage);
+
+  console.error("Suggestion error:", errorMessage, error);
+
+  return NextResponse.json(
+    {
+      error: rateLimited
+        ? "Suggestion service is rate-limited right now."
+        : "Failed to generate suggestion",
+      detail: errorMessage,
+      retryAfterSeconds,
+    },
+    {
+      status: rateLimited
+        ? 429
+        : openRouterError && openRouterError.status >= 400
+          ? openRouterError.status
+          : 500,
+      headers: retryAfterSeconds
+        ? {
+            "Retry-After": String(Math.ceil(retryAfterSeconds)),
+          }
+        : undefined,
+    },
+  );
+}
+
+/**
+ * Durable HTTP endpoint: OpenRouter generation runs inside Inngest `step.run`
+ * so the first response can return `run_id` + `token` (asyncResponse) while work
+ * continues in the background. The editor polls `/api/suggestion/poll` for the
+ * final JSON body.
+ */
+export const POST = inngest.endpoint(async (request) => {
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (!apiKey) {
     return NextResponse.json(
       {
-        error: rateLimited
-          ? "Suggestion service is rate-limited right now."
-          : "Failed to generate suggestion",
-        detail: errorMessage,
-        retryAfterSeconds,
+        error:
+          "Missing OpenRouter API key. Set OPENROUTER_API_KEY in your environment.",
       },
-      {
-        status: rateLimited
-          ? 429
-          : openRouterError && openRouterError.status >= 400
-            ? openRouterError.status
-            : 500,
-        headers: retryAfterSeconds
-          ? {
-              "Retry-After": String(Math.ceil(retryAfterSeconds)),
-            }
-          : undefined,
-      },
+      { status: 500 },
     );
   }
-}
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    body = null;
+  }
+
+  const parsed = requestSchema.safeParse(body);
+
+  if (!parsed.success) {
+    return NextResponse.json(
+      {
+        error: "Invalid request body",
+        issues: parsed.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message,
+        })),
+      },
+      { status: 400 },
+    );
+  }
+
+  const input = parsed.data;
+  const mode = input.mode ?? "autocomplete";
+  const llmPrompt =
+    mode === "transform"
+      ? buildTransformPrompt(input)
+      : buildAutocompletePrompt(input);
+
+  const textAfterCursor = input.textAfterCursor ?? "";
+
+  try {
+    const generation = await step.run("openrouter-code-suggestion", async () =>
+      generateSuggestionInStep(apiKey, llmPrompt, mode, textAfterCursor),
+    );
+
+    return NextResponse.json({
+      mode,
+      suggestion: generation.suggestion,
+      sugegstions: generation.suggestion,
+      model: generation.modelName,
+    });
+  } catch (error) {
+    return mapGenerationErrorToResponse(error);
+  }
+});
