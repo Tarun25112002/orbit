@@ -1,13 +1,29 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { Allotment } from "allotment";
 import { useConvex, useConvexConnectionState } from "convex/react";
-import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  SparklesIcon,
+  XIcon,
+} from "lucide-react";
+import { toast } from "sonner";
 import type { Doc } from "../../../../convex/_generated/dataModel";
 
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/errors";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Kbd } from "@/components/ui/kbd";
 import {
   Popover,
   PopoverContent,
@@ -341,6 +357,28 @@ const sortItems = (items: Doc<"files">[]) =>
     });
   });
 
+const getPrimarySelection = (
+  selections: CursorState["selections"],
+  contentLength: number,
+) => {
+  const nonEmpty = selections.find((selection) => selection.anchor !== selection.head);
+  if (!nonEmpty) {
+    return null;
+  }
+
+  const start = Math.max(
+    0,
+    Math.min(nonEmpty.anchor, nonEmpty.head, contentLength),
+  );
+  const end = Math.max(0, Math.min(Math.max(nonEmpty.anchor, nonEmpty.head), contentLength));
+
+  if (end <= start) {
+    return null;
+  }
+
+  return { start, end };
+};
+
 const BreadcrumbSegment = ({
   ancestor,
   isLast,
@@ -479,6 +517,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     lineEnding: "LF",
     language: "Plain Text",
   });
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [isApplyingAiInstruction, setIsApplyingAiInstruction] = useState(false);
 
   const {
     openTabs,
@@ -533,10 +573,13 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       isMountedRef.current = false;
       if (autoSaveDebounceRef.current) {
         clearTimeout(autoSaveDebounceRef.current);
+        autoSaveDebounceRef.current = null;
       }
       if (autoSaveRetryRef.current) {
         clearTimeout(autoSaveRetryRef.current);
+        autoSaveRetryRef.current = null;
       }
+      queuedSaveRef.current = null;
     };
   }, []);
 
@@ -832,6 +875,118 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [selectedFileId, saveCursorState],
   );
 
+  const primarySelection = useMemo(() => {
+    const range = getPrimarySelection(cursorState.selections, draftContent.length);
+    if (!range) {
+      return null;
+    }
+
+    return {
+      ...range,
+      text: draftContent.slice(range.start, range.end),
+    };
+  }, [cursorState.selections, draftContent]);
+
+  const handleApplyAiInstruction = useCallback(async () => {
+    if (isApplyingAiInstruction) {
+      return;
+    }
+
+    if (selectedFile?.type !== "file") {
+      return;
+    }
+
+    const instruction = aiInstruction.trim();
+    if (!instruction) {
+      toast.error("Type what you want AI to do with the selected code.");
+      return;
+    }
+
+    if (!primarySelection) {
+      toast.error("Select a piece of code first.");
+      return;
+    }
+
+    const baseContent = draftContentRef.current;
+    const selectionSnapshot = primarySelection;
+
+    setIsApplyingAiInstruction(true);
+
+    try {
+      const response = await fetch("/api/suggestion", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mode: "transform",
+          fileName: selectedFile.name,
+          code: baseContent,
+          instruction,
+          selectedCode: selectionSnapshot.text,
+          selectionStartOffset: selectionSnapshot.start,
+          selectionEndOffset: selectionSnapshot.end,
+          lineNumber: cursorState.line,
+          textBeforeCursor: baseContent.slice(0, selectionSnapshot.start),
+          textAfterCursor: baseContent.slice(selectionSnapshot.end),
+          cursorOffset: selectionSnapshot.start,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | { suggestion?: string; sugegstions?: string; error?: string }
+        | null;
+
+      if (!response.ok) {
+        throw new Error(payload?.error ?? "Failed to process selected code.");
+      }
+
+      const replacement = payload?.suggestion ?? payload?.sugegstions ?? "";
+      if (!replacement) {
+        toast.error("AI did not return updated code for this selection.");
+        return;
+      }
+
+      const latestContent = draftContentRef.current;
+      const selectionStillMatches =
+        latestContent.slice(selectionSnapshot.start, selectionSnapshot.end) ===
+        selectionSnapshot.text;
+
+      if (latestContent !== baseContent || !selectionStillMatches) {
+        toast.error("Editor changed before AI response arrived. Try again.");
+        return;
+      }
+
+      setDraftContent(
+        `${latestContent.slice(0, selectionSnapshot.start)}${replacement}${latestContent.slice(selectionSnapshot.end)}`,
+      );
+      setAiInstruction("");
+      toast.success("Applied AI update to selected code.");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Failed to update selected code."));
+    } finally {
+      setIsApplyingAiInstruction(false);
+    }
+  }, [
+    aiInstruction,
+    cursorState.line,
+    isApplyingAiInstruction,
+    primarySelection,
+    selectedFile,
+  ]);
+
+  const handleAiInstructionKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLInputElement>) => {
+      if (event.key !== "Enter" || isApplyingAiInstruction) {
+        return;
+      }
+
+      event.preventDefault();
+      void handleApplyAiInstruction();
+    },
+    [handleApplyAiInstruction, isApplyingAiInstruction],
+  );
+
   const fileSize = useMemo(() => {
     if (!draftContent) return 0;
     return new TextEncoder().encode(draftContent).length;
@@ -960,6 +1115,49 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                         allFiles={projectFiles ?? []}
                         onOpenFile={handlePinTab}
                       />
+                    )}
+
+                    {selectedFile?.type === "file" && (
+                      <div className="flex items-center gap-2 border-b border-[#2d2d2d] bg-[#202020] px-2 py-1.5">
+                        <Input
+                          value={aiInstruction}
+                          onChange={(event) => setAiInstruction(event.target.value)}
+                          onKeyDown={handleAiInstructionKeyDown}
+                          placeholder={
+                            primarySelection
+                              ? "Describe what to change in selected code"
+                              : "Select code first, then type your instruction"
+                          }
+                          className="h-7 border-[#3a3a3a] bg-[#1b1b1b] text-xs text-[#d6d6d6] placeholder:text-[#7a7a7a]"
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={
+                            !primarySelection ||
+                            !aiInstruction.trim() ||
+                            isApplyingAiInstruction
+                          }
+                          onClick={() => {
+                            void handleApplyAiInstruction();
+                          }}
+                          className="h-7 border-[#3a3a3a] bg-[#252526] text-[#d0d0d0] hover:bg-[#303031]"
+                        >
+                          {isApplyingAiInstruction ? (
+                            <Spinner className="size-3.5" />
+                          ) : (
+                            <SparklesIcon className="size-3.5" />
+                          )}
+                          Apply
+                        </Button>
+                        <div className="hidden items-center gap-1 text-[11px] text-[#8f8f8f] lg:flex">
+                          <span>{primarySelection ? `${primarySelection.text.length} chars selected` : "No selection"}</span>
+                          <span className="text-[#5f5f5f]">|</span>
+                          <span>Ghost accept</span>
+                          <Kbd className="h-4 min-w-4 px-1 text-[10px]">Tab</Kbd>
+                        </div>
+                      </div>
                     )}
 
                     <div className="min-h-0 flex-1 overflow-hidden">
