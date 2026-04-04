@@ -13,13 +13,16 @@ import {
 
 const MAX_CONTEXT_CHARS = 5_000;
 const MAX_CODE_WINDOW_CHARS = 24_000;
-const MAX_SUGGESTION_CHARS = 1_200;
 const MAX_WORKSPACE_SUMMARY_CHARS = 1_000;
 const MAX_WORKSPACE_TREE_CHARS = 4_500;
 const MAX_RELATED_FILE_CHARS = 3_000;
 const MAX_RELATED_FILES = 6;
 const MAX_IMPORT_HINTS = 12;
 const MAX_SOURCE_CODE_CHARS = 80_000;
+const MAX_AUTOCOMPLETE_SUGGESTION_CHARS = 1_200;
+const MAX_TRANSFORM_SUGGESTION_CHARS = MAX_SOURCE_CODE_CHARS;
+const TRANSFORM_SELECTION_START_MARKER = "<orbit-selection-start>";
+const TRANSFORM_SELECTION_END_MARKER = "<orbit-selection-end>";
 const OPENROUTER_MODEL =
   process.env.OPENROUTER_MODEL?.trim() || "qwen/qwen3.6-plus:free";
 const OPENROUTER_FALLBACK_MODELS = (
@@ -205,6 +208,36 @@ const removeOverlapWithLeadingText = (
   return suggestion;
 };
 
+const clampOptionalOffset = (value: number | undefined, max: number) => {
+  if (typeof value !== "number") {
+    return value;
+  }
+
+  return Math.max(0, Math.min(value, max));
+};
+
+const buildTransformCodeContext = (input: ParsedSuggestionInput) => {
+  const code = input.code;
+  const startOffset = clampOptionalOffset(input.selectionStartOffset, code.length);
+  const endOffset = clampOptionalOffset(input.selectionEndOffset, code.length);
+
+  if (
+    typeof startOffset !== "number" ||
+    typeof endOffset !== "number" ||
+    endOffset <= startOffset
+  ) {
+    return code;
+  }
+
+  return [
+    code.slice(0, startOffset),
+    TRANSFORM_SELECTION_START_MARKER,
+    code.slice(startOffset, endOffset),
+    TRANSFORM_SELECTION_END_MARKER,
+    code.slice(endOffset),
+  ].join("");
+};
+
 const sanitizeProjectContext = (
   projectContext?: SuggestionProjectContext,
 ): SuggestionProjectContext | undefined => {
@@ -355,14 +388,19 @@ export const buildTransformPrompt = (
   const fileName = input.fileName ?? "untitled";
   const selectedCode = input.selectedCode ?? "";
   const instruction = input.instruction ?? "";
+  const selectionStartOffset = input.selectionStartOffset ?? 0;
+  const selectionEndOffset = input.selectionEndOffset ?? 0;
 
   return [
-    "You rewrite selected code based on user instruction.",
-    "Return only the replacement code for the selection.",
+    "You rewrite code based on user instruction.",
+    "Return the full updated file contents from the first character to the last character.",
+    "Do not return only a snippet or only the selected block.",
     "Do not add markdown, explanations, or code fences.",
     "Return well-formatted code with consistent indentation, spacing, and line breaks.",
-    "Preserve language syntax and indentation style.",
-    "If the instruction is unsafe or not actionable, return the original selected code unchanged.",
+    "Preserve language syntax, imports, and indentation style.",
+    "Keep unchanged code exactly as-is unless a surrounding edit is required for correctness.",
+    `The selected region in the full file is wrapped with ${TRANSFORM_SELECTION_START_MARKER} and ${TRANSFORM_SELECTION_END_MARKER} markers for context only. Do not include those markers in your response.`,
+    "If the instruction is unsafe or not actionable, return the original full file unchanged.",
     "",
     `File: ${fileName}`,
     `Language: ${input.language ?? "Unknown"}`,
@@ -370,17 +408,17 @@ export const buildTransformPrompt = (
     "Instruction:",
     limitContext(instruction, MAX_CONTEXT_CHARS),
     "",
+    `Selection start offset: ${selectionStartOffset}`,
+    `Selection end offset: ${selectionEndOffset}`,
+    "",
     "Selected code:",
     selectedCode,
     ...(projectContextBlock
       ? ["", "Relevant workspace context:", projectContextBlock]
       : []),
     "",
-    "Broader file context:",
-    buildCodeWindow(
-      input.code,
-      input.selectionStartOffset ?? input.cursorOffset,
-    ),
+    "Full current file content:",
+    buildTransformCodeContext(input),
   ].join("\n");
 };
 
@@ -390,13 +428,21 @@ export const normalizeSuggestion = (
   textBeforeCursor: string,
   textAfterCursor: string,
 ) => {
+  const maxChars =
+    mode === "transform"
+      ? MAX_TRANSFORM_SUGGESTION_CHARS
+      : MAX_AUTOCOMPLETE_SUGGESTION_CHARS;
   let normalized = trimTrailingWhitespace(
     removeCodeFence(suggestion).replace(/\r\n/g, "\n"),
-  ).slice(0, MAX_SUGGESTION_CHARS);
+  ).slice(0, maxChars);
 
   if (mode === "autocomplete") {
     normalized = removeOverlapWithLeadingText(normalized, textBeforeCursor);
     normalized = removeOverlapWithFollowingText(normalized, textAfterCursor);
+  } else {
+    normalized = normalized
+      .replaceAll(TRANSFORM_SELECTION_START_MARKER, "")
+      .replaceAll(TRANSFORM_SELECTION_END_MARKER, "");
   }
 
   return normalized;
@@ -454,20 +500,28 @@ const wait = (ms: number) =>
 
 const sanitizeSuggestionRequestBody = (
   input: ParsedSuggestionInput,
-): ParsedSuggestionInput => ({
-  ...input,
-  code: input.code.slice(0, MAX_SOURCE_CODE_CHARS),
-  currentLine: input.currentLine?.slice(0, MAX_CONTEXT_CHARS),
-  previousLines: input.previousLines?.slice(-MAX_CONTEXT_CHARS),
-  nextLines: input.nextLines?.slice(0, MAX_CONTEXT_CHARS),
-  textBeforeCursor: input.textBeforeCursor?.slice(-MAX_CONTEXT_CHARS),
-  textAfterCursor: input.textAfterCursor?.slice(0, MAX_CONTEXT_CHARS),
-  selectedCode: input.selectedCode?.slice(0, MAX_CODE_WINDOW_CHARS),
-  instruction: input.instruction?.slice(0, MAX_CONTEXT_CHARS),
-  fileName: input.fileName?.trim(),
-  language: input.language?.trim(),
-  projectContext: sanitizeProjectContext(input.projectContext),
-});
+) => {
+  const code = input.code.slice(0, MAX_SOURCE_CODE_CHARS);
+  const maxOffset = code.length;
+
+  return {
+    ...input,
+    code,
+    currentLine: input.currentLine?.slice(0, MAX_CONTEXT_CHARS),
+    previousLines: input.previousLines?.slice(-MAX_CONTEXT_CHARS),
+    nextLines: input.nextLines?.slice(0, MAX_CONTEXT_CHARS),
+    textBeforeCursor: input.textBeforeCursor?.slice(-MAX_CONTEXT_CHARS),
+    textAfterCursor: input.textAfterCursor?.slice(0, MAX_CONTEXT_CHARS),
+    cursorOffset: clampOptionalOffset(input.cursorOffset, maxOffset),
+    selectedCode: input.selectedCode?.slice(0, MAX_CODE_WINDOW_CHARS),
+    instruction: input.instruction?.slice(0, MAX_CONTEXT_CHARS),
+    selectionStartOffset: clampOptionalOffset(input.selectionStartOffset, maxOffset),
+    selectionEndOffset: clampOptionalOffset(input.selectionEndOffset, maxOffset),
+    fileName: input.fileName?.trim(),
+    language: input.language?.trim(),
+    projectContext: sanitizeProjectContext(input.projectContext),
+  };
+};
 
 const buildFingerprintPayload = (input: ParsedSuggestionInput) => ({
   mode: input.mode ?? "autocomplete",

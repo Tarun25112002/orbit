@@ -623,49 +623,47 @@ export const CodeEditor = ({
         throw new Error(`${payload.error}${detail ? ` - ${detail}` : ""}`);
       }
 
-      const replacement = payload?.suggestion ?? payload?.sugegstions ?? "";
-      if (!replacement) {
-        toast.error("AI did not return updated code for this selection.");
+      const nextCode = payload?.suggestion ?? payload?.sugegstions ?? "";
+      if (!nextCode) {
+        toast.error("AI did not return updated file code.");
         return;
       }
 
+      const monacoApi = monacoRef.current;
       const latestModel = editor.getModel();
-      const latestSel = editor.getSelection();
-      if (
-        !latestModel ||
-        !latestSel ||
-        latestSel.isEmpty() ||
-        latestModel.getValueInRange(latestSel) !== selectedText
-      ) {
+      if (!latestModel || !monacoApi || latestModel.getValue() !== fullCode) {
         toast.error(
-          "Selection changed before the response arrived. Try again.",
+          "File changed before the response arrived. Try again.",
         );
         return;
       }
 
+      const documentRange = new monacoApi.Range(
+        1,
+        1,
+        latestModel.getLineCount(),
+        latestModel.getLineMaxColumn(latestModel.getLineCount()),
+      );
+
       editor.executeEdits("orbit-ai-transform", [
         {
-          range: latestSel,
-          text: replacement,
+          range: documentRange,
+          text: nextCode,
           forceMoveMarkers: true,
         },
       ]);
 
       const transformedModel = editor.getModel();
       if (transformedModel) {
-        const selectionStart = latestSel.getStartPosition();
-        const selectionStartOffset =
-          transformedModel.getOffsetAt(selectionStart);
-        const selectionEnd = transformedModel.getPositionAt(
-          selectionStartOffset + replacement.length,
-        );
+        const documentStart = transformedModel.getPositionAt(0);
+        const documentEnd = transformedModel.getPositionAt(nextCode.length);
 
-        await formatInsertedRange(selectionStart, selectionEnd);
+        await formatInsertedRange(documentStart, documentEnd);
       }
 
       setAiInstruction("");
       emitState(true);
-      toast.success("Applied AI update to selected code.");
+      toast.success("Applied AI update to the file.");
       requestAnimationFrame(() => {
         updateSelectionBarLayout();
       });
