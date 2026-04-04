@@ -1,5 +1,5 @@
 import { NonRetriableError, step } from "inngest";
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { inngest } from "@/inngest/client";
 import {
@@ -365,7 +365,7 @@ function mapGenerationErrorToResponse(error: unknown): NextResponse {
  * continues in the background. The editor polls `/api/suggestion/poll` for the
  * final JSON body.
  */
-export const POST = inngest.endpoint(async (request) => {
+export const POST = inngest.endpoint(async (request: NextRequest) => {
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) {
     return NextResponse.json(
