@@ -15,6 +15,7 @@ import MonacoEditor, {
 import type * as Monaco from "monaco-editor";
 import { emmetCSS, emmetHTML, emmetJSX } from "emmet-monaco-es";
 import { toast } from "sonner";
+import type { Doc, Id } from "../../../../convex/_generated/dataModel";
 
 import {
   type CursorState,
@@ -27,6 +28,11 @@ import {
 import { EditorContextMenu } from "./editor-context-menu";
 import { EditorSelectionAiBar } from "./editor-selection-ai-bar";
 import { getErrorMessage } from "@/lib/errors";
+import {
+  type SuggestionApiResponse,
+  type SuggestionProjectContext,
+} from "@/lib/code-suggestion";
+import { buildSuggestionProjectContext } from "../utils/codebase-context";
 
 const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
@@ -54,19 +60,8 @@ const INLINE_SUGGESTION_DEBOUNCE_MS = 320;
 const INLINE_SUGGESTION_CONTEXT_LINES = 40;
 const INLINE_SUGGESTION_MAX_BEFORE = 2_000;
 const INLINE_SUGGESTION_MAX_AFTER = 1_200;
-const INNGEST_POLL_INTERVAL_MS = 400;
-/** LLM + Inngest durable run can exceed serverless timeouts; allow generous polling. */
-const INNGEST_POLL_TIMEOUT_MS = 180_000;
-
-interface SuggestionApiResponse {
-  suggestion?: string;
-  sugegstions?: string;
-  error?: string;
-  detail?: string;
-  retryAfterSeconds?: number;
-  run_id?: string;
-  token?: string;
-}
+const ASYNC_SUGGESTION_POLL_INTERVAL_MS = 400;
+const ASYNC_SUGGESTION_TIMEOUT_MS = 180_000;
 
 interface InlineSuggestionState {
   offset: number;
@@ -102,12 +97,15 @@ interface CodeEditorProps {
   value: string;
   onChange: (value: string) => void;
   filename: string;
+  filePath?: string;
   readOnly?: boolean;
   settings?: EditorSettings;
   initialCursorState?: CursorState;
   onCursorStateChange?: (state: CursorState) => void;
   onMetaChange?: (meta: EditorRuntimeMeta) => void;
   onBlur?: () => void;
+  activeFileId?: Id<"files">;
+  projectFiles?: Doc<"files">[];
 }
 
 const clampOffset = (offset: number, max: number) =>
@@ -130,15 +128,24 @@ const clampContextText = (value: string, max: number, fromEnd = false) => {
   return fromEnd ? value.slice(value.length - max) : value.slice(0, max);
 };
 
-const hasInngestAsyncToken = (
+const hasAsyncSuggestionHandle = (
   payload: SuggestionApiResponse | null,
-): payload is SuggestionApiResponse & { run_id: string; token: string } =>
+): payload is SuggestionApiResponse & {
+  requestId: string;
+  token: string;
+  streamUrl: string;
+  pollUrl: string;
+} =>
   Boolean(
     payload &&
-    typeof payload.run_id === "string" &&
-    payload.run_id.length > 0 &&
+    typeof payload.requestId === "string" &&
+    payload.requestId.length > 0 &&
     typeof payload.token === "string" &&
-    payload.token.length > 0,
+    payload.token.length > 0 &&
+    typeof payload.streamUrl === "string" &&
+    payload.streamUrl.length > 0 &&
+    typeof payload.pollUrl === "string" &&
+    payload.pollUrl.length > 0,
   );
 
 const areSelectionsEqual = (
@@ -174,12 +181,15 @@ export const CodeEditor = ({
   value,
   onChange,
   filename,
+  filePath,
   readOnly = false,
   settings = DEFAULT_SETTINGS,
   initialCursorState,
   onCursorStateChange,
   onMetaChange,
   onBlur,
+  activeFileId,
+  projectFiles = [],
 }: CodeEditorProps) => {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
@@ -205,6 +215,22 @@ export const CodeEditor = ({
   } | null>(null);
   const [aiInstruction, setAiInstruction] = useState("");
   const [isApplyingAi, setIsApplyingAi] = useState(false);
+  const currentFileReference = filePath ?? filename;
+
+  const buildRequestProjectContext = useCallback(
+    (currentCode: string): SuggestionProjectContext | undefined => {
+      if (!activeFileId || projectFiles.length === 0) {
+        return undefined;
+      }
+
+      return buildSuggestionProjectContext({
+        activeFileId,
+        currentCode,
+        projectFiles,
+      });
+    },
+    [activeFileId, projectFiles],
+  );
 
   const updateSelectionBarLayout = useCallback(() => {
     const editor = editorRef.current;
@@ -338,7 +364,7 @@ export const CodeEditor = ({
           docChanged || !previousMeta
             ? getLineEnding(model.getEOL())
             : previousMeta.lineEnding,
-        language: getLanguageName(filename),
+        language: getLanguageName(currentFileReference),
       };
 
       if (!previousMeta || !isRuntimeMetaEqual(previousMeta, nextMeta)) {
@@ -346,7 +372,7 @@ export const CodeEditor = ({
         onMetaChange(nextMeta);
       }
     },
-    [filename, onCursorStateChange, onMetaChange],
+    [currentFileReference, onCursorStateChange, onMetaChange],
   );
 
   const triggerInlineSuggestionWidget = useCallback(() => {
@@ -463,28 +489,35 @@ export const CodeEditor = ({
   );
 
   const pollBackgroundSuggestion = useCallback(
-    async (runId: string, token: string, signal?: AbortSignal) => {
-      const deadline = Date.now() + INNGEST_POLL_TIMEOUT_MS;
+    async (pollUrl: string, signal?: AbortSignal) => {
+      const deadline = Date.now() + ASYNC_SUGGESTION_TIMEOUT_MS;
 
       while (Date.now() < deadline) {
-        const response = await fetch(
-          `/api/suggestion/poll?runId=${encodeURIComponent(runId)}&token=${encodeURIComponent(token)}`,
-          {
-            method: "GET",
-            signal,
-          },
-        );
+        const response = await fetch(pollUrl, {
+          method: "GET",
+          signal,
+        });
 
         const payload = (await response
           .json()
           .catch(() => null)) as SuggestionApiResponse | null;
 
         if (response.ok) {
+          const text = payload?.suggestion ?? payload?.sugegstions ?? "";
+          if (
+            payload?.error &&
+            typeof payload.error === "string" &&
+            payload.error.trim() &&
+            !text.trim()
+          ) {
+            const detail = payload.detail?.trim();
+            throw new Error(`${payload.error}${detail ? ` - ${detail}` : ""}`);
+          }
           return payload;
         }
 
-        if ([202, 404, 409, 425, 429].includes(response.status)) {
-          await waitForPollTick(INNGEST_POLL_INTERVAL_MS, signal);
+        if ([202, 429].includes(response.status)) {
+          await waitForPollTick(ASYNC_SUGGESTION_POLL_INTERVAL_MS, signal);
           continue;
         }
 
@@ -497,6 +530,104 @@ export const CodeEditor = ({
       throw new Error("Timed out waiting for background suggestion result.");
     },
     [waitForPollTick],
+  );
+
+  const streamBackgroundSuggestion = useCallback(
+    async (
+      handle: Extract<
+        SuggestionApiResponse,
+        {
+          requestId?: string;
+          token?: string;
+          streamUrl?: string;
+          pollUrl?: string;
+        }
+      >,
+      signal?: AbortSignal,
+      onChunk?: (suggestion: string) => void,
+    ) => {
+      if (typeof EventSource === "undefined") {
+        return pollBackgroundSuggestion(handle.pollUrl!, signal);
+      }
+
+      return await new Promise<SuggestionApiResponse>((resolve, reject) => {
+        let settled = false;
+        const eventSource = new EventSource(handle.streamUrl!);
+
+        const cleanup = () => {
+          if (settled) {
+            return;
+          }
+
+          settled = true;
+          eventSource.close();
+          signal?.removeEventListener("abort", onAbort);
+        };
+
+        const finishWithResolve = (payload: SuggestionApiResponse) => {
+          cleanup();
+          resolve(payload);
+        };
+
+        const finishWithReject = (error: Error) => {
+          cleanup();
+          reject(error);
+        };
+
+        const onAbort = () => {
+          finishWithReject(new Error("Request aborted"));
+        };
+
+        signal?.addEventListener("abort", onAbort, { once: true });
+
+        eventSource.addEventListener("chunk", (event) => {
+          const payload = JSON.parse(
+            (event as MessageEvent<string>).data,
+          ) as SuggestionApiResponse;
+          const suggestionText = sanitizeInlineSuggestion(
+            payload.suggestion ?? payload.sugegstions ?? "",
+          );
+          if (suggestionText) {
+            onChunk?.(suggestionText);
+          }
+        });
+
+        eventSource.addEventListener("complete", (event) => {
+          const payload = JSON.parse(
+            (event as MessageEvent<string>).data,
+          ) as SuggestionApiResponse;
+          finishWithResolve(payload);
+        });
+
+        eventSource.addEventListener("failure", (event) => {
+          const payload = JSON.parse(
+            (event as MessageEvent<string>).data,
+          ) as SuggestionApiResponse;
+          const detail = payload.detail?.trim();
+          finishWithReject(
+            new Error(
+              `${payload.error ?? "Failed to stream background suggestion."}${detail ? ` - ${detail}` : ""}`,
+            ),
+          );
+        });
+
+        eventSource.onerror = () => {
+          eventSource.close();
+          signal?.removeEventListener("abort", onAbort);
+          void pollBackgroundSuggestion(handle.pollUrl!, signal)
+            .then((nextPayload) => {
+              if (!nextPayload) {
+                reject(new Error("Failed to poll background suggestion."));
+                return;
+              }
+
+              resolve(nextPayload);
+            })
+            .catch(reject);
+        };
+      });
+    },
+    [pollBackgroundSuggestion],
   );
 
   const requestInlineSuggestion = useCallback(async () => {
@@ -589,6 +720,7 @@ export const CodeEditor = ({
     inlineRequestAbortRef.current = abortController;
 
     try {
+      const fullCode = model.getValue();
       const response = await fetch("/api/suggestion", {
         method: "POST",
         headers: {
@@ -597,8 +729,9 @@ export const CodeEditor = ({
         signal: abortController.signal,
         body: JSON.stringify({
           mode: "autocomplete",
-          fileName: filename,
-          code: model.getValue(),
+          fileName: currentFileReference,
+          language: getLanguageName(currentFileReference),
+          code: fullCode,
           lineNumber: position.lineNumber,
           currentLine,
           previousLines,
@@ -606,6 +739,7 @@ export const CodeEditor = ({
           textBeforeCursor,
           textAfterCursor,
           cursorOffset,
+          projectContext: buildRequestProjectContext(fullCode),
         }),
       });
 
@@ -642,11 +776,52 @@ export const CodeEditor = ({
 
       let payload = (await response.json()) as SuggestionApiResponse;
 
-      if (hasInngestAsyncToken(payload)) {
-        const backgroundPayload = await pollBackgroundSuggestion(
-          payload.run_id,
-          payload.token,
+      if (hasAsyncSuggestionHandle(payload)) {
+        const backgroundPayload = await streamBackgroundSuggestion(
+          payload,
           abortController.signal,
+          (partialSuggestion) => {
+            const latestEditor = editorRef.current;
+            const latestModel = latestEditor?.getModel();
+            const latestPosition = latestEditor?.getPosition();
+            const latestSelection = latestEditor?.getSelection();
+
+            if (
+              !latestEditor ||
+              !latestModel ||
+              !latestPosition ||
+              requestId !== inlineRequestCounterRef.current ||
+              abortController.signal.aborted
+            ) {
+              return;
+            }
+
+            if (latestSelection && !latestSelection.isEmpty()) {
+              return;
+            }
+
+            if (latestModel.uri.toString() !== model.uri.toString()) {
+              return;
+            }
+
+            if (latestModel.getVersionId() !== modelVersionId) {
+              return;
+            }
+
+            if (latestModel.getOffsetAt(latestPosition) !== cursorOffset) {
+              return;
+            }
+
+            inlineSuggestionRef.current = {
+              offset: cursorOffset,
+              lineNumber: latestPosition.lineNumber,
+              column: latestPosition.column,
+              modelVersionId,
+              text: partialSuggestion,
+            };
+
+            triggerInlineSuggestionWidget();
+          },
         );
 
         if (!backgroundPayload) {
@@ -719,10 +894,11 @@ export const CodeEditor = ({
       }
     }
   }, [
+    buildRequestProjectContext,
     clearInlineSuggestion,
-    filename,
-    pollBackgroundSuggestion,
+    currentFileReference,
     readOnly,
+    streamBackgroundSuggestion,
     triggerInlineSuggestionWidget,
   ]);
 
@@ -815,7 +991,7 @@ export const CodeEditor = ({
 
   useEffect(() => {
     registerInlineCompletionsProvider();
-  }, [filename, registerInlineCompletionsProvider]);
+  }, [currentFileReference, registerInlineCompletionsProvider]);
 
   useEffect(() => {
     if (!readOnly) {
@@ -867,7 +1043,8 @@ export const CodeEditor = ({
         },
         body: JSON.stringify({
           mode: "transform",
-          fileName: filename,
+          fileName: currentFileReference,
+          language: getLanguageName(currentFileReference),
           code: fullCode,
           instruction,
           selectedCode: selectedText,
@@ -877,6 +1054,7 @@ export const CodeEditor = ({
           textBeforeCursor: fullCode.slice(0, startOffset),
           textAfterCursor: fullCode.slice(endOffset),
           cursorOffset: startOffset,
+          projectContext: buildRequestProjectContext(fullCode),
         }),
       });
 
@@ -884,8 +1062,8 @@ export const CodeEditor = ({
         .json()
         .catch(() => null)) as SuggestionApiResponse | null;
 
-      if (response.ok && hasInngestAsyncToken(payload)) {
-        payload = await pollBackgroundSuggestion(payload.run_id, payload.token);
+      if (response.ok && payload && hasAsyncSuggestionHandle(payload)) {
+        payload = await streamBackgroundSuggestion(payload);
       }
 
       if (!response.ok) {
@@ -897,8 +1075,18 @@ export const CodeEditor = ({
             : "";
 
         throw new Error(
-          `${payload?.error ?? "Failed to process selected code."}${retryHint}${detail ? ` ${detail}` : ""}`,
+          `${payload?.error ?? "Failed to process selected code."}${retryHint}${detail ? ` - ${detail}` : ""}`,
         );
+      }
+
+      if (
+        payload &&
+        typeof payload.error === "string" &&
+        payload.error.trim() &&
+        !(payload.suggestion ?? payload.sugegstions ?? "").trim()
+      ) {
+        const detail = payload.detail?.trim();
+        throw new Error(`${payload.error}${detail ? ` - ${detail}` : ""}`);
       }
 
       const replacement = payload?.suggestion ?? payload?.sugegstions ?? "";
@@ -956,14 +1144,15 @@ export const CodeEditor = ({
     }
   }, [
     aiInstruction,
+    buildRequestProjectContext,
     emitState,
-    filename,
     formatInsertedRange,
     isApplyingAi,
-    pollBackgroundSuggestion,
     readOnly,
     clearInlineSuggestion,
+    currentFileReference,
     scheduleInlineSuggestion,
+    streamBackgroundSuggestion,
     updateSelectionBarLayout,
   ]);
 
@@ -1321,7 +1510,10 @@ export const CodeEditor = ({
     ],
   );
 
-  const language = useMemo(() => getMonacoLanguage(filename), [filename]);
+  const language = useMemo(
+    () => getMonacoLanguage(currentFileReference),
+    [currentFileReference],
+  );
 
   const options = useMemo<Monaco.editor.IStandaloneEditorConstructionOptions>(
     () => ({
@@ -1466,7 +1658,7 @@ export const CodeEditor = ({
           width="100%"
           value={value}
           language={language}
-          path={filename}
+          path={currentFileReference}
           theme="vs-dark"
           options={options}
           onMount={handleMount}

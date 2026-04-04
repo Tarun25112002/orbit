@@ -25,6 +25,7 @@ import {
   CodeEditor,
   type EditorRuntimeMeta,
 } from "@/features/editor/components/code-editor";
+import { buildProjectFilePathMap } from "@/features/editor/utils/codebase-context";
 import { EditorStatusBar } from "../../editor/components/editor-status-bar";
 import { WelcomeTab } from "../../editor/components/welcome-tab";
 import type { CursorState } from "../../editor/store/use-editor-store";
@@ -594,6 +595,17 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     () => new Map((projectFiles ?? []).map((item) => [item._id, item.name])),
     [projectFiles],
   );
+  const filePathById = useMemo(
+    () => buildProjectFilePathMap(projectFiles ?? []),
+    [projectFiles],
+  );
+  const selectedFilePath = useMemo(() => {
+    if (!selectedFileId) {
+      return undefined;
+    }
+
+    return filePathById.get(selectedFileId);
+  }, [filePathById, selectedFileId]);
 
   const editorTabs = useMemo(
     () =>
@@ -986,11 +998,14 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                             value={draftContent}
                             onChange={setDraftContent}
                             filename={selectedFile.name}
+                            filePath={selectedFilePath}
                             settings={settings}
                             initialCursorState={initialCursorState}
                             onCursorStateChange={handleCursorStateChange}
                             onMetaChange={setEditorMeta}
                             onBlur={flushPendingAutoSave}
+                            activeFileId={selectedFile._id}
+                            projectFiles={projectFiles ?? []}
                           />
                         </div>
                       )}

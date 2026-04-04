@@ -23,6 +23,7 @@ export const inngest = new Inngest({
   middleware: [sentryMiddleware()],
   endpointAdapter: endpointAdapter.withOptions({
     functionId: "orbit-suggestion-endpoint",
+    asyncRedirectUrl: "/api/suggestion/poll",
     asyncResponse: "token" as AsyncResponseValue,
   }),
 });

@@ -1,6 +1,12 @@
 import { inngest } from "@/inngest/client";
+import { suggestionRuntime } from "@/lib/completion-runtime";
 import { firecrawl } from "@/lib/firecrawl";
 import { requestOpenRouterCompletion } from "@/lib/openrouter";
+import {
+  generateSuggestion,
+  type ParsedSuggestionInput,
+} from "@/lib/suggestion-engine";
+import type { SuggestionMode } from "@/lib/code-suggestion";
 
 const OPENROUTER_MODEL =
   process.env.OPENROUTER_MODEL?.trim() || "qwen/qwen3.6-plus:free";
@@ -38,7 +44,7 @@ export const orbit = inngest.createFunction(
       ? `Context:\n${scrapedContent}\n\nQuestion: ${prompt}`
       : prompt;
 
-    await step.run("generate-text", async () => {
+    return await step.run("generate-text", async () => {
       if (!OPENROUTER_API_KEY) {
         throw new Error("Missing OpenRouter API key. Set OPENROUTER_API_KEY.");
       }
@@ -70,5 +76,65 @@ export const orbit = inngest.createFunction(
 
       throw lastError ?? new Error("OpenRouter generation failed");
     });
+  },
+);
+
+type CodeCompletionRequestedEvent = {
+  requestId: string;
+  fingerprint: string;
+  mode: SuggestionMode;
+  input: ParsedSuggestionInput;
+};
+
+export const codeCompletionRequested = inngest.createFunction(
+  {
+    id: "orbit-code-completion-requested",
+    triggers: [{ event: "orbit/code-completion.requested" }],
+    concurrency: {
+      limit: Number.parseInt(
+        process.env.SUGGESTION_PROCESSING_CONCURRENCY ?? "4",
+        10,
+      ),
+    },
+    rateLimit: {
+      limit: Number.parseInt(
+        process.env.SUGGESTION_PROCESSING_RATE_LIMIT ?? "180",
+        10,
+      ),
+      period: "1m",
+    },
+    retries: 0,
+  },
+  async ({ event, step }) => {
+    const payload = event.data as CodeCompletionRequestedEvent;
+    const requestId = payload.requestId;
+
+    suggestionRuntime.markProcessing(requestId);
+
+    try {
+      const generation = await step.run("generate-code-suggestion", () =>
+        generateSuggestion(payload.mode, payload.input, {
+          onRetry: ({ attempt, error }) => {
+            suggestionRuntime.markRetrying(requestId, attempt, error.message);
+          },
+        }),
+      );
+
+      suggestionRuntime.complete({
+        requestId,
+        suggestion: generation.suggestion,
+        model: generation.modelName,
+        attempts: generation.attempts,
+        latencyMs: generation.latencyMs,
+      });
+
+      return generation;
+    } catch (error) {
+      suggestionRuntime.fail({
+        requestId,
+        error,
+      });
+      throw error;
+    }
   },
 );
