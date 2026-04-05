@@ -23,8 +23,13 @@ const MAX_AUTOCOMPLETE_SUGGESTION_CHARS = 1_200;
 const MAX_TRANSFORM_SUGGESTION_CHARS = MAX_SOURCE_CODE_CHARS;
 const TRANSFORM_SELECTION_START_MARKER = "<orbit-selection-start>";
 const TRANSFORM_SELECTION_END_MARKER = "<orbit-selection-end>";
-const OPENROUTER_MODEL =
-  process.env.OPENROUTER_MODEL?.trim() || "qwen/qwen3.6-plus:free";
+const OPENROUTER_AUTOCOMPLETE_MODEL =
+  process.env.OPENROUTER_AUTOCOMPLETE_MODEL?.trim() ||
+  "google/gemma-3-4b-it:free";
+const OPENROUTER_TRANSFORM_MODEL =
+  process.env.OPENROUTER_TRANSFORM_MODEL?.trim() ||
+  process.env.OPENROUTER_MODEL?.trim() ||
+  "meta-llama/llama-3.2-3b-instruct:free";
 const OPENROUTER_FALLBACK_MODELS = (
   process.env.OPENROUTER_FALLBACK_MODELS ?? ""
 )
@@ -645,8 +650,12 @@ export async function generateSuggestion(
   }
 
   const execution = buildSuggestionExecutionInput({ mode, input });
+  const primaryModel =
+    mode === "autocomplete"
+      ? OPENROUTER_AUTOCOMPLETE_MODEL
+      : OPENROUTER_TRANSFORM_MODEL;
   const modelCandidates = Array.from(
-    new Set([OPENROUTER_MODEL, ...OPENROUTER_FALLBACK_MODELS]),
+    new Set([primaryModel, ...OPENROUTER_FALLBACK_MODELS]),
   );
   const startedAt = Date.now();
   let lastError: unknown = null;

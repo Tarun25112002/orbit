@@ -30,6 +30,7 @@ import { EditorSelectionAiBar } from "./editor-selection-ai-bar";
 import { getErrorMessage } from "@/lib/errors";
 import {
   type SuggestionApiResponse,
+  type SuggestionRequestBody,
   type SuggestionProjectContext,
 } from "@/lib/code-suggestion";
 import { buildSuggestionProjectContext } from "../utils/codebase-context";
@@ -58,6 +59,11 @@ const EMMET_JSX_LANGUAGES = ["javascript", "typescript", "mdx"];
 const EMMET_OPTIONS = { tokenizer: "standard" as const };
 const ASYNC_SUGGESTION_POLL_INTERVAL_MS = 400;
 const ASYNC_SUGGESTION_TIMEOUT_MS = 180_000;
+const INLINE_SUGGESTION_LINE_WINDOW = 40;
+const INLINE_SUGGESTION_CACHE_LIMIT = 40;
+const INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS = 1;
+const INLINE_SUGGESTION_TRIGGER_DEBOUNCE_MS = 250;
+const INLINE_SUGGESTION_ERROR_TOAST_COOLDOWN_MS = 8_000;
 
 const initializeEmmet = (monacoApi: typeof Monaco) => {
   const globalState = globalThis as typeof globalThis & {
@@ -101,6 +107,17 @@ const clampOffset = (offset: number, max: number) =>
 
 const getLineEnding = (eol: string): "LF" | "CRLF" =>
   eol === "\r\n" ? "CRLF" : "LF";
+
+const isAbortError = (error: unknown) =>
+  (error instanceof DOMException && error.name === "AbortError") ||
+  (error instanceof Error &&
+    (error.name === "AbortError" || error.message === "Request aborted"));
+
+type InlineSuggestionFetchResult = {
+  outcome: "success" | "aborted" | "error";
+  suggestion: string;
+  message?: string;
+};
 
 const hasAsyncSuggestionHandle = (
   payload: SuggestionApiResponse | null,
@@ -170,6 +187,11 @@ export const CodeEditor = ({
   const disposablesRef = useRef<Monaco.IDisposable[]>([]);
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
+  const inlineSuggestionCacheRef = useRef<Map<string, string>>(new Map());
+  const inlineSuggestTriggerTimeoutRef = useRef<
+    ReturnType<typeof setTimeout> | null
+  >(null);
+  const lastInlineSuggestionErrorAtRef = useRef(0);
 
   const [selectionBar, setSelectionBar] = useState<{
     top: number;
@@ -193,6 +215,97 @@ export const CodeEditor = ({
       });
     },
     [activeFileId, projectFiles],
+  );
+
+  useEffect(() => {
+    inlineSuggestionCacheRef.current.clear();
+  }, [activeFileId, currentFileReference]);
+
+  const cacheInlineSuggestion = useCallback((key: string, suggestion: string) => {
+    const cache = inlineSuggestionCacheRef.current;
+
+    if (cache.has(key)) {
+      cache.delete(key);
+    }
+
+    cache.set(key, suggestion);
+
+    while (cache.size > INLINE_SUGGESTION_CACHE_LIMIT) {
+      const oldestKey = cache.keys().next().value as string | undefined;
+      if (!oldestKey) {
+        break;
+      }
+
+      cache.delete(oldestKey);
+    }
+  }, []);
+
+  const buildAutocompleteRequest = useCallback(
+    (
+      model: Monaco.editor.ITextModel,
+      position: Monaco.Position,
+    ): SuggestionRequestBody | null => {
+      const editor = editorRef.current;
+      if (!editor || readOnly) {
+        return null;
+      }
+
+      const selections = editor.getSelections();
+      if (!selections || selections.length !== 1 || !selections[0].isEmpty()) {
+        return null;
+      }
+
+      const code = model.getValue();
+      if (!code.trim()) {
+        return null;
+      }
+
+      const lineNumber = position.lineNumber;
+      const cursorOffset = model.getOffsetAt(position);
+      const startLineNumber = Math.max(
+        1,
+        lineNumber - INLINE_SUGGESTION_LINE_WINDOW,
+      );
+      const endLineNumber = Math.min(
+        model.getLineCount(),
+        lineNumber + INLINE_SUGGESTION_LINE_WINDOW,
+      );
+
+      const previousLines =
+        startLineNumber < lineNumber
+          ? model.getValueInRange({
+              startLineNumber,
+              startColumn: 1,
+              endLineNumber: lineNumber,
+              endColumn: 1,
+            })
+          : "";
+      const nextLines =
+        lineNumber < endLineNumber
+          ? model.getValueInRange({
+              startLineNumber: lineNumber + 1,
+              startColumn: 1,
+              endLineNumber,
+              endColumn: model.getLineMaxColumn(endLineNumber),
+            })
+          : "";
+
+      return {
+        mode: "autocomplete",
+        fileName: currentFileReference,
+        language: getLanguageName(currentFileReference),
+        code,
+        lineNumber,
+        currentLine: model.getLineContent(lineNumber),
+        previousLines,
+        nextLines,
+        textBeforeCursor: code.slice(0, cursorOffset),
+        textAfterCursor: code.slice(cursorOffset),
+        cursorOffset,
+        projectContext: buildRequestProjectContext(code),
+      };
+    },
+    [buildRequestProjectContext, currentFileReference, readOnly],
   );
 
   const updateSelectionBarLayout = useCallback(() => {
@@ -252,9 +365,32 @@ export const CodeEditor = ({
 
   useEffect(() => {
     return () => {
+      if (inlineSuggestTriggerTimeoutRef.current) {
+        clearTimeout(inlineSuggestTriggerTimeoutRef.current);
+        inlineSuggestTriggerTimeoutRef.current = null;
+      }
+
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
     };
+  }, []);
+
+  const showInlineSuggestionError = useCallback((message?: string) => {
+    const nextMessage = message?.trim();
+    if (!nextMessage) {
+      return;
+    }
+
+    const now = Date.now();
+    if (
+      now - lastInlineSuggestionErrorAtRef.current <
+      INLINE_SUGGESTION_ERROR_TOAST_COOLDOWN_MS
+    ) {
+      return;
+    }
+
+    lastInlineSuggestionErrorAtRef.current = now;
+    toast.error(nextMessage);
   }, []);
 
   const emitState = useCallback(
@@ -540,6 +676,124 @@ export const CodeEditor = ({
       });
     },
     [pollBackgroundSuggestion],
+  );
+
+  const requestAutocompleteSuggestion = useCallback(
+    async (requestBody: SuggestionRequestBody, signal?: AbortSignal) => {
+      try {
+        const response = await fetch("/api/suggestion", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+          signal,
+        });
+
+        let payload = (await response
+          .json()
+          .catch(() => null)) as SuggestionApiResponse | null;
+
+        if (response.ok && payload && hasAsyncSuggestionHandle(payload)) {
+          payload = await streamBackgroundSuggestion(payload, signal);
+        }
+
+        if (!response.ok) {
+          const detail = payload?.detail?.trim();
+          const retryAfterSeconds = payload?.retryAfterSeconds;
+          const retryHint =
+            typeof retryAfterSeconds === "number" && retryAfterSeconds > 0
+              ? ` Retry in ${Math.ceil(retryAfterSeconds)}s.`
+              : "";
+
+          return {
+            outcome: "error",
+            suggestion: "",
+            message: `${payload?.error ?? "Inline suggestions are unavailable."}${retryHint}${detail ? ` - ${detail}` : ""}`,
+          } satisfies InlineSuggestionFetchResult;
+        }
+
+        if (
+          payload &&
+          typeof payload.error === "string" &&
+          payload.error.trim() &&
+          !(payload.suggestion ?? payload.sugegstions ?? "").trim()
+        ) {
+          const detail = payload.detail?.trim();
+
+          return {
+            outcome: "error",
+            suggestion: "",
+            message: `${payload.error}${detail ? ` - ${detail}` : ""}`,
+          } satisfies InlineSuggestionFetchResult;
+        }
+
+        return {
+          outcome: "success",
+          suggestion: payload?.suggestion ?? payload?.sugegstions ?? "",
+        } satisfies InlineSuggestionFetchResult;
+      } catch (error) {
+        if (isAbortError(error)) {
+          return {
+            outcome: "aborted",
+            suggestion: "",
+          } satisfies InlineSuggestionFetchResult;
+        }
+
+        return {
+          outcome: "error",
+          suggestion: "",
+          message: getErrorMessage(
+            error,
+            "Inline suggestions are unavailable right now.",
+          ),
+        } satisfies InlineSuggestionFetchResult;
+      }
+    },
+    [streamBackgroundSuggestion],
+  );
+
+  const triggerInlineSuggestion = useCallback(
+    (delayMs = INLINE_SUGGESTION_TRIGGER_DEBOUNCE_MS) => {
+      if (readOnly) {
+        return;
+      }
+
+      const editor = editorRef.current;
+      const model = editor?.getModel();
+      const selection = editor?.getSelection();
+      if (!editor || !model || !selection || !selection.isEmpty()) {
+        return;
+      }
+
+      const position = editor.getPosition();
+      if (!position) {
+        return;
+      }
+
+      const linePrefix = model
+        .getLineContent(position.lineNumber)
+        .slice(0, Math.max(0, position.column - 1));
+      if (
+        linePrefix.trim().length < INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS
+      ) {
+        return;
+      }
+
+      if (inlineSuggestTriggerTimeoutRef.current) {
+        clearTimeout(inlineSuggestTriggerTimeoutRef.current);
+      }
+
+      inlineSuggestTriggerTimeoutRef.current = setTimeout(() => {
+        inlineSuggestTriggerTimeoutRef.current = null;
+        editor.trigger(
+          "orbit-inline-suggest",
+          "editor.action.inlineSuggest.trigger",
+          {},
+        );
+      }, delayMs);
+    },
+    [readOnly],
   );
 
   const handleApplyAiTransform = useCallback(async () => {
@@ -861,6 +1115,11 @@ export const CodeEditor = ({
     );
   }, []);
 
+  const language = useMemo(
+    () => getMonacoLanguage(currentFileReference),
+    [currentFileReference],
+  );
+
   const handleMount = useCallback<OnMount>(
     (editor, monacoApi) => {
       editorRef.current = editor;
@@ -868,6 +1127,125 @@ export const CodeEditor = ({
 
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [
+        monacoApi.languages.registerInlineCompletionsProvider(language, {
+          debounceDelayMs: 350,
+          displayName: "Orbit AI",
+          provideInlineCompletions: async (
+            model: Monaco.editor.ITextModel,
+            position: Monaco.Position,
+            context: Monaco.languages.InlineCompletionContext,
+            token: Monaco.CancellationToken,
+          ) => {
+            if (!context.includeInlineCompletions || readOnly) {
+              return { items: [] };
+            }
+
+            const activeEditor = editorRef.current;
+            if (
+              !activeEditor ||
+              activeEditor.getModel()?.uri.toString() !== model.uri.toString()
+            ) {
+              return { items: [] };
+            }
+
+            const selection = activeEditor.getSelection();
+            if (!selection || !selection.isEmpty()) {
+              return { items: [] };
+            }
+
+            const linePrefix = model
+              .getLineContent(position.lineNumber)
+              .slice(0, Math.max(0, position.column - 1));
+
+            if (
+              context.triggerKind ===
+                monacoApi.languages.InlineCompletionTriggerKind.Automatic &&
+              linePrefix.trim().length <
+                INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS
+            ) {
+              return { items: [] };
+            }
+
+            const cacheKey = `${model.uri.toString()}:${model.getVersionId()}:${model.getOffsetAt(position)}`;
+            const cachedSuggestion =
+              inlineSuggestionCacheRef.current.get(cacheKey);
+            if (typeof cachedSuggestion === "string") {
+              if (!cachedSuggestion) {
+                return { items: [] };
+              }
+
+              return {
+                items: [
+                  {
+                    insertText: cachedSuggestion,
+                    range: new monacoApi.Range(
+                      position.lineNumber,
+                      position.column,
+                      position.lineNumber,
+                      position.column,
+                    ),
+                  },
+                ],
+              };
+            }
+
+            const requestBody = buildAutocompleteRequest(model, position);
+            if (!requestBody) {
+              return { items: [] };
+            }
+
+            const controller = new AbortController();
+            const cancelSubscription = token.onCancellationRequested(() => {
+              controller.abort();
+            });
+
+            try {
+              const result = await requestAutocompleteSuggestion(
+                requestBody,
+                controller.signal,
+              );
+
+              if (result.outcome === "success") {
+                cacheInlineSuggestion(cacheKey, result.suggestion);
+              } else if (result.outcome === "error") {
+                showInlineSuggestionError(result.message);
+              }
+
+              if (
+                token.isCancellationRequested ||
+                result.outcome !== "success" ||
+                !result.suggestion
+              ) {
+                return { items: [] };
+              }
+
+              const latestEditor = editorRef.current;
+              if (
+                !latestEditor ||
+                latestEditor.getModel()?.uri.toString() !== model.uri.toString()
+              ) {
+                return { items: [] };
+              }
+
+              return {
+                items: [
+                  {
+                    insertText: result.suggestion,
+                    range: new monacoApi.Range(
+                      position.lineNumber,
+                      position.column,
+                      position.lineNumber,
+                      position.column,
+                    ),
+                  },
+                ],
+              };
+            } finally {
+              cancelSubscription.dispose();
+            }
+          },
+          disposeInlineCompletions: () => {},
+        }),
         editor.onDidChangeCursorSelection(() => {
           emitState(false);
           updateSelectionBarLayout();
@@ -875,10 +1253,12 @@ export const CodeEditor = ({
         editor.onDidChangeModelContent(() => {
           emitState(true);
           updateSelectionBarLayout();
+          triggerInlineSuggestion();
         }),
         editor.onDidChangeModel(() => {
           emitState(true);
           updateSelectionBarLayout();
+          triggerInlineSuggestion(0);
         }),
         editor.onDidScrollChange(() => {
           updateSelectionBarLayout();
@@ -888,6 +1268,7 @@ export const CodeEditor = ({
         }),
         editor.onDidFocusEditorText(() => {
           updateSelectionBarLayout();
+          triggerInlineSuggestion(0);
         }),
         editor.onDidBlurEditorText(() => {
           onBlur?.();
@@ -915,12 +1296,19 @@ export const CodeEditor = ({
       restoreInitialState(editor, monacoApi);
       updateSelectionBarLayout();
     },
-    [emitState, onBlur, restoreInitialState, updateSelectionBarLayout],
-  );
-
-  const language = useMemo(
-    () => getMonacoLanguage(currentFileReference),
-    [currentFileReference],
+    [
+      buildAutocompleteRequest,
+      cacheInlineSuggestion,
+      emitState,
+      language,
+      onBlur,
+      readOnly,
+      requestAutocompleteSuggestion,
+      restoreInitialState,
+      showInlineSuggestionError,
+      triggerInlineSuggestion,
+      updateSelectionBarLayout,
+    ],
   );
 
   const options = useMemo<Monaco.editor.IStandaloneEditorConstructionOptions>(
@@ -972,11 +1360,17 @@ export const CodeEditor = ({
         comments: true,
         strings: true,
       },
+      quickSuggestionsDelay: 150,
       suggestOnTriggerCharacters: true,
       suggestSelection: "first",
       acceptSuggestionOnEnter: "smart",
       inlineSuggest: {
-        enabled: false,
+        enabled: !readOnly,
+        mode: "prefix",
+        minShowDelay: 150,
+        showToolbar: "onHover",
+        suppressSuggestions: false,
+        syntaxHighlightingEnabled: true,
       },
       snippetSuggestions: "inline",
       wordBasedSuggestions: "currentDocument",

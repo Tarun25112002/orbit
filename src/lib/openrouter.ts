@@ -29,6 +29,16 @@ export class OpenRouterRequestError extends Error {
 }
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_HTTP_REFERER =
+  process.env.OPENROUTER_HTTP_REFERER?.trim() ||
+  process.env.OPENROUTER_SITE_URL?.trim() ||
+  process.env.NEXT_PUBLIC_APP_URL?.trim() ||
+  "";
+const OPENROUTER_TITLE =
+  process.env.OPENROUTER_TITLE?.trim() ||
+  process.env.OPENROUTER_SITE_NAME?.trim() ||
+  process.env.NEXT_PUBLIC_APP_NAME?.trim() ||
+  "";
 
 const parseRetryAfter = (value: string | null) => {
   if (!value) {
@@ -89,12 +99,22 @@ export const requestOpenRouterCompletion = async (args: {
     });
   }
 
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${apiKey}`,
+    "Content-Type": "application/json",
+  };
+
+  if (OPENROUTER_HTTP_REFERER) {
+    headers["HTTP-Referer"] = OPENROUTER_HTTP_REFERER;
+  }
+
+  if (OPENROUTER_TITLE) {
+    headers["X-OpenRouter-Title"] = OPENROUTER_TITLE;
+  }
+
   const response = await fetch(OPENROUTER_URL, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
       model: args.model,
       messages: args.messages,

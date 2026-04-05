@@ -3,7 +3,11 @@ import { ZodError } from "zod";
 import { inngest } from "@/inngest/client";
 import { suggestionRuntime } from "@/lib/completion-runtime";
 import type { SuggestionRequestBody } from "@/lib/code-suggestion";
-import { prepareSuggestionRequest } from "@/lib/suggestion-engine";
+import {
+  generateSuggestion,
+  prepareSuggestionRequest,
+  SuggestionGenerationError,
+} from "@/lib/suggestion-engine";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,6 +28,42 @@ const buildAsyncResponse = (requestId: string, token: string) => ({
   streamUrl: `/api/suggestion/stream?requestId=${encodeURIComponent(requestId)}&token=${encodeURIComponent(token)}`,
   pollUrl: `/api/suggestion/poll?requestId=${encodeURIComponent(requestId)}&token=${encodeURIComponent(token)}`,
 });
+
+const buildSuggestionErrorResponse = (error: unknown) => {
+  const normalized =
+    error instanceof SuggestionGenerationError
+      ? error
+      : new SuggestionGenerationError({
+          message:
+            error instanceof Error
+              ? error.message
+              : "Failed to generate suggestion",
+          statusCode: 500,
+          retryable: false,
+        });
+
+  const retryAfterSeconds = normalized.retryAfterSeconds ?? undefined;
+
+  return NextResponse.json(
+    {
+      error:
+        normalized.statusCode === 429
+          ? "Suggestion service is rate-limited right now."
+          : "Failed to generate suggestion",
+      detail: normalized.message,
+      retryAfterSeconds,
+    },
+    {
+      status: normalized.statusCode,
+      headers:
+        typeof retryAfterSeconds === "number" && retryAfterSeconds > 0
+          ? {
+              "Retry-After": String(Math.ceil(retryAfterSeconds)),
+            }
+          : undefined,
+    },
+  );
+};
 
 export async function POST(request: NextRequest) {
   let body: SuggestionRequestBody;
@@ -86,6 +126,25 @@ export async function POST(request: NextRequest) {
         },
       },
     );
+  }
+
+  if (prepared.mode === "autocomplete") {
+    try {
+      const generation = await generateSuggestion(prepared.mode, prepared.input);
+
+      return NextResponse.json(
+        suggestionRuntime.createSyncResponse({
+          fingerprint: prepared.fingerprint,
+          mode: prepared.mode,
+          suggestion: generation.suggestion,
+          model: generation.modelName,
+          attempts: generation.attempts,
+          latencyMs: generation.latencyMs,
+        }),
+      );
+    } catch (error) {
+      return buildSuggestionErrorResponse(error);
+    }
   }
 
   const queued = suggestionRuntime.createRequest({

@@ -293,6 +293,47 @@ class SuggestionRuntime {
     };
   }
 
+  createSyncResponse(args: {
+    fingerprint: string;
+    mode: SuggestionMode;
+    suggestion: string;
+    model: string;
+    attempts: number;
+    latencyMs: number;
+  }): SuggestionApiResponse {
+    const now = Date.now();
+
+    this.cache.set(args.fingerprint, {
+      fingerprint: args.fingerprint,
+      suggestion: args.suggestion,
+      model: args.model,
+      createdAt: now,
+      expiresAt: now + CACHE_TTL_MS,
+    });
+
+    this.totals.requested += 1;
+    this.totals.completed += 1;
+    this.addLatency(args.latencyMs);
+
+    console.info("suggestion.request.completed", {
+      execution: "sync",
+      attempts: args.attempts,
+      latencyMs: args.latencyMs,
+      model: args.model,
+    });
+
+    return {
+      mode: args.mode,
+      execution: "sync",
+      suggestion: args.suggestion,
+      sugegstions: args.suggestion,
+      model: args.model,
+      cached: false,
+      status: "completed",
+      attempt: args.attempts,
+    };
+  }
+
   markProcessing(requestId: string) {
     const record = this.requests.get(requestId);
     if (!record) {
