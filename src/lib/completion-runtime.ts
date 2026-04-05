@@ -28,6 +28,7 @@ const PROCESSING_CONCURRENCY = Number.parseInt(
   10,
 );
 const HEARTBEAT_MS = 15_000;
+const SUGGESTION_RUNTIME_VERSION = 1;
 
 type CacheEntry = {
   fingerprint: string;
@@ -93,10 +94,13 @@ const safeBufferEquals = (left: Buffer, right: Buffer) =>
   left.length === right.length && timingSafeEqual(left, right);
 
 class SuggestionRuntime {
+  readonly runtimeVersion = SUGGESTION_RUNTIME_VERSION;
+
   private requests = new Map<string, RequestRecord>();
   private cache = new Map<string, CacheEntry>();
   private listeners = new Map<string, Set<(event: RuntimeEvent) => void>>();
   private rateWindows = new Map<string, number[]>();
+  private providerCooldowns = new Map<string, number>();
   private latencies: number[] = [];
   private totals = {
     requested: 0,
@@ -149,6 +153,12 @@ class SuggestionRuntime {
 
       this.rateWindows.set(key, filtered);
     }
+
+    for (const [sessionKey, expiresAt] of this.providerCooldowns.entries()) {
+      if (expiresAt <= now) {
+        this.providerCooldowns.delete(sessionKey);
+      }
+    }
   }
 
   private getActiveRuns() {
@@ -195,6 +205,44 @@ class SuggestionRuntime {
   getCached(fingerprint: string) {
     this.pruneExpired();
     return this.cache.get(fingerprint) ?? null;
+  }
+
+  getProviderCooldown(sessionKey: string) {
+    this.pruneExpired();
+
+    const expiresAt = this.providerCooldowns.get(sessionKey);
+    if (!expiresAt) {
+      return null;
+    }
+
+    this.totals.rateLimited += 1;
+
+    return {
+      retryAfterSeconds: Math.max(
+        1,
+        Math.ceil((expiresAt - Date.now()) / 1_000),
+      ),
+    };
+  }
+
+  setProviderCooldown(sessionKey: string, retryAfterSeconds?: number | null) {
+    if (
+      typeof retryAfterSeconds !== "number" ||
+      !Number.isFinite(retryAfterSeconds) ||
+      retryAfterSeconds <= 0
+    ) {
+      return null;
+    }
+
+    const expiresAt = Date.now() + Math.ceil(retryAfterSeconds * 1_000);
+    this.providerCooldowns.set(sessionKey, expiresAt);
+
+    return {
+      retryAfterSeconds: Math.max(
+        1,
+        Math.ceil((expiresAt - Date.now()) / 1_000),
+      ),
+    };
   }
 
   consumeRateLimit(sessionKey: string) {
@@ -419,11 +467,7 @@ class SuggestionRuntime {
     return record;
   }
 
-  fail(args: {
-    requestId: string;
-    error: unknown;
-    attempts?: number;
-  }) {
+  fail(args: { requestId: string; error: unknown; attempts?: number }) {
     const record = this.requests.get(args.requestId);
     if (!record) {
       return null;
@@ -526,7 +570,9 @@ class SuggestionRuntime {
   getMetrics(): MetricsSnapshot {
     this.pruneExpired();
 
-    const sortedLatencies = [...this.latencies].sort((left, right) => left - right);
+    const sortedLatencies = [...this.latencies].sort(
+      (left, right) => left - right,
+    );
     const totalLatency = this.latencies.reduce((sum, value) => sum + value, 0);
     const p95Index =
       sortedLatencies.length > 0
@@ -562,6 +608,7 @@ class SuggestionRuntime {
     this.cache.clear();
     this.listeners.clear();
     this.rateWindows.clear();
+    this.providerCooldowns.clear();
     this.latencies = [];
     this.totals = {
       requested: 0,
@@ -580,6 +627,16 @@ declare global {
   var __orbitSuggestionRuntime__: SuggestionRuntime | undefined;
 }
 
-export const suggestionRuntime =
-  globalThis.__orbitSuggestionRuntime__ ??
-  (globalThis.__orbitSuggestionRuntime__ = new SuggestionRuntime());
+const resolveSuggestionRuntime = () => {
+  const existingRuntime = globalThis.__orbitSuggestionRuntime__;
+  if (existingRuntime?.runtimeVersion === SUGGESTION_RUNTIME_VERSION) {
+    return existingRuntime;
+  }
+
+  const nextRuntime = new SuggestionRuntime();
+  globalThis.__orbitSuggestionRuntime__ = nextRuntime;
+
+  return nextRuntime;
+};
+
+export const suggestionRuntime = resolveSuggestionRuntime();
