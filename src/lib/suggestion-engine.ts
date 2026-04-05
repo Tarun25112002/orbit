@@ -23,19 +23,46 @@ const MAX_AUTOCOMPLETE_SUGGESTION_CHARS = 1_200;
 const MAX_TRANSFORM_SUGGESTION_CHARS = MAX_SOURCE_CODE_CHARS;
 const TRANSFORM_SELECTION_START_MARKER = "<orbit-selection-start>";
 const TRANSFORM_SELECTION_END_MARKER = "<orbit-selection-end>";
-const OPENROUTER_AUTOCOMPLETE_MODEL =
-  process.env.OPENROUTER_AUTOCOMPLETE_MODEL?.trim() ||
-  "google/gemma-3-4b-it:free";
-const OPENROUTER_TRANSFORM_MODEL =
-  process.env.OPENROUTER_TRANSFORM_MODEL?.trim() ||
-  process.env.OPENROUTER_MODEL?.trim() ||
-  "meta-llama/llama-3.2-3b-instruct:free";
-const OPENROUTER_FALLBACK_MODELS = (
+const DEFAULT_OPENROUTER_FREE_MODEL_CHAIN = [
+  "google/gemini-2.5-flash:free",
+  "deepseek/deepseek-chat-v3-0324:free",
+  "mistralai/mistral-7b-instruct:free",
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "google/gemma-3-27b-it:free",
+] as const;
+const OPENROUTER_ADDITIONAL_FALLBACK_MODELS = (
   process.env.OPENROUTER_FALLBACK_MODELS ?? ""
 )
   .split(",")
   .map((model) => model.trim())
   .filter((model) => model.length > 0);
+const parseConfiguredModelChain = (
+  value: string | undefined,
+  defaults: readonly string[],
+) => {
+  const configured = (value ?? "")
+    .split(",")
+    .map((model) => model.trim())
+    .filter((model) => model.length > 0);
+
+  return Array.from(
+    new Set([
+      ...(configured.length > 0 ? configured : defaults),
+      ...OPENROUTER_ADDITIONAL_FALLBACK_MODELS,
+    ]),
+  );
+};
+const OPENROUTER_AUTOCOMPLETE_MODELS = parseConfiguredModelChain(
+  process.env.OPENROUTER_AUTOCOMPLETE_MODELS ??
+    process.env.OPENROUTER_AUTOCOMPLETE_MODEL,
+  DEFAULT_OPENROUTER_FREE_MODEL_CHAIN,
+);
+const OPENROUTER_TRANSFORM_MODELS = parseConfiguredModelChain(
+  process.env.OPENROUTER_TRANSFORM_MODELS ??
+    process.env.OPENROUTER_TRANSFORM_MODEL ??
+    process.env.OPENROUTER_MODEL,
+  DEFAULT_OPENROUTER_FREE_MODEL_CHAIN,
+);
 const GENERATION_MAX_ATTEMPTS = Number.parseInt(
   process.env.SUGGESTION_GENERATION_ATTEMPTS ?? "3",
   10,
@@ -461,6 +488,9 @@ const isRateLimitedError = (message: string) =>
     message,
   );
 
+const isProviderWideFreeModelRateLimit = (message: string) =>
+  /\bfree-models-per-(?:min|minute|day)\b/i.test(message);
+
 const parseRetryAfterSeconds = (message: string) => {
   const retryInMatch = message.match(/retry in\s+([\d.]+)s/i);
   if (retryInMatch?.[1]) {
@@ -599,6 +629,20 @@ const shouldRetryGeneration = (error: unknown) => {
   return isRateLimitedError(message);
 };
 
+const shouldShortCircuitModelFallback = (error: unknown) => {
+  if (error instanceof SuggestionGenerationError) {
+    return isProviderWideFreeModelRateLimit(error.message);
+  }
+
+  if (error instanceof OpenRouterRequestError) {
+    return (
+      error.status === 429 && isProviderWideFreeModelRateLimit(error.message)
+    );
+  }
+
+  return isProviderWideFreeModelRateLimit(getErrorMessage(error));
+};
+
 const normalizeGenerationError = (error: unknown) => {
   if (error instanceof SuggestionGenerationError) {
     return error;
@@ -650,22 +694,29 @@ export async function generateSuggestion(
   }
 
   const execution = buildSuggestionExecutionInput({ mode, input });
-  const primaryModel =
+  const modelChain =
     mode === "autocomplete"
-      ? OPENROUTER_AUTOCOMPLETE_MODEL
-      : OPENROUTER_TRANSFORM_MODEL;
-  const modelCandidates = Array.from(
-    new Set([primaryModel, ...OPENROUTER_FALLBACK_MODELS]),
-  );
+      ? OPENROUTER_AUTOCOMPLETE_MODELS
+      : OPENROUTER_TRANSFORM_MODELS;
+  const primaryModel = modelChain[0];
+
+  if (!primaryModel) {
+    throw new SuggestionGenerationError({
+      message: "No OpenRouter models are configured for suggestions.",
+      statusCode: 500,
+      retryable: false,
+    });
+  }
+
   const startedAt = Date.now();
   let lastError: unknown = null;
   let totalAttempts = 0;
+  let round = 0;
 
-  for (const modelName of modelCandidates) {
-    let attempt = 0;
+  while (round < Math.max(1, GENERATION_MAX_ATTEMPTS)) {
+    round += 1;
 
-    while (attempt < Math.max(1, GENERATION_MAX_ATTEMPTS)) {
-      attempt += 1;
+    for (const modelName of modelChain) {
       totalAttempts += 1;
 
       try {
@@ -710,35 +761,32 @@ export async function generateSuggestion(
           latencyMs: Date.now() - startedAt,
         };
       } catch (error) {
+        if (shouldShortCircuitModelFallback(error)) {
+          throw normalizeGenerationError(error);
+        }
+
         lastError = error;
-        const normalizedError = normalizeGenerationError(error);
-
-        if (
-          shouldRetryGeneration(error) &&
-          attempt < Math.max(1, GENERATION_MAX_ATTEMPTS)
-        ) {
-          options?.onRetry?.({
-            attempt: totalAttempts,
-            model: modelName,
-            error: normalizedError,
-          });
-          await wait(GENERATION_BASE_BACKOFF_MS * attempt);
-          continue;
-        }
-
-        if (error instanceof OpenRouterRequestError) {
-          if (
-            error.status >= 400 &&
-            error.status < 500 &&
-            error.status !== 429
-          ) {
-            throw normalizedError;
-          }
-        }
-
-        break;
       }
     }
+
+    const normalizedError = normalizeGenerationError(
+      lastError ?? new Error("Suggestion generation failed"),
+    );
+
+    if (
+      shouldRetryGeneration(lastError) &&
+      round < Math.max(1, GENERATION_MAX_ATTEMPTS)
+    ) {
+      options?.onRetry?.({
+        attempt: totalAttempts,
+        model: primaryModel,
+        error: normalizedError,
+      });
+      await wait(GENERATION_BASE_BACKOFF_MS * round);
+      continue;
+    }
+
+    throw normalizedError;
   }
 
   throw normalizeGenerationError(
