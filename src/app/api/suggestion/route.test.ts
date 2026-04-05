@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import { suggestionRuntime } from "@/lib/completion-runtime";
-import { prepareSuggestionRequest } from "@/lib/suggestion-engine";
+import {
+  prepareSuggestionRequest,
+  SuggestionGenerationError,
+} from "@/lib/suggestion-engine";
 
 const { sendMock, generateSuggestionMock } = vi.hoisted(() => ({
   sendMock: vi.fn(),
@@ -15,10 +18,9 @@ vi.mock("@/inngest/client", () => ({
 }));
 
 vi.mock("@/lib/suggestion-engine", async () => {
-  const actual =
-    await vi.importActual<typeof import("@/lib/suggestion-engine")>(
-      "@/lib/suggestion-engine",
-    );
+  const actual = await vi.importActual<
+    typeof import("@/lib/suggestion-engine")
+  >("@/lib/suggestion-engine");
 
   return {
     ...actual,
@@ -125,6 +127,56 @@ describe("suggestion route", () => {
     expect(sendMock).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to synchronous generation when queueing fails", async () => {
+    const { POST } = await import("@/app/api/suggestion/route");
+
+    sendMock.mockRejectedValueOnce(new Error("fetch failed"));
+    generateSuggestionMock.mockResolvedValueOnce({
+      suggestion: "const value = 2;",
+      modelName: "google/gemma-3-4b-it:free",
+      attempts: 1,
+      latencyMs: 30,
+    });
+
+    const request = new NextRequest("http://localhost/api/suggestion", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "vitest",
+        "X-Forwarded-For": "127.0.0.1",
+      },
+      body: JSON.stringify({
+        mode: "transform",
+        fileName: "src/example.ts",
+        language: "TypeScript",
+        code: "const value = 1;",
+        selectedCode: "1",
+        instruction: "Replace 1 with 2",
+        selectionStartOffset: 14,
+        selectionEndOffset: 15,
+        textBeforeCursor: "const value = ",
+        textAfterCursor: ";",
+        cursorOffset: 14,
+      }),
+    });
+
+    const response = await POST(request);
+    const payload = (await response.json()) as {
+      execution: string;
+      suggestion: string;
+      status: string;
+      attempt: number;
+    };
+
+    expect(response.status).toBe(200);
+    expect(payload.execution).toBe("sync");
+    expect(payload.suggestion).toBe("const value = 2;");
+    expect(payload.status).toBe("completed");
+    expect(payload.attempt).toBe(1);
+    expect(sendMock).toHaveBeenCalledTimes(1);
+    expect(generateSuggestionMock).toHaveBeenCalledTimes(1);
+  });
+
   it("serves cached completions without queueing a new event", async () => {
     const { POST } = await import("@/app/api/suggestion/route");
     const prepared = prepareSuggestionRequest({
@@ -185,5 +237,71 @@ describe("suggestion route", () => {
     expect(payload.cached).toBe(true);
     expect(generateSuggestionMock).not.toHaveBeenCalled();
     expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("pauses provider calls after an OpenRouter rate-limit response", async () => {
+    const { POST } = await import("@/app/api/suggestion/route");
+
+    generateSuggestionMock.mockRejectedValueOnce(
+      new SuggestionGenerationError({
+        message: "Rate limit exceeded: free-models-per-min.",
+        statusCode: 429,
+        retryAfterSeconds: 12,
+        retryable: true,
+      }),
+    );
+
+    const buildRequest = () =>
+      new NextRequest("http://localhost/api/suggestion", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "vitest",
+          "X-Forwarded-For": "127.0.0.1",
+        },
+        body: JSON.stringify({
+          mode: "autocomplete",
+          fileName: "src/example.ts",
+          language: "TypeScript",
+          code: "const value = 1;",
+          currentLine: "const value = ",
+          textBeforeCursor: "const value = ",
+          textAfterCursor: "1;",
+          cursorOffset: 14,
+        }),
+      });
+
+    const firstResponse = await POST(buildRequest());
+    const firstPayload = (await firstResponse.json()) as {
+      error: string;
+      retryAfterSeconds?: number;
+    };
+
+    expect(firstResponse.status).toBe(429);
+    expect(firstPayload.error).toBe(
+      "Suggestion service is rate-limited right now.",
+    );
+    expect(firstPayload.retryAfterSeconds).toBe(12);
+    expect(generateSuggestionMock).toHaveBeenCalledTimes(1);
+
+    generateSuggestionMock.mockResolvedValueOnce({
+      suggestion: "2;",
+      modelName: "google/gemini-2.5-flash:free",
+      attempts: 1,
+      latencyMs: 20,
+    });
+
+    const secondResponse = await POST(buildRequest());
+    const secondPayload = (await secondResponse.json()) as {
+      error: string;
+      retryAfterSeconds?: number;
+    };
+
+    expect(secondResponse.status).toBe(429);
+    expect(secondPayload.error).toBe(
+      "Suggestion service is rate-limited right now.",
+    );
+    expect(secondPayload.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+    expect(generateSuggestionMock).toHaveBeenCalledTimes(1);
   });
 });
