@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { suggestionRuntime } from "@/lib/completion-runtime";
 
 describe("completion-runtime", () => {
@@ -59,6 +59,32 @@ describe("completion-runtime", () => {
     expect(blocked.allowed).toBe(false);
     if (!blocked.allowed) {
       expect(blocked.retryAfterSeconds).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  it("rebuilds the cached runtime when the stored instance is stale", async () => {
+    const originalRuntime = suggestionRuntime;
+    const staleRuntime = {
+      runtimeVersion: 0,
+    } as never;
+    const globalScope = globalThis as typeof globalThis & {
+      __orbitSuggestionRuntime__?: unknown;
+    };
+
+    globalScope.__orbitSuggestionRuntime__ = staleRuntime;
+
+    await vi.resetModules();
+
+    try {
+      const { suggestionRuntime: reloadedRuntime } =
+        await import("@/lib/completion-runtime");
+
+      expect(reloadedRuntime).not.toBe(staleRuntime);
+      expect(reloadedRuntime.runtimeVersion).toBe(1);
+      expect(typeof reloadedRuntime.getProviderCooldown).toBe("function");
+    } finally {
+      globalScope.__orbitSuggestionRuntime__ = originalRuntime;
+      await vi.resetModules();
     }
   });
 });
