@@ -135,6 +135,62 @@ describe("suggestion-engine", () => {
     expect(result.suggestion).toBe(" answer;");
     expect(result.attempts).toBe(2);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const firstRequest = JSON.parse(
+      fetchMock.mock.calls[0][1]?.body as string,
+    ) as {
+      model?: string;
+    };
+    const secondRequest = JSON.parse(
+      fetchMock.mock.calls[1][1]?.body as string,
+    ) as {
+      model?: string;
+    };
+
+    expect(firstRequest.model).toBe("google/gemini-2.5-flash:free");
+    expect(secondRequest.model).toBe("deepseek/deepseek-chat-v3-0324:free");
+  });
+
+  it("stops the fallback chain when OpenRouter reports the free-model minute cap", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "Rate limit exceeded: free-models-per-min.",
+          },
+        }),
+        {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": "45",
+          },
+        },
+      ),
+    );
+
+    global.fetch = fetchMock as typeof fetch;
+
+    await expect(
+      generateSuggestion("autocomplete", {
+        mode: "autocomplete",
+        fileName: "src/example.ts",
+        language: "TypeScript",
+        code: "function getAnswer() {\n  return\n}",
+        currentLine: "  return",
+        previousLines: "function getAnswer() {\n",
+        nextLines: "\n}",
+        textBeforeCursor: "  return",
+        textAfterCursor: "",
+        cursorOffset: 27,
+        lineNumber: 2,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      retryAfterSeconds: 45,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("marks client errors as non-retryable", async () => {
