@@ -61,9 +61,12 @@ const ASYNC_SUGGESTION_POLL_INTERVAL_MS = 400;
 const ASYNC_SUGGESTION_TIMEOUT_MS = 180_000;
 const INLINE_SUGGESTION_LINE_WINDOW = 40;
 const INLINE_SUGGESTION_CACHE_LIMIT = 40;
-const INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS = 1;
-const INLINE_SUGGESTION_TRIGGER_DEBOUNCE_MS = 250;
+const INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS = 3;
+const INLINE_SUGGESTION_TRIGGER_DEBOUNCE_MS = 900;
 const INLINE_SUGGESTION_ERROR_TOAST_COOLDOWN_MS = 8_000;
+const INLINE_SUGGESTION_PROVIDER_COOLDOWN_FALLBACK_MS = 30_000;
+const INLINE_SUGGESTION_PROVIDER_RATE_LIMIT_PATTERN =
+  /(free-models-per-(?:min|minute|day)|rate limit exceeded|too many requests)/i;
 
 const initializeEmmet = (monacoApi: typeof Monaco) => {
   const globalState = globalThis as typeof globalThis & {
@@ -100,6 +103,7 @@ interface CodeEditorProps {
   onBlur?: () => void;
   activeFileId?: Id<"files">;
   projectFiles?: Doc<"files">[];
+  inlineSuggestionsEnabled?: boolean;
 }
 
 const clampOffset = (offset: number, max: number) =>
@@ -117,7 +121,20 @@ type InlineSuggestionFetchResult = {
   outcome: "success" | "aborted" | "error";
   suggestion: string;
   message?: string;
+  retryAfterSeconds?: number;
 };
+
+const getInlineSuggestionCooldownMs = (retryAfterSeconds?: number | null) => {
+  if (typeof retryAfterSeconds === "number" && retryAfterSeconds > 0) {
+    return Math.ceil(retryAfterSeconds * 1_000);
+  }
+
+  return INLINE_SUGGESTION_PROVIDER_COOLDOWN_FALLBACK_MS;
+};
+
+const isInlineSuggestionRateLimited = (message?: string) =>
+  typeof message === "string" &&
+  INLINE_SUGGESTION_PROVIDER_RATE_LIMIT_PATTERN.test(message);
 
 const hasAsyncSuggestionHandle = (
   payload: SuggestionApiResponse | null,
@@ -181,6 +198,7 @@ export const CodeEditor = ({
   onBlur,
   activeFileId,
   projectFiles = [],
+  inlineSuggestionsEnabled = true,
 }: CodeEditorProps) => {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
@@ -188,9 +206,11 @@ export const CodeEditor = ({
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
   const inlineSuggestionCacheRef = useRef<Map<string, string>>(new Map());
-  const inlineSuggestTriggerTimeoutRef = useRef<
-    ReturnType<typeof setTimeout> | null
-  >(null);
+  const inlineSuggestTriggerTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  const inlineSuggestionsEnabledRef = useRef(true);
+  const inlineSuggestionCooldownUntilRef = useRef(0);
   const lastInlineSuggestionErrorAtRef = useRef(0);
 
   const [selectionBar, setSelectionBar] = useState<{
@@ -201,6 +221,10 @@ export const CodeEditor = ({
   const [aiInstruction, setAiInstruction] = useState("");
   const [isApplyingAi, setIsApplyingAi] = useState(false);
   const currentFileReference = filePath ?? filename;
+
+  useEffect(() => {
+    inlineSuggestionsEnabledRef.current = inlineSuggestionsEnabled;
+  }, [inlineSuggestionsEnabled]);
 
   const buildRequestProjectContext = useCallback(
     (currentCode: string): SuggestionProjectContext | undefined => {
@@ -221,24 +245,27 @@ export const CodeEditor = ({
     inlineSuggestionCacheRef.current.clear();
   }, [activeFileId, currentFileReference]);
 
-  const cacheInlineSuggestion = useCallback((key: string, suggestion: string) => {
-    const cache = inlineSuggestionCacheRef.current;
+  const cacheInlineSuggestion = useCallback(
+    (key: string, suggestion: string) => {
+      const cache = inlineSuggestionCacheRef.current;
 
-    if (cache.has(key)) {
-      cache.delete(key);
-    }
-
-    cache.set(key, suggestion);
-
-    while (cache.size > INLINE_SUGGESTION_CACHE_LIMIT) {
-      const oldestKey = cache.keys().next().value as string | undefined;
-      if (!oldestKey) {
-        break;
+      if (cache.has(key)) {
+        cache.delete(key);
       }
 
-      cache.delete(oldestKey);
-    }
-  }, []);
+      cache.set(key, suggestion);
+
+      while (cache.size > INLINE_SUGGESTION_CACHE_LIMIT) {
+        const oldestKey = cache.keys().next().value as string | undefined;
+        if (!oldestKey) {
+          break;
+        }
+
+        cache.delete(oldestKey);
+      }
+    },
+    [],
+  );
 
   const buildAutocompleteRequest = useCallback(
     (
@@ -392,6 +419,23 @@ export const CodeEditor = ({
     lastInlineSuggestionErrorAtRef.current = now;
     toast.error(nextMessage);
   }, []);
+
+  const isInlineSuggestionCoolingDown = useCallback(
+    () => inlineSuggestionCooldownUntilRef.current > Date.now(),
+    [],
+  );
+
+  const pauseInlineSuggestions = useCallback((retryAfterSeconds?: number) => {
+    inlineSuggestionCooldownUntilRef.current = Math.max(
+      inlineSuggestionCooldownUntilRef.current,
+      Date.now() + getInlineSuggestionCooldownMs(retryAfterSeconds),
+    );
+  }, []);
+
+  const areInlineSuggestionsEnabled = useCallback(
+    () => inlineSuggestionsEnabledRef.current,
+    [],
+  );
 
   const emitState = useCallback(
     (docChanged = false) => {
@@ -709,6 +753,7 @@ export const CodeEditor = ({
           return {
             outcome: "error",
             suggestion: "",
+            retryAfterSeconds,
             message: `${payload?.error ?? "Inline suggestions are unavailable."}${retryHint}${detail ? ` - ${detail}` : ""}`,
           } satisfies InlineSuggestionFetchResult;
         }
@@ -724,6 +769,7 @@ export const CodeEditor = ({
           return {
             outcome: "error",
             suggestion: "",
+            retryAfterSeconds: payload.retryAfterSeconds,
             message: `${payload.error}${detail ? ` - ${detail}` : ""}`,
           } satisfies InlineSuggestionFetchResult;
         }
@@ -755,7 +801,15 @@ export const CodeEditor = ({
 
   const triggerInlineSuggestion = useCallback(
     (delayMs = INLINE_SUGGESTION_TRIGGER_DEBOUNCE_MS) => {
-      if (readOnly) {
+      if (
+        readOnly ||
+        !areInlineSuggestionsEnabled() ||
+        isInlineSuggestionCoolingDown()
+      ) {
+        if (inlineSuggestTriggerTimeoutRef.current) {
+          clearTimeout(inlineSuggestTriggerTimeoutRef.current);
+          inlineSuggestTriggerTimeoutRef.current = null;
+        }
         return;
       }
 
@@ -793,8 +847,41 @@ export const CodeEditor = ({
         );
       }, delayMs);
     },
-    [readOnly],
+    [areInlineSuggestionsEnabled, isInlineSuggestionCoolingDown, readOnly],
   );
+
+  useEffect(() => {
+    if (inlineSuggestionsEnabled) {
+      inlineSuggestionCooldownUntilRef.current = 0;
+      triggerInlineSuggestion(0);
+      return;
+    }
+
+    inlineSuggestionCooldownUntilRef.current = 0;
+    inlineSuggestionCacheRef.current.clear();
+
+    if (inlineSuggestTriggerTimeoutRef.current) {
+      clearTimeout(inlineSuggestTriggerTimeoutRef.current);
+      inlineSuggestTriggerTimeoutRef.current = null;
+    }
+
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const hideAction = editor.getAction("editor.action.inlineSuggest.hide");
+    if (hideAction) {
+      void hideAction.run();
+      return;
+    }
+
+    editor.trigger(
+      "orbit-inline-suggest",
+      "editor.action.inlineSuggest.hide",
+      {},
+    );
+  }, [inlineSuggestionsEnabled, triggerInlineSuggestion]);
 
   const handleApplyAiTransform = useCallback(async () => {
     if (isApplyingAi || readOnly) {
@@ -886,9 +973,7 @@ export const CodeEditor = ({
       const monacoApi = monacoRef.current;
       const latestModel = editor.getModel();
       if (!latestModel || !monacoApi || latestModel.getValue() !== fullCode) {
-        toast.error(
-          "File changed before the response arrived. Try again.",
-        );
+        toast.error("File changed before the response arrived. Try again.");
         return;
       }
 
@@ -1128,7 +1213,7 @@ export const CodeEditor = ({
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [
         monacoApi.languages.registerInlineCompletionsProvider(language, {
-          debounceDelayMs: 350,
+          debounceDelayMs: 750,
           displayName: "Orbit AI",
           provideInlineCompletions: async (
             model: Monaco.editor.ITextModel,
@@ -1136,7 +1221,15 @@ export const CodeEditor = ({
             context: Monaco.languages.InlineCompletionContext,
             token: Monaco.CancellationToken,
           ) => {
-            if (!context.includeInlineCompletions || readOnly) {
+            if (
+              !context.includeInlineCompletions ||
+              readOnly ||
+              !areInlineSuggestionsEnabled()
+            ) {
+              return { items: [] };
+            }
+
+            if (isInlineSuggestionCoolingDown()) {
               return { items: [] };
             }
 
@@ -1208,6 +1301,13 @@ export const CodeEditor = ({
               if (result.outcome === "success") {
                 cacheInlineSuggestion(cacheKey, result.suggestion);
               } else if (result.outcome === "error") {
+                if (
+                  typeof result.retryAfterSeconds === "number" ||
+                  isInlineSuggestionRateLimited(result.message)
+                ) {
+                  pauseInlineSuggestions(result.retryAfterSeconds);
+                }
+
                 showInlineSuggestionError(result.message);
               }
 
@@ -1300,8 +1400,11 @@ export const CodeEditor = ({
       buildAutocompleteRequest,
       cacheInlineSuggestion,
       emitState,
+      areInlineSuggestionsEnabled,
+      isInlineSuggestionCoolingDown,
       language,
       onBlur,
+      pauseInlineSuggestions,
       readOnly,
       requestAutocompleteSuggestion,
       restoreInitialState,
@@ -1365,7 +1468,7 @@ export const CodeEditor = ({
       suggestSelection: "first",
       acceptSuggestionOnEnter: "smart",
       inlineSuggest: {
-        enabled: !readOnly,
+        enabled: !readOnly && inlineSuggestionsEnabled,
         mode: "prefix",
         minShowDelay: 150,
         showToolbar: "onHover",
@@ -1400,7 +1503,7 @@ export const CodeEditor = ({
       glyphMargin: true,
       links: true,
     }),
-    [readOnly, settings],
+    [inlineSuggestionsEnabled, readOnly, settings],
   );
 
   const handleChange = useCallback(
