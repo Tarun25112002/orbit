@@ -112,6 +112,22 @@ export async function POST(request: NextRequest) {
   }
 
   const sessionKey = getSessionKey(request);
+  const providerCooldown = suggestionRuntime.getProviderCooldown(sessionKey);
+  if (providerCooldown) {
+    return NextResponse.json(
+      {
+        error: "Suggestion service is rate-limited right now.",
+        retryAfterSeconds: providerCooldown.retryAfterSeconds,
+      },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(providerCooldown.retryAfterSeconds),
+        },
+      },
+    );
+  }
+
   const rateLimit = suggestionRuntime.consumeRateLimit(sessionKey);
   if (!rateLimit.allowed) {
     return NextResponse.json(
@@ -130,7 +146,10 @@ export async function POST(request: NextRequest) {
 
   if (prepared.mode === "autocomplete") {
     try {
-      const generation = await generateSuggestion(prepared.mode, prepared.input);
+      const generation = await generateSuggestion(
+        prepared.mode,
+        prepared.input,
+      );
 
       return NextResponse.json(
         suggestionRuntime.createSyncResponse({
@@ -143,6 +162,16 @@ export async function POST(request: NextRequest) {
         }),
       );
     } catch (error) {
+      if (
+        error instanceof SuggestionGenerationError &&
+        error.statusCode === 429
+      ) {
+        suggestionRuntime.setProviderCooldown(
+          sessionKey,
+          error.retryAfterSeconds,
+        );
+      }
+
       return buildSuggestionErrorResponse(error);
     }
   }
@@ -166,21 +195,70 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    suggestionRuntime.fail({
+    const queueError =
+      error instanceof Error
+        ? error
+        : new Error("Failed to queue suggestion request.");
+
+    console.warn("suggestion.request.queue-fallback", {
       requestId: queued.requestId,
-      error:
-        error instanceof Error
-          ? error
-          : new Error("Failed to queue suggestion request."),
+      detail: queueError.message,
     });
 
-    return NextResponse.json(
-      {
-        error: "Failed to queue suggestion request.",
-        detail: error instanceof Error ? error.message : String(error),
-      },
-      { status: 500 },
-    );
+    suggestionRuntime.markProcessing(queued.requestId);
+
+    try {
+      const generation = await generateSuggestion(
+        prepared.mode,
+        prepared.input,
+        {
+          onRetry: ({ attempt, error: retryError }) => {
+            suggestionRuntime.markRetrying(
+              queued.requestId,
+              attempt,
+              retryError.message,
+            );
+          },
+        },
+      );
+
+      suggestionRuntime.complete({
+        requestId: queued.requestId,
+        suggestion: generation.suggestion,
+        model: generation.modelName,
+        attempts: generation.attempts,
+        latencyMs: generation.latencyMs,
+      });
+
+      return NextResponse.json({
+        requestId: queued.requestId,
+        mode: prepared.mode,
+        execution: "sync" as const,
+        suggestion: generation.suggestion,
+        sugegstions: generation.suggestion,
+        model: generation.modelName,
+        cached: false,
+        status: "completed" as const,
+        attempt: generation.attempts,
+      });
+    } catch (generationError) {
+      if (
+        generationError instanceof SuggestionGenerationError &&
+        generationError.statusCode === 429
+      ) {
+        suggestionRuntime.setProviderCooldown(
+          sessionKey,
+          generationError.retryAfterSeconds,
+        );
+      }
+
+      suggestionRuntime.fail({
+        requestId: queued.requestId,
+        error: generationError,
+      });
+
+      return buildSuggestionErrorResponse(generationError);
+    }
   }
 
   return NextResponse.json(buildAsyncResponse(queued.requestId, queued.token), {
