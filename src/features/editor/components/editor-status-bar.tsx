@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BracesIcon,
   IndentIncreaseIcon,
+  SparklesIcon,
   TypeIcon,
   WrapTextIcon,
   MapIcon,
@@ -20,6 +21,8 @@ interface EditorStatusBarProps {
   fileSize?: number;
   isDirty?: boolean;
   lineEnding?: "LF" | "CRLF";
+  inlineSuggestionsEnabled?: boolean;
+  onToggleInlineSuggestions?: () => void;
 }
 
 const formatFileSize = (bytes: number): string => {
@@ -58,6 +61,8 @@ export const EditorStatusBar = ({
   fileSize,
   isDirty,
   lineEnding = "LF",
+  inlineSuggestionsEnabled = true,
+  onToggleInlineSuggestions,
 }: EditorStatusBarProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [compactMode, setCompactMode] = useState<"full" | "md" | "sm" | "xs">(
@@ -232,6 +237,24 @@ export const EditorStatusBar = ({
             : settings.minimap
               ? "Minimap"
               : "No Map"}
+        </StatusItem>
+
+        <StatusItem
+          onClick={onToggleInlineSuggestions}
+          title={
+            inlineSuggestionsEnabled
+              ? "Stop code suggestions"
+              : "Start code suggestions"
+          }
+        >
+          <SparklesIcon className="size-3" />
+          {compactMode === "xs"
+            ? inlineSuggestionsEnabled
+              ? "AI"
+              : "AI Off"
+            : inlineSuggestionsEnabled
+              ? "Stop AI"
+              : "Start AI"}
         </StatusItem>
 
         <StatusItem title="Select language mode">
