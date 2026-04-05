@@ -84,7 +84,8 @@ const normalizeAssistantContent = (content: unknown): string => {
 
 export const requestOpenRouterCompletion = async (args: {
   apiKey: string;
-  model: string;
+  model?: string;
+  models?: string[];
   messages: OpenRouterChatMessage[];
   enableReasoning?: boolean;
 }) => {
@@ -93,6 +94,19 @@ export const requestOpenRouterCompletion = async (args: {
   if (!apiKey) {
     throw new OpenRouterRequestError({
       message: "OpenRouter API key is missing",
+      status: 500,
+      retryAfterSeconds: null,
+      responseBody: null,
+    });
+  }
+
+  const requestedModels =
+    args.models?.map((model) => model.trim()).filter(Boolean) ?? [];
+  const primaryModel = args.model?.trim() ?? requestedModels[0] ?? "";
+
+  if (!primaryModel) {
+    throw new OpenRouterRequestError({
+      message: "OpenRouter model is missing",
       status: 500,
       retryAfterSeconds: null,
       responseBody: null,
@@ -116,13 +130,16 @@ export const requestOpenRouterCompletion = async (args: {
     method: "POST",
     headers,
     body: JSON.stringify({
-      model: args.model,
+      ...(requestedModels.length > 0
+        ? { models: requestedModels }
+        : { model: primaryModel }),
       messages: args.messages,
       ...(args.enableReasoning ? { reasoning: { enabled: true } } : {}),
     }),
   });
 
   const responseBody = (await response.json().catch(() => null)) as {
+    model?: string;
     error?: { message?: string };
     choices?: Array<{
       message?: {
@@ -156,6 +173,7 @@ export const requestOpenRouterCompletion = async (args: {
   }
 
   return {
+    model: responseBody?.model ?? primaryModel,
     message: {
       content,
       reasoning_details: message?.reasoning_details,
