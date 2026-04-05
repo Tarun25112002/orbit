@@ -465,6 +465,8 @@ const BreadcrumbBar = ({
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const { setBadge } = useProjectHeaderContext();
   const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
+  const [inlineSuggestionsEnabled, setInlineSuggestionsEnabled] =
+    useState(true);
   const [draftContent, setDraftContent] = useState("");
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null);
@@ -1006,6 +1008,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                             onBlur={flushPendingAutoSave}
                             activeFileId={selectedFile._id}
                             projectFiles={projectFiles ?? []}
+                            inlineSuggestionsEnabled={inlineSuggestionsEnabled}
                           />
                         </div>
                       )}
@@ -1020,6 +1023,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                         fileSize={fileSize}
                         isDirty={isDirty}
                         lineEnding={editorMeta.lineEnding}
+                        inlineSuggestionsEnabled={inlineSuggestionsEnabled}
+                        onToggleInlineSuggestions={() => {
+                          setInlineSuggestionsEnabled((current) => !current);
+                        }}
                       />
                     )}
                   </div>
