@@ -59,10 +59,9 @@ const EMMET_JSX_LANGUAGES = ["javascript", "typescript", "mdx"];
 const EMMET_OPTIONS = { tokenizer: "standard" as const };
 const ASYNC_SUGGESTION_POLL_INTERVAL_MS = 400;
 const ASYNC_SUGGESTION_TIMEOUT_MS = 180_000;
-const INLINE_SUGGESTION_LINE_WINDOW = 40;
-const INLINE_SUGGESTION_CACHE_LIMIT = 40;
-const INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS = 3;
-const INLINE_SUGGESTION_TRIGGER_DEBOUNCE_MS = 900;
+const INLINE_SUGGESTION_LINE_WINDOW = 20;
+const INLINE_SUGGESTION_CACHE_LIMIT = 60;
+const INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS = 1;
 const INLINE_SUGGESTION_ERROR_TOAST_COOLDOWN_MS = 8_000;
 const INLINE_SUGGESTION_PROVIDER_COOLDOWN_FALLBACK_MS = 30_000;
 const INLINE_SUGGESTION_PROVIDER_RATE_LIMIT_PATTERN =
@@ -206,12 +205,10 @@ export const CodeEditor = ({
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
   const inlineSuggestionCacheRef = useRef<Map<string, string>>(new Map());
-  const inlineSuggestTriggerTimeoutRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
   const inlineSuggestionsEnabledRef = useRef(true);
   const inlineSuggestionCooldownUntilRef = useRef(0);
   const lastInlineSuggestionErrorAtRef = useRef(0);
+  const inlineSuggestAbortRef = useRef<AbortController | null>(null);
 
   const [selectionBar, setSelectionBar] = useState<{
     top: number;
@@ -329,10 +326,9 @@ export const CodeEditor = ({
         textBeforeCursor: code.slice(0, cursorOffset),
         textAfterCursor: code.slice(cursorOffset),
         cursorOffset,
-        projectContext: buildRequestProjectContext(code),
       };
     },
-    [buildRequestProjectContext, currentFileReference, readOnly],
+    [currentFileReference, readOnly],
   );
 
   const updateSelectionBarLayout = useCallback(() => {
@@ -392,10 +388,8 @@ export const CodeEditor = ({
 
   useEffect(() => {
     return () => {
-      if (inlineSuggestTriggerTimeoutRef.current) {
-        clearTimeout(inlineSuggestTriggerTimeoutRef.current);
-        inlineSuggestTriggerTimeoutRef.current = null;
-      }
+      inlineSuggestAbortRef.current?.abort();
+      inlineSuggestAbortRef.current = null;
 
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
@@ -799,71 +793,16 @@ export const CodeEditor = ({
     [streamBackgroundSuggestion],
   );
 
-  const triggerInlineSuggestion = useCallback(
-    (delayMs = INLINE_SUGGESTION_TRIGGER_DEBOUNCE_MS) => {
-      if (
-        readOnly ||
-        !areInlineSuggestionsEnabled() ||
-        isInlineSuggestionCoolingDown()
-      ) {
-        if (inlineSuggestTriggerTimeoutRef.current) {
-          clearTimeout(inlineSuggestTriggerTimeoutRef.current);
-          inlineSuggestTriggerTimeoutRef.current = null;
-        }
-        return;
-      }
-
-      const editor = editorRef.current;
-      const model = editor?.getModel();
-      const selection = editor?.getSelection();
-      if (!editor || !model || !selection || !selection.isEmpty()) {
-        return;
-      }
-
-      const position = editor.getPosition();
-      if (!position) {
-        return;
-      }
-
-      const linePrefix = model
-        .getLineContent(position.lineNumber)
-        .slice(0, Math.max(0, position.column - 1));
-      if (
-        linePrefix.trim().length < INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS
-      ) {
-        return;
-      }
-
-      if (inlineSuggestTriggerTimeoutRef.current) {
-        clearTimeout(inlineSuggestTriggerTimeoutRef.current);
-      }
-
-      inlineSuggestTriggerTimeoutRef.current = setTimeout(() => {
-        inlineSuggestTriggerTimeoutRef.current = null;
-        editor.trigger(
-          "orbit-inline-suggest",
-          "editor.action.inlineSuggest.trigger",
-          {},
-        );
-      }, delayMs);
-    },
-    [areInlineSuggestionsEnabled, isInlineSuggestionCoolingDown, readOnly],
-  );
-
   useEffect(() => {
     if (inlineSuggestionsEnabled) {
       inlineSuggestionCooldownUntilRef.current = 0;
-      triggerInlineSuggestion(0);
       return;
     }
 
     inlineSuggestionCooldownUntilRef.current = 0;
     inlineSuggestionCacheRef.current.clear();
-
-    if (inlineSuggestTriggerTimeoutRef.current) {
-      clearTimeout(inlineSuggestTriggerTimeoutRef.current);
-      inlineSuggestTriggerTimeoutRef.current = null;
-    }
+    inlineSuggestAbortRef.current?.abort();
+    inlineSuggestAbortRef.current = null;
 
     const editor = editorRef.current;
     if (!editor) {
@@ -881,7 +820,7 @@ export const CodeEditor = ({
       "editor.action.inlineSuggest.hide",
       {},
     );
-  }, [inlineSuggestionsEnabled, triggerInlineSuggestion]);
+  }, [inlineSuggestionsEnabled]);
 
   const handleApplyAiTransform = useCallback(async () => {
     if (isApplyingAi || readOnly) {
@@ -1213,7 +1152,7 @@ export const CodeEditor = ({
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [
         monacoApi.languages.registerInlineCompletionsProvider(language, {
-          debounceDelayMs: 750,
+          debounceDelayMs: 350,
           displayName: "Orbit AI",
           provideInlineCompletions: async (
             model: Monaco.editor.ITextModel,
@@ -1221,11 +1160,7 @@ export const CodeEditor = ({
             context: Monaco.languages.InlineCompletionContext,
             token: Monaco.CancellationToken,
           ) => {
-            if (
-              !context.includeInlineCompletions ||
-              readOnly ||
-              !areInlineSuggestionsEnabled()
-            ) {
+            if (readOnly || !areInlineSuggestionsEnabled()) {
               return { items: [] };
             }
 
@@ -1287,7 +1222,11 @@ export const CodeEditor = ({
               return { items: [] };
             }
 
+            // Abort any previous in-flight request
+            inlineSuggestAbortRef.current?.abort();
             const controller = new AbortController();
+            inlineSuggestAbortRef.current = controller;
+
             const cancelSubscription = token.onCancellationRequested(() => {
               controller.abort();
             });
@@ -1342,6 +1281,9 @@ export const CodeEditor = ({
               };
             } finally {
               cancelSubscription.dispose();
+              if (inlineSuggestAbortRef.current === controller) {
+                inlineSuggestAbortRef.current = null;
+              }
             }
           },
           disposeInlineCompletions: () => {},
@@ -1353,12 +1295,10 @@ export const CodeEditor = ({
         editor.onDidChangeModelContent(() => {
           emitState(true);
           updateSelectionBarLayout();
-          triggerInlineSuggestion();
         }),
         editor.onDidChangeModel(() => {
           emitState(true);
           updateSelectionBarLayout();
-          triggerInlineSuggestion(0);
         }),
         editor.onDidScrollChange(() => {
           updateSelectionBarLayout();
@@ -1368,7 +1308,6 @@ export const CodeEditor = ({
         }),
         editor.onDidFocusEditorText(() => {
           updateSelectionBarLayout();
-          triggerInlineSuggestion(0);
         }),
         editor.onDidBlurEditorText(() => {
           onBlur?.();
@@ -1409,7 +1348,6 @@ export const CodeEditor = ({
       requestAutocompleteSuggestion,
       restoreInitialState,
       showInlineSuggestionError,
-      triggerInlineSuggestion,
       updateSelectionBarLayout,
     ],
   );

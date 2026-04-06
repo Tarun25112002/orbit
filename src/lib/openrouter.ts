@@ -88,6 +88,8 @@ export const requestOpenRouterCompletion = async (args: {
   models?: string[];
   messages: OpenRouterChatMessage[];
   enableReasoning?: boolean;
+  maxTokens?: number;
+  temperature?: number;
 }) => {
   const apiKey = args.apiKey.trim();
 
@@ -135,6 +137,12 @@ export const requestOpenRouterCompletion = async (args: {
         : { model: primaryModel }),
       messages: args.messages,
       ...(args.enableReasoning ? { reasoning: { enabled: true } } : {}),
+      ...(typeof args.maxTokens === "number" && args.maxTokens > 0
+        ? { max_tokens: args.maxTokens }
+        : {}),
+      ...(typeof args.temperature === "number"
+        ? { temperature: args.temperature }
+        : {}),
     }),
   });
 

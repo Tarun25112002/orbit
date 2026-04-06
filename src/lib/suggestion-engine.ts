@@ -12,6 +12,8 @@ import {
 } from "@/lib/openrouter";
 
 const MAX_CONTEXT_CHARS = 5_000;
+const MAX_AUTOCOMPLETE_CONTEXT_CHARS = 2_000;
+const MAX_AUTOCOMPLETE_TOKENS = 256;
 const MAX_CODE_WINDOW_CHARS = 24_000;
 const MAX_WORKSPACE_SUMMARY_CHARS = 1_000;
 const MAX_WORKSPACE_TREE_CHARS = 4_500;
@@ -371,45 +373,31 @@ export const buildAutocompletePrompt = (
   const fileName = input.fileName ?? "untitled";
   const lineNumber = input.lineNumber ?? 1;
   const currentLine = input.currentLine ?? "";
-  const previousLines = input.previousLines ?? "";
-  const nextLines = input.nextLines ?? "";
   const textBeforeCursor = input.textBeforeCursor ?? "";
   const textAfterCursor = input.textAfterCursor ?? "";
 
   return [
     "You are an inline code autocomplete engine.",
-    "Generate only the code suffix that should be inserted at the cursor.",
+    "Generate only the code that should be inserted at the cursor position.",
     "Do not add markdown, explanations, or code fences.",
-    "The suggestion must be well formatted and match surrounding indentation and spacing style.",
-    "Never repeat text that is already before the cursor.",
-    "Avoid duplicating the text that already exists after the cursor.",
-    "Optimize for low-latency, editor-safe completions across multiple programming languages.",
-    "If no useful completion is appropriate, return an empty string.",
+    "Match surrounding indentation and style.",
+    "Never repeat text already before the cursor.",
+    "Never duplicate text already after the cursor.",
+    "If no useful completion exists, return an empty string.",
     "",
-    `File: ${fileName}`,
-    `Language: ${input.language ?? "Unknown"}`,
-    `Line: ${lineNumber}`,
+    `File: ${fileName} | Language: ${input.language ?? "Unknown"} | Line: ${lineNumber}`,
     "",
     "Current line:",
     currentLine,
     "",
     "Text before cursor:",
-    limitContext(textBeforeCursor, MAX_CONTEXT_CHARS, true),
+    limitContext(textBeforeCursor, MAX_AUTOCOMPLETE_CONTEXT_CHARS, true),
     "",
     "Text after cursor:",
-    limitContext(textAfterCursor, MAX_CONTEXT_CHARS),
-    "",
-    "Previous lines:",
-    limitContext(previousLines, MAX_CONTEXT_CHARS, true),
-    "",
-    "Next lines:",
-    limitContext(nextLines, MAX_CONTEXT_CHARS),
+    limitContext(textAfterCursor, MAX_AUTOCOMPLETE_CONTEXT_CHARS),
     ...(projectContextBlock
       ? ["", "Relevant workspace context:", projectContextBlock]
       : []),
-    "",
-    "File content window:",
-    buildCodeWindow(input.code, input.cursorOffset),
   ].join("\n");
 };
 
@@ -600,9 +588,10 @@ export const buildSuggestionExecutionInput = ({
   mode: SuggestionMode;
   input: ParsedSuggestionInput;
 }) => {
-  const projectContextBlock = formatProjectContextForPrompt(
-    input.projectContext,
-  );
+  const projectContextBlock =
+    mode === "transform"
+      ? formatProjectContextForPrompt(input.projectContext)
+      : "";
   const llmPrompt =
     mode === "transform"
       ? buildTransformPrompt(input, projectContextBlock)
@@ -720,11 +709,15 @@ export async function generateSuggestion(
       totalAttempts += 1;
 
       try {
+        const isAutocomplete = mode === "autocomplete";
         const firstResponse = await requestOpenRouterCompletion({
           apiKey,
           model: modelName,
           messages: [{ role: "user", content: execution.llmPrompt }],
-          enableReasoning: true,
+          enableReasoning: !isAutocomplete,
+          ...(isAutocomplete
+            ? { maxTokens: MAX_AUTOCOMPLETE_TOKENS, temperature: 0.2 }
+            : {}),
         });
 
         let suggestion = normalizeSuggestion(
@@ -734,7 +727,11 @@ export async function generateSuggestion(
           execution.textAfterCursor,
         );
 
-        if (!suggestion.trim() && firstResponse.message.reasoning_details) {
+        if (
+          !isAutocomplete &&
+          !suggestion.trim() &&
+          firstResponse.message.reasoning_details
+        ) {
           const continuationResponse = await requestOpenRouterCompletion({
             apiKey,
             model: modelName,
