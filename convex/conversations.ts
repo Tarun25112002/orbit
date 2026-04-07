@@ -61,10 +61,33 @@ export const getProject = query({
         if(project.ownerId!== identity.subject){
             throw new Error ("Unauthorized to access this project")
         }
-        return ctx.db
+        return await ctx.db
             .query("conversations")
             .withIndex("by_project", (q)=>q.eq("projectId", args.projectId))
             .order("desc")
             .collect()
+    }
+})
+export const getMesssages = query({
+    args:{
+      conversationId: v.id("conversations")
+    },
+    handler: async (ctx , args)=>{
+        const identity = await verifyAuth(ctx)
+        const conversation = await ctx.db.get("conversations", args.conversationId)
+        if(!conversation){
+            throw new Error("Conversation not found")
+        }
+        const project = await ctx.db.get("projects", conversation.projectId )
+
+        if(!project){
+            throw new Error("Projects not found")
+        }
+        if(project.ownerId!== identity.subject){
+            throw new Error ("Unauthorized to access this project")
+        }
+        return await ctx.db
+            .query("messages")
+            .withIndex("by_conversation", (q)=>q.eq("conversationId", args.conversationId)).order("asc").collect()
     }
 })
