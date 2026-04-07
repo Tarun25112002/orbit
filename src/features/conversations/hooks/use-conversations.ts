@@ -7,3 +7,6 @@ export const useConversation = (id:Id<"conversations"> |null)=>{
 export const useMessages = (conversationId: Id<"conversations">|null)=>{
     return useQuery(api.conversations.getMesssages,conversationId?{conversationId}:"skip");
 }
+export const useCreateConversation = (projectId: Id<"projects">)=>{
+    return useMutation(api.conversations.create)
+}
