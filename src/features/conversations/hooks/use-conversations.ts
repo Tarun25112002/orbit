@@ -4,3 +4,6 @@ import { Id } from "../../../../convex/_generated/dataModel"
 export const useConversation = (id:Id<"conversations"> |null)=>{
     return useQuery(api.conversations.getById, id?{id}:"skip")
 }
+export const useMessages = (conversationId: Id<"conversations">|null)=>{
+    return useQuery(api.conversations.getMesssages,conversationId?{conversationId}:"skip");
+}
