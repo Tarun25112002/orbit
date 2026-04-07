@@ -38,7 +38,7 @@ export const ProjectIdLayout = ({
               preferredSize={DEFAULT_SIDEBAR_WIDTH}
             >
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                Conversation
+                <ConversationSidebar/>
               </div>
             </Allotment.Pane>
 
