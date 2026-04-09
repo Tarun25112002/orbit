@@ -27,4 +27,7 @@ export async function POST (request: Request){
       internalKey,
       conversationId: conversationId as Id<"conversations">,
     });
+    if(!conversation){
+        return NextResponse.json({error: "No conversation"})
+    }
 }
