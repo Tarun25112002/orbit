@@ -23,5 +23,8 @@ export async function POST (request: Request){
     }
     const body = await request.json()
     const {conversationId, message} = requestSchema.parse(body)
-    const conversation = await convex.query(api.system.getConversationById,{conversationId: conversationId as Id<"conversations">, internalKey})
+    const conversation = await convex.query(api.system.getConversationById, {
+      internalKey,
+      conversationId: conversationId as Id<"conversations">,
+    });
 }
