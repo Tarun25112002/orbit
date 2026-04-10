@@ -5,7 +5,8 @@ import { convex } from "@/lib/convex-client";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { firecrawl } from "@/lib/firecrawl";
-import { generateGeminiCompletion, GEMINI_MODEL_DEFAULT, type GeminiChatMessage } from "@/lib/gemini";
+import { generateGeminiCompletion, GeminiRequestError, GEMINI_MODEL_DEFAULT, type GeminiChatMessage } from "@/lib/gemini";
+import { classifyError } from "@/lib/errors";
 
 const requestSchema = z.object({
   conversationId: z.string(),
@@ -56,7 +57,7 @@ const buildFileTree = (
 export async function POST(request: Request) {
   const { userId } = await auth();
   if (!userId) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    return NextResponse.json({ error: "Please sign in to continue." }, { status: 401 });
   }
 
   let body: unknown;
@@ -207,11 +208,41 @@ export async function POST(request: Request) {
       conversationId,
     });
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Internal server error";
+    // Use GeminiRequestError status if available, otherwise classify
+    if (error instanceof GeminiRequestError) {
+      return NextResponse.json(
+        { error: error.message },
+        {
+          status: error.status,
+          ...(error.status === 429
+            ? { headers: { "Retry-After": "10" } }
+            : {}),
+        },
+      );
+    }
+
+    const classified = classifyError(error);
+    const statusCode =
+      classified.category === "rate_limit" || classified.category === "quota_exceeded"
+        ? 429
+        : classified.category === "auth"
+          ? 401
+          : classified.category === "timeout"
+            ? 504
+            : 500;
+
     return NextResponse.json(
-      { error: errorMessage },
-      { status: 500 },
+      { error: classified.message },
+      {
+        status: statusCode,
+        ...(classified.retryAfterSeconds
+          ? {
+              headers: {
+                "Retry-After": String(classified.retryAfterSeconds),
+              },
+            }
+          : {}),
+      },
     );
   }
 }

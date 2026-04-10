@@ -8,6 +8,7 @@ import {
   prepareSuggestionRequest,
   SuggestionGenerationError,
 } from "@/lib/suggestion-engine";
+import { classifyError } from "@/lib/errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,24 +34,25 @@ const buildSuggestionErrorResponse = (error: unknown) => {
   const normalized =
     error instanceof SuggestionGenerationError
       ? error
-      : new SuggestionGenerationError({
-          message:
-            error instanceof Error
-              ? error.message
-              : "Failed to generate suggestion",
-          statusCode: 500,
-          retryable: false,
-        });
+      : (() => {
+          const classified = classifyError(error);
+          return new SuggestionGenerationError({
+            message: classified.message,
+            statusCode:
+              classified.category === "rate_limit" ||
+              classified.category === "quota_exceeded"
+                ? 429
+                : 500,
+            retryable: classified.retryable,
+            retryAfterSeconds: classified.retryAfterSeconds,
+          });
+        })();
 
   const retryAfterSeconds = normalized.retryAfterSeconds ?? undefined;
 
   return NextResponse.json(
     {
-      error:
-        normalized.statusCode === 429
-          ? "Suggestion service is rate-limited right now."
-          : "Failed to generate suggestion",
-      detail: normalized.message,
+      error: normalized.message,
       retryAfterSeconds,
     },
     {

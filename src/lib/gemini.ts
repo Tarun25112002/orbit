@@ -86,18 +86,65 @@ export const generateGeminiCompletion = async (args: {
       throw error;
     }
 
-    const message =
+    const rawMessage =
       error instanceof Error ? error.message : "Gemini request failed";
 
-    // Check for rate limiting
+    // Detect rate limiting / quota issues
     const isRateLimited =
-      message.includes("429") ||
-      message.toLowerCase().includes("rate limit") ||
-      message.toLowerCase().includes("quota");
+      rawMessage.includes("429") ||
+      /rate.?limit/i.test(rawMessage) ||
+      /quota/i.test(rawMessage) ||
+      /resource.?exhausted/i.test(rawMessage) ||
+      /too many requests/i.test(rawMessage);
+
+    // Detect quota specifically (different from transient rate limit)
+    const isQuotaExhausted =
+      /quota.?exceed/i.test(rawMessage) ||
+      /resource.?exhausted/i.test(rawMessage) ||
+      /free.?tier/i.test(rawMessage) ||
+      /limit:\s*0/i.test(rawMessage);
+
+    if (isQuotaExhausted) {
+      throw new GeminiRequestError({
+        message:
+          "AI usage quota has been exceeded. Please check your API plan or try again later.",
+        status: 429,
+      });
+    }
+
+    if (isRateLimited) {
+      throw new GeminiRequestError({
+        message:
+          "AI is temporarily busy due to rate limits. Please wait a moment and try again.",
+        status: 429,
+      });
+    }
+
+    // Detect network / connectivity issues
+    if (
+      /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
+        rawMessage,
+      )
+    ) {
+      throw new GeminiRequestError({
+        message:
+          "Unable to reach the AI service. Please check your internet connection.",
+        status: 503,
+      });
+    }
+
+    // Detect invalid API key
+    if (/api.?key|permission.?denied|forbidden/i.test(rawMessage)) {
+      throw new GeminiRequestError({
+        message:
+          "AI API key is invalid or missing. Please check your configuration.",
+        status: 401,
+      });
+    }
 
     throw new GeminiRequestError({
-      message,
-      status: isRateLimited ? 429 : 500,
+      message: "AI service encountered an error. Please try again.",
+      status: 500,
     });
   }
 };

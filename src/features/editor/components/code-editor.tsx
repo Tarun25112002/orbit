@@ -27,7 +27,7 @@ import {
 } from "../utils/language-detection";
 import { EditorContextMenu } from "./editor-context-menu";
 import { EditorSelectionAiBar } from "./editor-selection-ai-bar";
-import { getErrorMessage } from "@/lib/errors";
+import { getErrorMessage, getFriendlyErrorMessage } from "@/lib/errors";
 import {
   type SuggestionApiResponse,
   type SuggestionRequestBody,
@@ -748,7 +748,7 @@ export const CodeEditor = ({
             outcome: "error",
             suggestion: "",
             retryAfterSeconds,
-            message: `${payload?.error ?? "Inline suggestions are unavailable."}${retryHint}${detail ? ` - ${detail}` : ""}`,
+            message: payload?.error ?? "Inline suggestions are unavailable right now.",
           } satisfies InlineSuggestionFetchResult;
         }
 
@@ -764,7 +764,7 @@ export const CodeEditor = ({
             outcome: "error",
             suggestion: "",
             retryAfterSeconds: payload.retryAfterSeconds,
-            message: `${payload.error}${detail ? ` - ${detail}` : ""}`,
+            message: payload.error,
           } satisfies InlineSuggestionFetchResult;
         }
 
@@ -783,7 +783,7 @@ export const CodeEditor = ({
         return {
           outcome: "error",
           suggestion: "",
-          message: getErrorMessage(
+          message: getFriendlyErrorMessage(
             error,
             "Inline suggestions are unavailable right now.",
           ),
@@ -881,15 +881,8 @@ export const CodeEditor = ({
       }
 
       if (!response.ok) {
-        const detail = payload?.detail?.trim();
-        const retryAfterSeconds = payload?.retryAfterSeconds;
-        const retryHint =
-          typeof retryAfterSeconds === "number" && retryAfterSeconds > 0
-            ? ` Retry in ${Math.ceil(retryAfterSeconds)}s.`
-            : "";
-
         throw new Error(
-          `${payload?.error ?? "Failed to process selected code."}${retryHint}${detail ? ` - ${detail}` : ""}`,
+          payload?.error ?? "Unable to process your code. Please try again.",
         );
       }
 
@@ -899,13 +892,12 @@ export const CodeEditor = ({
         payload.error.trim() &&
         !(payload.suggestion ?? payload.sugegstions ?? "").trim()
       ) {
-        const detail = payload.detail?.trim();
-        throw new Error(`${payload.error}${detail ? ` - ${detail}` : ""}`);
+        throw new Error(payload.error);
       }
 
       const nextCode = payload?.suggestion ?? payload?.sugegstions ?? "";
       if (!nextCode) {
-        toast.error("AI did not return updated file code.");
+        toast.error("AI did not return a result. Please try again with different instructions.");
         return;
       }
 
@@ -946,7 +938,7 @@ export const CodeEditor = ({
         updateSelectionBarLayout();
       });
     } catch (error) {
-      toast.error(getErrorMessage(error, "Failed to update selected code."));
+      toast.error(getFriendlyErrorMessage(error, "Unable to apply AI changes. Please try again."));
     } finally {
       setIsApplyingAi(false);
     }

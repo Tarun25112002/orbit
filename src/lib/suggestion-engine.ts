@@ -11,6 +11,7 @@ import {
   generateGeminiCompletion,
   type GeminiChatMessage,
 } from "@/lib/gemini";
+import { classifyError } from "@/lib/errors";
 
 const MAX_CONTEXT_CHARS = 5_000;
 const MAX_AUTOCOMPLETE_CONTEXT_CHARS = 2_000;
@@ -597,11 +598,15 @@ const normalizeGenerationError = (error: unknown) => {
   const message = getErrorMessage(error);
   const rateLimited = isRateLimitedError(message);
 
+  // Use classifyError for non-Gemini errors to produce friendly messages
+  const classified = classifyError(error);
+
   return new SuggestionGenerationError({
-    message,
+    message: classified.message,
     statusCode: rateLimited ? 429 : 500,
-    retryAfterSeconds: parseRetryAfterSeconds(message),
-    retryable: rateLimited,
+    retryAfterSeconds:
+      parseRetryAfterSeconds(message) ?? classified.retryAfterSeconds ?? null,
+    retryable: classified.retryable,
   });
 };
 

@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "convex/react";
 import { useCallback, useState } from "react";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
+import { classifyError } from "@/lib/errors";
 
 export const useConversation = (id: Id<"conversations"> | null) => {
   return useQuery(api.conversations.getById, id ? { id } : "skip");
@@ -114,9 +115,8 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
           throw err;
         }
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : "Failed to send message";
-        setError(message);
+        const classified = classifyError(err);
+        setError(classified.message);
         setStatus("error");
       }
     },

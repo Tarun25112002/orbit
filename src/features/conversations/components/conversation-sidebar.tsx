@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangleIcon,
   BotIcon,
   CheckIcon,
   MessageSquareIcon,
@@ -12,6 +13,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { classifyError, type ClassifiedError } from "@/lib/errors";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
 import {
@@ -199,7 +201,7 @@ const ChatView = ({
   const messages = useMessages(conversationId);
   const sendMessage = useSendMessage();
   const [isSending, setIsSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ClassifiedError | null>(null);
 
   const handleSend = useCallback(
     async (content: string) => {
@@ -245,9 +247,8 @@ const ChatView = ({
           }),
         });
       } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : "Failed to send message";
-        setError(msg);
+        const classified = classifyError(err);
+        setError(classified);
 
         // Mark assistant message as failed so it doesn't stay stuck in "processing"
         if (assistantMessageId) {
@@ -257,7 +258,7 @@ const ChatView = ({
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 messageId: assistantMessageId,
-                content: msg,
+                content: classified.message,
                 status: "failed",
               }),
             });
@@ -364,16 +365,28 @@ const ChatView = ({
 
       {/* Error */}
       {error && (
-        <div className="px-3 py-1.5 text-[11px] text-red-400 bg-red-400/5 border-t border-red-400/20 flex items-center gap-2">
-          <XIcon className="size-3 shrink-0" />
-          <span className="truncate">{error}</span>
-          <button
-            type="button"
-            className="ml-auto text-red-300 hover:text-red-200 shrink-0"
-            onClick={() => setError(null)}
-          >
-            <XIcon className="size-3" />
-          </button>
+        <div className="px-3 py-2 text-[11px] bg-red-400/5 border-t border-red-400/20 flex flex-col gap-1.5">
+          <div className="flex items-start gap-2">
+            <AlertTriangleIcon className="size-3.5 shrink-0 text-red-400 mt-0.5" />
+            <span className="text-red-300 leading-relaxed">{error.message}</span>
+            <button
+              type="button"
+              className="ml-auto text-red-300/60 hover:text-red-200 shrink-0 p-0.5"
+              onClick={() => setError(null)}
+              aria-label="Dismiss error"
+            >
+              <XIcon className="size-3" />
+            </button>
+          </div>
+          {error.retryable && (
+            <button
+              type="button"
+              className="self-start ml-5 text-[10px] text-[#007acc] hover:text-[#3794d1] hover:underline transition-colors"
+              onClick={() => setError(null)}
+            >
+              Dismiss and try again
+            </button>
+          )}
         </div>
       )}
 
