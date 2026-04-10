@@ -208,11 +208,14 @@ const ChatView = ({
       setIsSending(true);
       setError(null);
 
+      let assistantMessageId: string | undefined;
+
       try {
-        const { assistantMessageId } = await sendMessage({
+        const result = await sendMessage({
           conversationId,
           content: content.trim(),
         });
+        assistantMessageId = result.assistantMessageId;
 
         const response = await fetch("/api/messages", {
           method: "POST",
@@ -245,6 +248,23 @@ const ChatView = ({
         const msg =
           err instanceof Error ? err.message : "Failed to send message";
         setError(msg);
+
+        // Mark assistant message as failed so it doesn't stay stuck in "processing"
+        if (assistantMessageId) {
+          try {
+            await fetch("/api/messages/complete", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                messageId: assistantMessageId,
+                content: msg,
+                status: "failed",
+              }),
+            });
+          } catch {
+            // Best-effort cleanup
+          }
+        }
       } finally {
         setIsSending(false);
       }

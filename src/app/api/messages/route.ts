@@ -5,14 +5,14 @@ import { convex } from "@/lib/convex-client";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { firecrawl } from "@/lib/firecrawl";
-import { generateGeminiCompletion, type GeminiChatMessage } from "@/lib/gemini";
+import { generateGeminiCompletion, GEMINI_MODEL_DEFAULT, type GeminiChatMessage } from "@/lib/gemini";
 
 const requestSchema = z.object({
   conversationId: z.string(),
   message: z.string().min(1),
 });
 
-const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 const MAX_FILE_CONTEXT_CHARS = 60_000;
 const MAX_HISTORY_MESSAGES = 40;

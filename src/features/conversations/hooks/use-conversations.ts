@@ -52,46 +52,67 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
       setError(null);
 
       try {
-        const { assistantMessageId } = await sendMessage({
-          conversationId,
-          content: content.trim(),
-        });
+        let assistantMessageId: string | undefined;
 
-        const response = await fetch("/api/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        try {
+          const result = await sendMessage({
             conversationId,
-            message: content.trim(),
-          }),
-        });
+            content: content.trim(),
+          });
+          assistantMessageId = result.assistantMessageId;
 
-        if (!response.ok) {
-          const data = (await response.json().catch(() => null)) as {
-            error?: string;
-          } | null;
-          throw new Error(data?.error ?? `Request failed (${response.status})`);
+          const response = await fetch("/api/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              conversationId,
+              message: content.trim(),
+            }),
+          });
+
+          if (!response.ok) {
+            const data = (await response.json().catch(() => null)) as {
+              error?: string;
+            } | null;
+            throw new Error(data?.error ?? `Request failed (${response.status})`);
+          }
+
+          const data = (await response.json()) as { content: string };
+
+          const updateResponse = await fetch("/api/messages/complete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              messageId: assistantMessageId,
+              content: data.content,
+              status: "completed",
+            }),
+          });
+
+          if (!updateResponse.ok) {
+            throw new Error("Failed to save AI response");
+          }
+
+          setStatus("idle");
+        } catch (err) {
+          // Mark assistant message as failed
+          if (assistantMessageId) {
+            try {
+              await fetch("/api/messages/complete", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  messageId: assistantMessageId,
+                  content: err instanceof Error ? err.message : "Failed to send message",
+                  status: "failed",
+                }),
+              });
+            } catch {
+              // Best-effort cleanup
+            }
+          }
+          throw err;
         }
-
-        const data = (await response.json()) as { content: string };
-
-        const internalKey = undefined;
-
-        const updateResponse = await fetch("/api/messages/complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messageId: assistantMessageId,
-            content: data.content,
-            status: "completed",
-          }),
-        });
-
-        if (!updateResponse.ok) {
-          throw new Error("Failed to save AI response");
-        }
-
-        setStatus("idle");
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Failed to send message";

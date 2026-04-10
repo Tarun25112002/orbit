@@ -5,6 +5,10 @@ const GEMINI_API_KEY =
   process.env.GOOGLE_API_KEY?.trim() ||
   "";
 
+/** Default model used across the app — configurable via GEMINI_MODEL env var */
+export const GEMINI_MODEL_DEFAULT =
+  process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+
 export type GeminiChatMessage = {
   role: "user" | "model";
   content: string;
@@ -46,7 +50,7 @@ export const generateGeminiCompletion = async (args: {
   temperature?: number;
 }): Promise<GeminiCompletionResult> => {
   const ai = getClient();
-  const modelName = args.model ?? "gemini-2.0-flash";
+  const modelName = args.model ?? GEMINI_MODEL_DEFAULT;
 
   // Build contents for multi-turn conversation
   const contents = args.messages.map((msg) => ({

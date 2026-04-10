@@ -1,14 +1,14 @@
 import { inngest } from "@/inngest/client";
 import { suggestionRuntime } from "@/lib/completion-runtime";
 import { firecrawl } from "@/lib/firecrawl";
-import { generateGeminiCompletion } from "@/lib/gemini";
+import { generateGeminiCompletion, GEMINI_MODEL_DEFAULT } from "@/lib/gemini";
 import {
   generateSuggestion,
   type ParsedSuggestionInput,
 } from "@/lib/suggestion-engine";
 import type { SuggestionMode } from "@/lib/code-suggestion";
 
-const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
 const URL_REGEX = /https?:\/\/[^\s]+/g;
 
 export const orbit = inngest.createFunction(

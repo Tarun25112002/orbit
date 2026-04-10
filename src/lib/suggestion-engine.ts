@@ -6,6 +6,7 @@ import type {
   SuggestionRequestBody,
 } from "@/lib/code-suggestion";
 import {
+  GEMINI_MODEL_DEFAULT,
   GeminiRequestError,
   generateGeminiCompletion,
   type GeminiChatMessage,
@@ -25,7 +26,7 @@ const MAX_AUTOCOMPLETE_SUGGESTION_CHARS = 1_200;
 const MAX_TRANSFORM_SUGGESTION_CHARS = MAX_SOURCE_CODE_CHARS;
 const TRANSFORM_SELECTION_START_MARKER = "<orbit-selection-start>";
 const TRANSFORM_SELECTION_END_MARKER = "<orbit-selection-end>";
-const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
 const GENERATION_MAX_ATTEMPTS = Number.parseInt(
   process.env.SUGGESTION_GENERATION_ATTEMPTS ?? "1",
   10,
