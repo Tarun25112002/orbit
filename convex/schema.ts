@@ -50,6 +50,7 @@ export default defineSchema({
       projectId: v.id("projects"),
       role: v.union(v.literal("user"), v.literal("assistant")),
       content: v.string(),
+      reasoning_details: v.optional(v.any()),
       status: v.optional(
         v.union(
           v.literal("processing"),

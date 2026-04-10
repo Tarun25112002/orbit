@@ -1,25 +1,55 @@
-import {v} from "convex/values"
-import { query } from "./_generated/server"
+import { v } from "convex/values";
+import { mutation, query } from "./_generated/server";
 
-const validateInternalKey = (key: string)=>{
-    const internalKey = process.env.CONVEX_INTERNAL_KEY
-    if(!internalKey){
-        throw new Error(
-          "CONVEX_INTERNAL_KEY is not configured",
-        );
-    }
-    if(key !== internalKey){
-        throw new Error("Invalid internal key")
-    }
-}
+export const getConversationById = query({
+  args: {
+    conversationId: v.id("conversations"),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.conversationId);
+  },
+});
 
-export const getConversationById = query ({
-    args:{
-        conversationId: v.id("conversations"),
-        internalKey: v.string()
-    },
-    handler: async (ctx , args)=>{
-        validateInternalKey(args.internalKey)
-        return await ctx.db.get(args.conversationId);
-    },
-})
+export const getMessagesByConversation = query({
+  args: {
+    conversationId: v.id("conversations"),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("messages")
+      .withIndex("by_conversation", (q) =>
+        q.eq("conversationId", args.conversationId),
+      )
+      .order("asc")
+      .collect();
+  },
+});
+
+export const getProjectFiles = query({
+  args: {
+    projectId: v.id("projects"),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("files")
+      .withIndex("by_project", (q) => q.eq("projectId", args.projectId))
+      .collect();
+  },
+});
+
+export const updateMessageContent = mutation({
+  args: {
+    messageId: v.id("messages"),
+    content: v.string(),
+    status: v.union(
+      v.literal("completed"),
+      v.literal("failed"),
+    ),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.messageId, {
+      content: args.content,
+      status: args.status,
+    });
+  },
+});

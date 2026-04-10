@@ -6,10 +6,10 @@ import type {
   SuggestionRequestBody,
 } from "@/lib/code-suggestion";
 import {
-  OpenRouterRequestError,
-  requestOpenRouterCompletion,
-  type OpenRouterChatMessage,
-} from "@/lib/openrouter";
+  GeminiRequestError,
+  generateGeminiCompletion,
+  type GeminiChatMessage,
+} from "@/lib/gemini";
 
 const MAX_CONTEXT_CHARS = 5_000;
 const MAX_AUTOCOMPLETE_CONTEXT_CHARS = 2_000;
@@ -25,52 +25,13 @@ const MAX_AUTOCOMPLETE_SUGGESTION_CHARS = 1_200;
 const MAX_TRANSFORM_SUGGESTION_CHARS = MAX_SOURCE_CODE_CHARS;
 const TRANSFORM_SELECTION_START_MARKER = "<orbit-selection-start>";
 const TRANSFORM_SELECTION_END_MARKER = "<orbit-selection-end>";
-const DEFAULT_OPENROUTER_FREE_MODEL_CHAIN = [
-  "google/gemini-2.5-flash:free",
-  "deepseek/deepseek-chat-v3-0324:free",
-  "mistralai/mistral-7b-instruct:free",
-  "meta-llama/llama-3.3-70b-instruct:free",
-  "google/gemma-3-27b-it:free",
-] as const;
-const OPENROUTER_ADDITIONAL_FALLBACK_MODELS = (
-  process.env.OPENROUTER_FALLBACK_MODELS ?? ""
-)
-  .split(",")
-  .map((model) => model.trim())
-  .filter((model) => model.length > 0);
-const parseConfiguredModelChain = (
-  value: string | undefined,
-  defaults: readonly string[],
-) => {
-  const configured = (value ?? "")
-    .split(",")
-    .map((model) => model.trim())
-    .filter((model) => model.length > 0);
-
-  return Array.from(
-    new Set([
-      ...(configured.length > 0 ? configured : defaults),
-      ...OPENROUTER_ADDITIONAL_FALLBACK_MODELS,
-    ]),
-  );
-};
-const OPENROUTER_AUTOCOMPLETE_MODELS = parseConfiguredModelChain(
-  process.env.OPENROUTER_AUTOCOMPLETE_MODELS ??
-    process.env.OPENROUTER_AUTOCOMPLETE_MODEL,
-  DEFAULT_OPENROUTER_FREE_MODEL_CHAIN,
-);
-const OPENROUTER_TRANSFORM_MODELS = parseConfiguredModelChain(
-  process.env.OPENROUTER_TRANSFORM_MODELS ??
-    process.env.OPENROUTER_TRANSFORM_MODEL ??
-    process.env.OPENROUTER_MODEL,
-  DEFAULT_OPENROUTER_FREE_MODEL_CHAIN,
-);
+const GEMINI_MODEL = "gemini-2.0-flash";
 const GENERATION_MAX_ATTEMPTS = Number.parseInt(
-  process.env.SUGGESTION_GENERATION_ATTEMPTS ?? "3",
+  process.env.SUGGESTION_GENERATION_ATTEMPTS ?? "1",
   10,
 );
 const GENERATION_BASE_BACKOFF_MS = Number.parseInt(
-  process.env.SUGGESTION_GENERATION_BACKOFF_MS ?? "350",
+  process.env.SUGGESTION_GENERATION_BACKOFF_MS ?? "500",
   10,
 );
 
@@ -491,20 +452,18 @@ const parseRetryAfterSeconds = (message: string) => {
   return null;
 };
 
-const buildReasoningContinuationMessages = (
+const buildContinuationMessages = (
   prompt: string,
   content: string,
-  reasoningDetails: unknown,
 ) => {
-  const messages: OpenRouterChatMessage[] = [
+  const messages: GeminiChatMessage[] = [
     {
       role: "user",
       content: prompt,
     },
     {
-      role: "assistant",
+      role: "model",
       content,
-      reasoning_details: reasoningDetails,
     },
     {
       role: "user",
@@ -610,7 +569,7 @@ const shouldRetryGeneration = (error: unknown) => {
     return error.retryable;
   }
 
-  if (error instanceof OpenRouterRequestError) {
+  if (error instanceof GeminiRequestError) {
     return error.status === 429 || error.status >= 500;
   }
 
@@ -618,35 +577,19 @@ const shouldRetryGeneration = (error: unknown) => {
   return isRateLimitedError(message);
 };
 
-const shouldShortCircuitModelFallback = (error: unknown) => {
-  if (error instanceof SuggestionGenerationError) {
-    return isProviderWideFreeModelRateLimit(error.message);
-  }
-
-  if (error instanceof OpenRouterRequestError) {
-    return (
-      error.status === 429 && isProviderWideFreeModelRateLimit(error.message)
-    );
-  }
-
-  return isProviderWideFreeModelRateLimit(getErrorMessage(error));
-};
-
 const normalizeGenerationError = (error: unknown) => {
   if (error instanceof SuggestionGenerationError) {
     return error;
   }
 
-  if (error instanceof OpenRouterRequestError) {
-    const retryAfterSeconds =
-      error.retryAfterSeconds ?? parseRetryAfterSeconds(error.message);
-    const retryable = error.status === 429 || error.status >= 500;
+  if (error instanceof GeminiRequestError) {
+    const rateLimited = error.status === 429;
 
     return new SuggestionGenerationError({
       message: error.message,
       statusCode: error.status,
-      retryAfterSeconds,
-      retryable,
+      retryAfterSeconds: rateLimited ? 10 : null,
+      retryable: rateLimited || error.status >= 500,
     });
   }
 
@@ -672,121 +615,52 @@ export async function generateSuggestion(
     }) => void;
   },
 ): Promise<SuggestionGenerationResult> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
-  if (!apiKey) {
-    throw new SuggestionGenerationError({
-      message:
-        "Missing OpenRouter API key. Set OPENROUTER_API_KEY in your environment.",
-      statusCode: 500,
-      retryable: false,
-    });
-  }
-
   const execution = buildSuggestionExecutionInput({ mode, input });
-  const modelChain =
-    mode === "autocomplete"
-      ? OPENROUTER_AUTOCOMPLETE_MODELS
-      : OPENROUTER_TRANSFORM_MODELS;
-  const primaryModel = modelChain[0];
-
-  if (!primaryModel) {
-    throw new SuggestionGenerationError({
-      message: "No OpenRouter models are configured for suggestions.",
-      statusCode: 500,
-      retryable: false,
-    });
-  }
-
+  const isAutocomplete = mode === "autocomplete";
   const startedAt = Date.now();
-  let lastError: unknown = null;
-  let totalAttempts = 0;
-  let round = 0;
 
-  while (round < Math.max(1, GENERATION_MAX_ATTEMPTS)) {
-    round += 1;
+  try {
+    const response = await generateGeminiCompletion({
+      model: GEMINI_MODEL,
+      messages: [{ role: "user", content: execution.llmPrompt }],
+      ...(isAutocomplete
+        ? { maxTokens: MAX_AUTOCOMPLETE_TOKENS, temperature: 0.2 }
+        : { temperature: 0.4 }),
+    });
 
-    for (const modelName of modelChain) {
-      totalAttempts += 1;
-
-      try {
-        const isAutocomplete = mode === "autocomplete";
-        const firstResponse = await requestOpenRouterCompletion({
-          apiKey,
-          model: modelName,
-          messages: [{ role: "user", content: execution.llmPrompt }],
-          enableReasoning: !isAutocomplete,
-          ...(isAutocomplete
-            ? { maxTokens: MAX_AUTOCOMPLETE_TOKENS, temperature: 0.2 }
-            : {}),
-        });
-
-        let suggestion = normalizeSuggestion(
-          firstResponse.message.content,
-          mode,
-          execution.textBeforeCursor,
-          execution.textAfterCursor,
-        );
-
-        if (
-          !isAutocomplete &&
-          !suggestion.trim() &&
-          firstResponse.message.reasoning_details
-        ) {
-          const continuationResponse = await requestOpenRouterCompletion({
-            apiKey,
-            model: modelName,
-            messages: buildReasoningContinuationMessages(
-              execution.llmPrompt,
-              firstResponse.message.content,
-              firstResponse.message.reasoning_details,
-            ),
-            enableReasoning: false,
-          });
-
-          suggestion = normalizeSuggestion(
-            continuationResponse.message.content,
-            mode,
-            execution.textBeforeCursor,
-            execution.textAfterCursor,
-          );
-        }
-
-        return {
-          modelName,
-          suggestion,
-          attempts: totalAttempts,
-          latencyMs: Date.now() - startedAt,
-        };
-      } catch (error) {
-        if (shouldShortCircuitModelFallback(error)) {
-          throw normalizeGenerationError(error);
-        }
-
-        lastError = error;
-      }
-    }
-
-    const normalizedError = normalizeGenerationError(
-      lastError ?? new Error("Suggestion generation failed"),
+    let suggestion = normalizeSuggestion(
+      response.content,
+      mode,
+      execution.textBeforeCursor,
+      execution.textAfterCursor,
     );
 
-    if (
-      shouldRetryGeneration(lastError) &&
-      round < Math.max(1, GENERATION_MAX_ATTEMPTS)
-    ) {
-      options?.onRetry?.({
-        attempt: totalAttempts,
-        model: primaryModel,
-        error: normalizedError,
+    // If transform returned empty, try a continuation
+    if (!isAutocomplete && !suggestion.trim()) {
+      const continuationResponse = await generateGeminiCompletion({
+        model: GEMINI_MODEL,
+        messages: buildContinuationMessages(
+          execution.llmPrompt,
+          response.content,
+        ),
       });
-      await wait(GENERATION_BASE_BACKOFF_MS * round);
-      continue;
+
+      suggestion = normalizeSuggestion(
+        continuationResponse.content,
+        mode,
+        execution.textBeforeCursor,
+        execution.textAfterCursor,
+      );
     }
 
-    throw normalizedError;
+    return {
+      modelName: GEMINI_MODEL,
+      suggestion,
+      attempts: 1,
+      latencyMs: Date.now() - startedAt,
+    };
+  } catch (error) {
+    throw normalizeGenerationError(error);
   }
-
-  throw normalizeGenerationError(
-    lastError ?? new Error("Suggestion generation failed"),
-  );
 }
+

@@ -10,6 +10,7 @@ import {
   ProjectHeaderContext,
   type ProjectHeaderBadgeState,
 } from "./project-header-context";
+import { ConversationSidebar } from "../../conversations/components/conversation-sidebar";
 
 const DEFAULT_SIDEBAR_WIDTH = 400;
 const MAX_SIDEBAR_WIDTH = 600;
@@ -37,9 +38,7 @@ export const ProjectIdLayout = ({
               maxSize={MAX_SIDEBAR_WIDTH}
               preferredSize={DEFAULT_SIDEBAR_WIDTH}
             >
-              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                <ConversationSidebar/>
-              </div>
+              <ConversationSidebar projectId={projectId} />
             </Allotment.Pane>
 
             <Allotment.Pane minSize={400} preferredSize={DEFAULT_MAIN_SIZE}>

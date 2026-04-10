@@ -60,8 +60,8 @@ const EMMET_OPTIONS = { tokenizer: "standard" as const };
 const ASYNC_SUGGESTION_POLL_INTERVAL_MS = 400;
 const ASYNC_SUGGESTION_TIMEOUT_MS = 180_000;
 const INLINE_SUGGESTION_LINE_WINDOW = 20;
-const INLINE_SUGGESTION_CACHE_LIMIT = 60;
-const INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS = 1;
+const INLINE_SUGGESTION_CACHE_LIMIT = 30;
+const INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS = 3;
 const INLINE_SUGGESTION_ERROR_TOAST_COOLDOWN_MS = 8_000;
 const INLINE_SUGGESTION_PROVIDER_COOLDOWN_FALLBACK_MS = 30_000;
 const INLINE_SUGGESTION_PROVIDER_RATE_LIMIT_PATTERN =
@@ -1152,7 +1152,7 @@ export const CodeEditor = ({
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [
         monacoApi.languages.registerInlineCompletionsProvider(language, {
-          debounceDelayMs: 350,
+          debounceDelayMs: 800,
           displayName: "Orbit AI",
           provideInlineCompletions: async (
             model: Monaco.editor.ITextModel,
@@ -1181,16 +1181,37 @@ export const CodeEditor = ({
               return { items: [] };
             }
 
-            const linePrefix = model
-              .getLineContent(position.lineNumber)
-              .slice(0, Math.max(0, position.column - 1));
+            const lineContent = model.getLineContent(position.lineNumber);
+            const linePrefix = lineContent.slice(0, Math.max(0, position.column - 1));
+            const lineSuffix = lineContent.slice(position.column - 1);
 
+            // Skip if line is empty or whitespace-only
+            if (!linePrefix.trim()) {
+              return { items: [] };
+            }
+
+            // Skip automatic triggers if prefix is too short
             if (
               context.triggerKind ===
                 monacoApi.languages.InlineCompletionTriggerKind.Automatic &&
               linePrefix.trim().length <
                 INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS
             ) {
+              return { items: [] };
+            }
+
+            // Skip if cursor is right after only opening brackets/braces (too early)
+            if (/^[\s]*[{(\[]\s*$/.test(linePrefix)) {
+              return { items: [] };
+            }
+
+            // Skip comment-only lines (user is writing comments, not code)
+            if (/^\s*\/\/\s*$/.test(linePrefix) || /^\s*#\s*$/.test(linePrefix)) {
+              return { items: [] };
+            }
+
+            // Skip if there's significant text after cursor (user is editing mid-line)
+            if (lineSuffix.trim().length > 15) {
               return { items: [] };
             }
 
