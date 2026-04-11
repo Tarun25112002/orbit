@@ -33,11 +33,10 @@ import {
   PromptInputSubmit,
 } from "@/components/ai-elements/prompt-input";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import {
-  Suggestion,
-} from "@/components/ai-elements/suggestion";
+import { Suggestion } from "@/components/ai-elements/suggestion";
 
 import {
+  useConversation,
   useProjectConversations,
   useMessages,
   useCreateConversation,
@@ -160,6 +159,7 @@ const ChatMessage = ({
 }) => {
   const isProcessing = status === "processing";
   const isFailed = status === "failed";
+  const isCancelled = status === "cancelled";
 
   return (
     <Message from={role}>
@@ -172,6 +172,11 @@ const ChatMessage = ({
           <div className="flex items-center gap-2 text-red-400 text-sm">
             <XIcon className="size-3.5" />
             <span>Failed to generate response</span>
+          </div>
+        ) : role === "assistant" && isCancelled ? (
+          <div className="flex items-center gap-2 text-[#858585] text-sm">
+            <XIcon className="size-3.5" />
+            <span>{content || "Response cancelled."}</span>
           </div>
         ) : role === "assistant" ? (
           <MessageResponse>{content}</MessageResponse>
@@ -192,10 +197,40 @@ const ChatView = ({
   conversationId: Id<"conversations">;
   onBack: () => void;
 }) => {
+  const conversation = useConversation(conversationId);
   const messages = useMessages(conversationId);
   const sendMessage = useSendMessage();
   const [isSending, setIsSending] = useState(false);
+  const [pendingAssistantMessageId, setPendingAssistantMessageId] =
+    useState<Id<"messages"> | null>(null);
+  const [cancellingMessageId, setCancellingMessageId] =
+    useState<Id<"messages"> | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
+
+  const processingAssistantMessage = [...(messages ?? [])]
+    .reverse()
+    .find((msg) => msg.role === "assistant" && msg.status === "processing");
+
+  const activeAssistantMessageId =
+    processingAssistantMessage?._id ?? pendingAssistantMessageId;
+
+  const isCancellingActiveAssistant =
+    !!activeAssistantMessageId &&
+    cancellingMessageId === activeAssistantMessageId;
+
+  useEffect(() => {
+    if (!pendingAssistantMessageId || !messages) {
+      return;
+    }
+
+    const pendingMessage = messages.find(
+      (msg) => msg._id === pendingAssistantMessageId,
+    );
+
+    if (!pendingMessage || pendingMessage.status !== "processing") {
+      setPendingAssistantMessageId(null);
+    }
+  }, [messages, pendingAssistantMessageId]);
 
   const handleSend = useCallback(
     async (content: string) => {
@@ -204,7 +239,7 @@ const ChatView = ({
       setIsSending(true);
       setError(null);
 
-      let assistantMessageId: string | undefined;
+      let assistantMessageId: Id<"messages"> | undefined;
 
       try {
         const result = await sendMessage({
@@ -212,6 +247,7 @@ const ChatView = ({
           content: content.trim(),
         });
         assistantMessageId = result.assistantMessageId;
+        setPendingAssistantMessageId(result.assistantMessageId);
 
         const response = await fetch("/api/messages", {
           method: "POST",
@@ -264,6 +300,39 @@ const ChatView = ({
     [handleSend],
   );
 
+  const handleCancel = useCallback(async (messageId: Id<"messages">) => {
+    setCancellingMessageId(messageId);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/messages/cancel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assistantMessageId: messageId,
+        }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        throw new Error(data?.error ?? `Cancel failed (${response.status})`);
+      }
+    } catch (err) {
+      setError(classifyError(err));
+    } finally {
+      setCancellingMessageId(null);
+    }
+  }, []);
+
+  const handleCancelActiveMessage = useCallback(() => {
+    if (!activeAssistantMessageId || isCancellingActiveAssistant) {
+      return;
+    }
+    void handleCancel(activeAssistantMessageId);
+  }, [activeAssistantMessageId, handleCancel, isCancellingActiveAssistant]);
+
   const isEmpty = !messages || messages.length === 0;
 
   return (
@@ -289,9 +358,11 @@ const ChatView = ({
             <path d="m15 18-6-6 6-6" />
           </svg>
         </button>
-        <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
           <SparklesIcon className="size-3.5 text-[#007acc]" />
-          <span className="text-xs font-medium text-[#cccccc]">Orbit AI</span>
+          <span className="truncate text-xs font-medium text-[#cccccc]">
+            {conversation?.title ?? "Orbit AI"}
+          </span>
         </div>
       </div>
 
@@ -352,7 +423,9 @@ const ChatView = ({
         <div className="px-3 py-2 text-[11px] bg-red-400/5 border-t border-red-400/20 flex flex-col gap-1.5">
           <div className="flex items-start gap-2">
             <AlertTriangleIcon className="size-3.5 shrink-0 text-red-400 mt-0.5" />
-            <span className="text-red-300 leading-relaxed">{error.message}</span>
+            <span className="text-red-300 leading-relaxed">
+              {error.message}
+            </span>
             <button
               type="button"
               className="ml-auto text-red-300/60 hover:text-red-200 shrink-0 p-0.5"
@@ -384,6 +457,17 @@ const ChatView = ({
         >
           <PromptInputTextarea
             placeholder="Ask Orbit AI..."
+            onKeyDown={(event) => {
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing &&
+                activeAssistantMessageId
+              ) {
+                event.preventDefault();
+                handleCancelActiveMessage();
+              }
+            }}
             className="min-h-10 max-h-32 text-xs bg-[#3c3c3c] border-[#3e3e42] text-[#cccccc] placeholder:text-[#5a5a5a] focus:border-[#007acc] rounded-md"
           />
           <PromptInputFooter className="mt-1.5">
@@ -392,9 +476,28 @@ const ChatView = ({
               <span>Orbit AI</span>
             </div>
             <PromptInputSubmit
-              disabled={isSending}
-              className="bg-[#007acc] hover:bg-[#0065a9] text-white rounded-md h-7 w-7"
-            />
+              status={activeAssistantMessageId ? "streaming" : undefined}
+              onStop={
+                activeAssistantMessageId ? handleCancelActiveMessage : undefined
+              }
+              disabled={
+                !activeAssistantMessageId && isSending
+                  ? true
+                  : isCancellingActiveAssistant
+              }
+              className={cn(
+                "text-white rounded-md h-7",
+                activeAssistantMessageId
+                  ? "bg-[#3e3e42] hover:bg-[#4a4a50] w-auto px-2.5 text-[10px]"
+                  : "bg-[#007acc] hover:bg-[#0065a9] w-7",
+              )}
+            >
+              {activeAssistantMessageId
+                ? isCancellingActiveAssistant
+                  ? "Cancelling..."
+                  : "Cancel"
+                : undefined}
+            </PromptInputSubmit>
           </PromptInputFooter>
         </PromptInput>
       </div>
@@ -522,9 +625,7 @@ export const ConversationSidebar = ({
                 isActive={activeConversationId === conv._id}
                 onSelect={() => setActiveConversationId(conv._id)}
                 onDelete={() => void handleDelete(conv._id)}
-                onRename={(newTitle) =>
-                  void handleRename(conv._id, newTitle)
-                }
+                onRename={(newTitle) => void handleRename(conv._id, newTitle)}
               />
             ))}
           </div>

@@ -4,10 +4,13 @@ import { suggestionRuntime } from "@/lib/completion-runtime";
 import {
   generateGeminiCompletion,
   GEMINI_MODEL_DEFAULT,
-  type GeminiChatMessage,
 } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
 import { buildWebContextFromText } from "@/lib/web-context";
+import {
+  generateConversationTitle,
+  runConversationAgentOrchestration,
+} from "@/lib/conversation-agents";
 import {
   generateSuggestion,
   type ParsedSuggestionInput,
@@ -61,19 +64,6 @@ const buildFileTree = (files: ProjectFileTreeNode[]): string => {
   return renderNode(null, 0).join("\n");
 };
 
-const appendGeminiMessage = (
-  messages: GeminiChatMessage[],
-  nextMessage: GeminiChatMessage,
-) => {
-  const previousMessage = messages.at(-1);
-  if (previousMessage?.role === nextMessage.role) {
-    previousMessage.content = `${previousMessage.content}\n\n${nextMessage.content}`;
-    return;
-  }
-
-  messages.push(nextMessage);
-};
-
 export const orbit = inngest.createFunction(
   { id: "orbit-generate", triggers: [{ event: "orbit/generate" }] },
   async ({ event, step }) => {
@@ -121,17 +111,64 @@ const updateAssistantMessage = async (args: {
   content: string;
   status: "completed" | "failed";
 }) => {
-  await convex.mutation(api.system.updateMessageContent, {
+  return await convex.mutation(api.system.completeMessageIfProcessing, {
     messageId: args.assistantMessageId as Id<"messages">,
     content: args.content,
     status: args.status,
   });
 };
 
+const isAssistantMessageCancelled = async (assistantMessageId: string) => {
+  const assistantMessage = await convex.query(api.system.getMessageById, {
+    messageId: assistantMessageId as Id<"messages">,
+  });
+
+  return assistantMessage?.status === "cancelled";
+};
+
+const shouldGenerateConversationTitle = (title: string) =>
+  /^chat\s+\d+$/i.test(title.trim()) || /^new conversation$/i.test(title.trim());
+
+const buildConversationHistoryBlock = (
+  messages: Array<{
+    role: "user" | "assistant";
+    content: string;
+    status?: string;
+    _id: string;
+  }>,
+  userMessageId: string,
+  assistantMessageId: string,
+) => {
+  const historyMessages = messages
+    .filter((historyMessage) => {
+      if (!historyMessage.content) return false;
+      if (historyMessage.status === "processing") return false;
+      if (historyMessage.status === "failed") return false;
+      if (historyMessage.status === "cancelled") return false;
+      if (historyMessage._id === userMessageId) return false;
+      if (historyMessage._id === assistantMessageId) return false;
+      return true;
+    })
+    .slice(-MAX_HISTORY_MESSAGES);
+
+  return historyMessages
+    .map((historyMessage) => {
+      const role = historyMessage.role === "assistant" ? "Assistant" : "User";
+      return `${role}: ${historyMessage.content}`;
+    })
+    .join("\n\n");
+};
+
 export const conversationMessageRequested = inngest.createFunction(
   {
     id: "orbit-conversation-message-requested",
     triggers: [{ event: "orbit/conversation.message.requested" }],
+    cancelOn: [
+      {
+        event: "orbit/conversation.message.cancelled",
+        if: "async.data.assistantMessageId == event.data.assistantMessageId && async.data.userId == event.data.userId",
+      },
+    ],
     concurrency: {
       limit: Number.parseInt(
         process.env.CONVERSATION_PROCESSING_CONCURRENCY ?? "4",
@@ -154,6 +191,18 @@ export const conversationMessageRequested = inngest.createFunction(
 
       if (!conversation) {
         throw new Error("Conversation not found");
+      }
+
+      const wasAlreadyCancelled = await step.run(
+        "check-cancelled-before-work",
+        async () => isAssistantMessageCancelled(assistantMessageId),
+      );
+      if (wasAlreadyCancelled) {
+        return {
+          conversationId,
+          assistantMessageId,
+          status: "cancelled",
+        };
       }
 
       const existingMessages = await step.run("load-message-history", async () => {
@@ -209,47 +258,59 @@ export const conversationMessageRequested = inngest.createFunction(
         ...(projectContext.fileContents.length > 0
           ? ["", "Key project files:", ...projectContext.fileContents]
           : []),
-        ...(webContext.markdown
-          ? ["", "Web context from referenced URLs:", webContext.markdown]
-          : []),
       ].join("\n");
 
-      const historyMessages = existingMessages
-        .filter((historyMessage) => {
-          if (!historyMessage.content) return false;
-          if (historyMessage.status === "processing") return false;
-          if (historyMessage.status === "failed") return false;
-          if (historyMessage._id === userMessageId) return false;
-          if (historyMessage._id === assistantMessageId) return false;
-          return true;
-        })
-        .slice(-MAX_HISTORY_MESSAGES);
+      const conversationHistory = buildConversationHistoryBlock(
+        existingMessages,
+        userMessageId,
+        assistantMessageId,
+      );
+      const shouldTitleConversation =
+        shouldGenerateConversationTitle(conversation.title) &&
+        existingMessages.filter((historyMessage) => historyMessage.role === "user")
+          .length <= 1;
 
-      const geminiMessages: GeminiChatMessage[] = [];
+      const titlePromise = shouldTitleConversation
+        ? generateConversationTitle(message).catch(() => null)
+        : Promise.resolve(null);
 
-      for (const historyMessage of historyMessages) {
-        appendGeminiMessage(geminiMessages, {
-          role: historyMessage.role === "assistant" ? "model" : "user",
-          content: historyMessage.content,
+      const orchestrationPromise = runConversationAgentOrchestration({
+        message,
+        projectContext: systemContext,
+        history: conversationHistory,
+        webContext: webContext.markdown,
+      });
+
+      const [generatedTitle, orchestration] = await Promise.all([
+        titlePromise,
+        orchestrationPromise,
+      ]);
+
+      if (generatedTitle) {
+        await step.run("save-conversation-title", async () => {
+          await convex.mutation(api.system.updateConversationTitle, {
+            conversationId: conversationId as Id<"conversations">,
+            title: generatedTitle,
+          });
         });
       }
 
-      appendGeminiMessage(geminiMessages, {
-        role: "user",
-        content: `${systemContext}\n\nUser request:\n${message}`,
-      });
-
-      const completion = await step.run("generate-conversation-reply", async () => {
-        return await generateGeminiCompletion({
-          model: GEMINI_MODEL,
-          messages: geminiMessages,
-        });
-      });
-
-      await step.run("save-assistant-message", async () => {
-        await updateAssistantMessage({
+      const wasCancelledBeforeSave = await step.run(
+        "check-cancelled-before-save",
+        async () => isAssistantMessageCancelled(assistantMessageId),
+      );
+      if (wasCancelledBeforeSave) {
+        return {
+          conversationId,
           assistantMessageId,
-          content: completion.content,
+          status: "cancelled",
+        };
+      }
+
+      const saved = await step.run("save-assistant-message", async () => {
+        return await updateAssistantMessage({
+          assistantMessageId,
+          content: orchestration.content,
           status: "completed",
         });
       });
@@ -257,10 +318,22 @@ export const conversationMessageRequested = inngest.createFunction(
       return {
         conversationId,
         assistantMessageId,
-        model: completion.model,
-        status: "completed",
+        assignments: orchestration.assignments,
+        status: saved ? "completed" : "cancelled",
       };
     } catch (error) {
+      const wasCancelledAfterError = await step.run(
+        "check-cancelled-after-error",
+        async () => isAssistantMessageCancelled(assistantMessageId),
+      );
+      if (wasCancelledAfterError) {
+        return {
+          conversationId,
+          assistantMessageId,
+          status: "cancelled",
+        };
+      }
+
       const classified = classifyError(error);
 
       try {
