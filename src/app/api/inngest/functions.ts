@@ -1,13 +1,13 @@
 import { inngest } from "@/inngest/client";
 import { convex } from "@/lib/convex-client";
 import { suggestionRuntime } from "@/lib/completion-runtime";
-import { firecrawl } from "@/lib/firecrawl";
 import {
   generateGeminiCompletion,
   GEMINI_MODEL_DEFAULT,
   type GeminiChatMessage,
 } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
+import { buildWebContextFromText } from "@/lib/web-context";
 import {
   generateSuggestion,
   type ParsedSuggestionInput,
@@ -17,7 +17,6 @@ import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
 const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
-const URL_REGEX = /https?:\/\/[^\s]+/g;
 const MAX_FILE_CONTEXT_CHARS = 60_000;
 const MAX_HISTORY_MESSAGES = 40;
 
@@ -80,26 +79,12 @@ export const orbit = inngest.createFunction(
   async ({ event, step }) => {
     const { prompt } = event.data as { prompt: string };
 
-    const urls = (await step.run("extract-urls", async () => {
-      return prompt.match(URL_REGEX) ?? [];
-    })) as string[];
-
-    const scrapedContent = await step.run("scrape-urls", async () => {
-      const results = await Promise.all(
-        urls.map(async (url) => {
-          const result = await firecrawl.scrape(url, {
-            formats: ["markdown"],
-            maxAge: 3600000,
-            fastMode: true,
-          });
-          return result.markdown ?? null;
-        }),
-      );
-      return results.filter(Boolean).join("\n\n");
+    const webContext = await step.run("scrape-web-context", async () => {
+      return await buildWebContextFromText(prompt);
     });
 
-    const finalPrompt = scrapedContent
-      ? `Context:\n${scrapedContent}\n\nQuestion: ${prompt}`
+    const finalPrompt = webContext.markdown
+      ? `Web context from referenced URLs:\n${webContext.markdown}\n\nQuestion: ${prompt}`
       : prompt;
 
     return await step.run("generate-text", async () => {
@@ -209,29 +194,8 @@ export const conversationMessageRequested = inngest.createFunction(
         return { fileTree, fileContents };
       });
 
-      const urls = (await step.run("extract-message-urls", async () => {
-        return message.match(URL_REGEX) ?? [];
-      })) as string[];
-
-      const scrapedContent = await step.run("scrape-message-urls", async () => {
-        if (urls.length === 0) return "";
-
-        const results = await Promise.all(
-          urls.slice(0, 3).map(async (url) => {
-            try {
-              const result = await firecrawl.scrape(url, {
-                formats: ["markdown"],
-                maxAge: 3600000,
-                fastMode: true,
-              });
-              return result.markdown ?? null;
-            } catch {
-              return null;
-            }
-          }),
-        );
-
-        return results.filter(Boolean).join("\n\n");
+      const webContext = await step.run("scrape-message-web-context", async () => {
+        return await buildWebContextFromText(message);
       });
 
       const systemContext = [
@@ -245,8 +209,8 @@ export const conversationMessageRequested = inngest.createFunction(
         ...(projectContext.fileContents.length > 0
           ? ["", "Key project files:", ...projectContext.fileContents]
           : []),
-        ...(scrapedContent
-          ? ["", "Scraped URL content:", scrapedContent]
+        ...(webContext.markdown
+          ? ["", "Web context from referenced URLs:", webContext.markdown]
           : []),
       ].join("\n");
 

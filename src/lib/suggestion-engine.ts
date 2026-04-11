@@ -12,6 +12,7 @@ import {
   type GeminiChatMessage,
 } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
+import { buildWebContextFromText } from "@/lib/web-context";
 
 const MAX_CONTEXT_CHARS = 5_000;
 const MAX_AUTOCOMPLETE_CONTEXT_CHARS = 2_000;
@@ -21,6 +22,8 @@ const MAX_WORKSPACE_SUMMARY_CHARS = 1_000;
 const MAX_WORKSPACE_TREE_CHARS = 4_500;
 const MAX_RELATED_FILE_CHARS = 3_000;
 const MAX_RELATED_FILES = 6;
+const MAX_AUTOCOMPLETE_WEB_CONTEXT_CHARS = 8_000;
+const MAX_TRANSFORM_WEB_CONTEXT_CHARS = 24_000;
 const MAX_IMPORT_HINTS = 12;
 const MAX_SOURCE_CODE_CHARS = 80_000;
 const MAX_AUTOCOMPLETE_SUGGESTION_CHARS = 1_200;
@@ -332,6 +335,7 @@ export const formatProjectContextForPrompt = (
 export const buildAutocompletePrompt = (
   input: ParsedSuggestionInput,
   projectContextBlock?: string,
+  webContextBlock?: string,
 ) => {
   const fileName = input.fileName ?? "untitled";
   const lineNumber = input.lineNumber ?? 1;
@@ -361,12 +365,16 @@ export const buildAutocompletePrompt = (
     ...(projectContextBlock
       ? ["", "Relevant workspace context:", projectContextBlock]
       : []),
+    ...(webContextBlock
+      ? ["", "Web context from referenced URLs:", webContextBlock]
+      : []),
   ].join("\n");
 };
 
 export const buildTransformPrompt = (
   input: ParsedSuggestionInput,
   projectContextBlock?: string,
+  webContextBlock?: string,
 ) => {
   const fileName = input.fileName ?? "untitled";
   const selectedCode = input.selectedCode ?? "";
@@ -398,6 +406,9 @@ export const buildTransformPrompt = (
     selectedCode,
     ...(projectContextBlock
       ? ["", "Relevant workspace context:", projectContextBlock]
+      : []),
+    ...(webContextBlock
+      ? ["", "Web context from referenced URLs:", webContextBlock]
       : []),
     "",
     "Full current file content:",
@@ -545,9 +556,11 @@ export const prepareSuggestionRequest = (
 export const buildSuggestionExecutionInput = ({
   mode,
   input,
+  webContextBlock,
 }: {
   mode: SuggestionMode;
   input: ParsedSuggestionInput;
+  webContextBlock?: string;
 }) => {
   const projectContextBlock =
     mode === "transform"
@@ -555,8 +568,8 @@ export const buildSuggestionExecutionInput = ({
       : "";
   const llmPrompt =
     mode === "transform"
-      ? buildTransformPrompt(input, projectContextBlock)
-      : buildAutocompletePrompt(input, projectContextBlock);
+      ? buildTransformPrompt(input, projectContextBlock, webContextBlock)
+      : buildAutocompletePrompt(input, projectContextBlock, webContextBlock);
 
   return {
     mode,
@@ -564,6 +577,29 @@ export const buildSuggestionExecutionInput = ({
     textBeforeCursor: input.textBeforeCursor ?? "",
     textAfterCursor: input.textAfterCursor ?? "",
   };
+};
+
+const buildSuggestionWebContextSeed = (
+  mode: SuggestionMode,
+  input: ParsedSuggestionInput,
+) => {
+  if (mode === "transform") {
+    return [
+      input.instruction ?? "",
+      input.selectedCode ?? "",
+      input.currentLine ?? "",
+      input.textBeforeCursor?.slice(-MAX_CONTEXT_CHARS) ?? "",
+      input.textAfterCursor?.slice(0, MAX_CONTEXT_CHARS) ?? "",
+    ].join("\n");
+  }
+
+  return [
+    input.currentLine ?? "",
+    input.previousLines ?? "",
+    input.nextLines ?? "",
+    input.textBeforeCursor?.slice(-MAX_AUTOCOMPLETE_CONTEXT_CHARS) ?? "",
+    input.textAfterCursor?.slice(0, MAX_AUTOCOMPLETE_CONTEXT_CHARS) ?? "",
+  ].join("\n");
 };
 
 const shouldRetryGeneration = (error: unknown) => {
@@ -621,7 +657,21 @@ export async function generateSuggestion(
     }) => void;
   },
 ): Promise<SuggestionGenerationResult> {
-  const execution = buildSuggestionExecutionInput({ mode, input });
+  const webContext = await buildWebContextFromText(
+    buildSuggestionWebContextSeed(mode, input),
+    {
+      maxUrls: mode === "transform" ? 3 : 2,
+      maxContextChars:
+        mode === "transform"
+          ? MAX_TRANSFORM_WEB_CONTEXT_CHARS
+          : MAX_AUTOCOMPLETE_WEB_CONTEXT_CHARS,
+    },
+  );
+  const execution = buildSuggestionExecutionInput({
+    mode,
+    input,
+    webContextBlock: webContext.markdown,
+  });
   const isAutocomplete = mode === "autocomplete";
   const startedAt = Date.now();
 
