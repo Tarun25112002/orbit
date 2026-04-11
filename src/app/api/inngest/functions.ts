@@ -1,15 +1,79 @@
 import { inngest } from "@/inngest/client";
+import { convex } from "@/lib/convex-client";
 import { suggestionRuntime } from "@/lib/completion-runtime";
 import { firecrawl } from "@/lib/firecrawl";
-import { generateGeminiCompletion, GEMINI_MODEL_DEFAULT } from "@/lib/gemini";
+import {
+  generateGeminiCompletion,
+  GEMINI_MODEL_DEFAULT,
+  type GeminiChatMessage,
+} from "@/lib/gemini";
+import { classifyError } from "@/lib/errors";
 import {
   generateSuggestion,
   type ParsedSuggestionInput,
 } from "@/lib/suggestion-engine";
 import type { SuggestionMode } from "@/lib/code-suggestion";
+import { api } from "../../../../convex/_generated/api";
+import type { Id } from "../../../../convex/_generated/dataModel";
 
 const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
 const URL_REGEX = /https?:\/\/[^\s]+/g;
+const MAX_FILE_CONTEXT_CHARS = 60_000;
+const MAX_HISTORY_MESSAGES = 40;
+
+type ProjectFileTreeNode = {
+  name: string;
+  type: string;
+  parentId?: string | null;
+  _id: string;
+};
+
+const buildFileTree = (files: ProjectFileTreeNode[]): string => {
+  const childrenMap = new Map<string | null, ProjectFileTreeNode[]>();
+
+  for (const file of files) {
+    const parentKey = file.parentId ?? null;
+    if (!childrenMap.has(parentKey)) {
+      childrenMap.set(parentKey, []);
+    }
+    childrenMap.get(parentKey)!.push(file);
+  }
+
+  const renderNode = (id: string | null, indent: number): string[] => {
+    const children = childrenMap.get(id) ?? [];
+    children.sort((a, b) => {
+      if (a.type === "folder" && b.type === "file") return -1;
+      if (a.type === "file" && b.type === "folder") return 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    const lines: string[] = [];
+    for (const child of children) {
+      const prefix = "  ".repeat(indent);
+      const label = child.type === "folder" ? "[folder]" : "[file]";
+      lines.push(`${prefix}${label} ${child.name}`);
+      if (child.type === "folder") {
+        lines.push(...renderNode(child._id, indent + 1));
+      }
+    }
+    return lines;
+  };
+
+  return renderNode(null, 0).join("\n");
+};
+
+const appendGeminiMessage = (
+  messages: GeminiChatMessage[],
+  nextMessage: GeminiChatMessage,
+) => {
+  const previousMessage = messages.at(-1);
+  if (previousMessage?.role === nextMessage.role) {
+    previousMessage.content = `${previousMessage.content}\n\n${nextMessage.content}`;
+    return;
+  }
+
+  messages.push(nextMessage);
+};
 
 export const orbit = inngest.createFunction(
   { id: "orbit-generate", triggers: [{ event: "orbit/generate" }] },
@@ -58,6 +122,199 @@ type CodeCompletionRequestedEvent = {
   mode: SuggestionMode;
   input: ParsedSuggestionInput;
 };
+
+type ConversationMessageRequestedEvent = {
+  conversationId: string;
+  userMessageId: string;
+  assistantMessageId: string;
+  message: string;
+  userId: string;
+};
+
+const updateAssistantMessage = async (args: {
+  assistantMessageId: string;
+  content: string;
+  status: "completed" | "failed";
+}) => {
+  await convex.mutation(api.system.updateMessageContent, {
+    messageId: args.assistantMessageId as Id<"messages">,
+    content: args.content,
+    status: args.status,
+  });
+};
+
+export const conversationMessageRequested = inngest.createFunction(
+  {
+    id: "orbit-conversation-message-requested",
+    triggers: [{ event: "orbit/conversation.message.requested" }],
+    concurrency: {
+      limit: Number.parseInt(
+        process.env.CONVERSATION_PROCESSING_CONCURRENCY ?? "4",
+        10,
+      ),
+    },
+    retries: 0,
+  },
+  async ({ event, step }) => {
+    const payload = event.data as ConversationMessageRequestedEvent;
+    const { conversationId, userMessageId, assistantMessageId, message } =
+      payload;
+
+    try {
+      const conversation = await step.run("load-conversation", async () => {
+        return await convex.query(api.system.getConversationById, {
+          conversationId: conversationId as Id<"conversations">,
+        });
+      });
+
+      if (!conversation) {
+        throw new Error("Conversation not found");
+      }
+
+      const existingMessages = await step.run("load-message-history", async () => {
+        return await convex.query(api.system.getMessagesByConversation, {
+          conversationId: conversationId as Id<"conversations">,
+        });
+      });
+
+      const projectFiles = await step.run("load-project-files", async () => {
+        return await convex.query(api.system.getProjectFiles, {
+          projectId: conversation.projectId,
+        });
+      });
+
+      const projectContext = await step.run("build-project-context", async () => {
+        const fileTree = buildFileTree(
+          projectFiles.map((file) => ({
+            name: file.name,
+            type: file.type,
+            parentId: file.parentId ?? null,
+            _id: file._id,
+          })),
+        );
+
+        let fileContextChars = 0;
+        const fileContents: string[] = [];
+
+        for (const file of projectFiles) {
+          if (file.type !== "file" || !file.content) continue;
+          if (fileContextChars + file.content.length > MAX_FILE_CONTEXT_CHARS) {
+            break;
+          }
+
+          fileContents.push(`--- ${file.name} ---\n${file.content}`);
+          fileContextChars += file.content.length;
+        }
+
+        return { fileTree, fileContents };
+      });
+
+      const urls = (await step.run("extract-message-urls", async () => {
+        return message.match(URL_REGEX) ?? [];
+      })) as string[];
+
+      const scrapedContent = await step.run("scrape-message-urls", async () => {
+        if (urls.length === 0) return "";
+
+        const results = await Promise.all(
+          urls.slice(0, 3).map(async (url) => {
+            try {
+              const result = await firecrawl.scrape(url, {
+                formats: ["markdown"],
+                maxAge: 3600000,
+                fastMode: true,
+              });
+              return result.markdown ?? null;
+            } catch {
+              return null;
+            }
+          }),
+        );
+
+        return results.filter(Boolean).join("\n\n");
+      });
+
+      const systemContext = [
+        "You are Orbit AI, an intelligent coding assistant embedded in the Orbit code editor.",
+        "You help developers write, debug, refactor, and understand code.",
+        "Be concise, accurate, and helpful. Provide code examples when relevant.",
+        "Use markdown formatting for code blocks, lists, and emphasis.",
+        "",
+        "Project file structure:",
+        projectContext.fileTree || "(empty project)",
+        ...(projectContext.fileContents.length > 0
+          ? ["", "Key project files:", ...projectContext.fileContents]
+          : []),
+        ...(scrapedContent
+          ? ["", "Scraped URL content:", scrapedContent]
+          : []),
+      ].join("\n");
+
+      const historyMessages = existingMessages
+        .filter((historyMessage) => {
+          if (!historyMessage.content) return false;
+          if (historyMessage.status === "processing") return false;
+          if (historyMessage.status === "failed") return false;
+          if (historyMessage._id === userMessageId) return false;
+          if (historyMessage._id === assistantMessageId) return false;
+          return true;
+        })
+        .slice(-MAX_HISTORY_MESSAGES);
+
+      const geminiMessages: GeminiChatMessage[] = [];
+
+      for (const historyMessage of historyMessages) {
+        appendGeminiMessage(geminiMessages, {
+          role: historyMessage.role === "assistant" ? "model" : "user",
+          content: historyMessage.content,
+        });
+      }
+
+      appendGeminiMessage(geminiMessages, {
+        role: "user",
+        content: `${systemContext}\n\nUser request:\n${message}`,
+      });
+
+      const completion = await step.run("generate-conversation-reply", async () => {
+        return await generateGeminiCompletion({
+          model: GEMINI_MODEL,
+          messages: geminiMessages,
+        });
+      });
+
+      await step.run("save-assistant-message", async () => {
+        await updateAssistantMessage({
+          assistantMessageId,
+          content: completion.content,
+          status: "completed",
+        });
+      });
+
+      return {
+        conversationId,
+        assistantMessageId,
+        model: completion.model,
+        status: "completed",
+      };
+    } catch (error) {
+      const classified = classifyError(error);
+
+      try {
+        await step.run("save-assistant-message-error", async () => {
+          await updateAssistantMessage({
+            assistantMessageId,
+            content: classified.message,
+            status: "failed",
+          });
+        });
+      } catch (updateError) {
+        console.error("conversation.message.error-save-failed", updateError);
+      }
+
+      throw error;
+    }
+  },
+);
 
 export const codeCompletionRequested = inngest.createFunction(
   {

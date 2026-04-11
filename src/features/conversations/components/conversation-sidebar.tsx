@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangleIcon,
   BotIcon,
-  CheckIcon,
   MessageSquareIcon,
   PencilIcon,
   PlusIcon,
@@ -35,7 +34,6 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import {
-  Suggestions,
   Suggestion,
 } from "@/components/ai-elements/suggestion";
 
@@ -58,14 +56,12 @@ const STARTER_SUGGESTIONS = [
 // ─── Conversation List Item ───────────────────────────────────────────────────
 
 const ConversationListItem = ({
-  id,
   title,
   isActive,
   onSelect,
   onDelete,
   onRename,
 }: {
-  id: Id<"conversations">;
   title: string;
   isActive: boolean;
   onSelect: () => void;
@@ -191,11 +187,9 @@ const ChatMessage = ({
 
 const ChatView = ({
   conversationId,
-  projectId,
   onBack,
 }: {
   conversationId: Id<"conversations">;
-  projectId: Id<"projects">;
   onBack: () => void;
 }) => {
   const messages = useMessages(conversationId);
@@ -224,6 +218,8 @@ const ChatView = ({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             conversationId,
+            userMessageId: result.userMessageId,
+            assistantMessageId: result.assistantMessageId,
             message: content.trim(),
           }),
         });
@@ -234,18 +230,6 @@ const ChatView = ({
           } | null;
           throw new Error(data?.error ?? `Request failed (${response.status})`);
         }
-
-        const data = (await response.json()) as { content: string };
-
-        await fetch("/api/messages/complete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messageId: assistantMessageId,
-            content: data.content,
-            status: "completed",
-          }),
-        });
       } catch (err) {
         const classified = classifyError(err);
         setError(classified);
@@ -429,6 +413,7 @@ export const ConversationSidebar = ({
   const createConversation = useCreateConversation();
   const deleteConversation = useDeleteConversation();
   const updateTitle = useUpdateConversationTitle();
+  const conversationCount = conversations?.length ?? 0;
   const [activeConversationId, setActiveConversationId] =
     useState<Id<"conversations"> | null>(null);
 
@@ -436,13 +421,13 @@ export const ConversationSidebar = ({
     try {
       const id = await createConversation({
         projectId,
-        title: `Chat ${(conversations?.length ?? 0) + 1}`,
+        title: `Chat ${conversationCount + 1}`,
       });
       setActiveConversationId(id);
     } catch {
       // Error handled by Convex
     }
-  }, [createConversation, conversations?.length, projectId]);
+  }, [conversationCount, createConversation, projectId]);
 
   const handleDelete = useCallback(
     async (id: Id<"conversations">) => {
@@ -474,7 +459,6 @@ export const ConversationSidebar = ({
     return (
       <ChatView
         conversationId={activeConversationId}
-        projectId={projectId}
         onBack={() => setActiveConversationId(null)}
       />
     );
@@ -534,7 +518,6 @@ export const ConversationSidebar = ({
             {conversations.map((conv) => (
               <ConversationListItem
                 key={conv._id}
-                id={conv._id}
                 title={conv.title}
                 isActive={activeConversationId === conv._id}
                 onSelect={() => setActiveConversationId(conv._id)}

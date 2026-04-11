@@ -67,6 +67,8 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               conversationId,
+              userMessageId: result.userMessageId,
+              assistantMessageId: result.assistantMessageId,
               message: content.trim(),
             }),
           });
@@ -76,22 +78,6 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
               error?: string;
             } | null;
             throw new Error(data?.error ?? `Request failed (${response.status})`);
-          }
-
-          const data = (await response.json()) as { content: string };
-
-          const updateResponse = await fetch("/api/messages/complete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              messageId: assistantMessageId,
-              content: data.content,
-              status: "completed",
-            }),
-          });
-
-          if (!updateResponse.ok) {
-            throw new Error("Failed to save AI response");
           }
 
           setStatus("idle");
