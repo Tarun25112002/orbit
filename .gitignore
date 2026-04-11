@@ -36,6 +36,9 @@ yarn-error.log*
 .cache/
 .turbo/
 
+# local VS Code/Copilot extension artifacts
+.antigravity/
+
 # env files (can opt-in for committing if needed)
 .env*
 

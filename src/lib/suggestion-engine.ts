@@ -10,6 +10,7 @@ import {
   GeminiRequestError,
   generateGeminiCompletion,
   type GeminiChatMessage,
+  type GeminiCompletionResult,
 } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
 import { buildWebContextFromText } from "@/lib/web-context";
@@ -218,7 +219,10 @@ const clampOptionalOffset = (value: number | undefined, max: number) => {
 
 const buildTransformCodeContext = (input: ParsedSuggestionInput) => {
   const code = input.code;
-  const startOffset = clampOptionalOffset(input.selectionStartOffset, code.length);
+  const startOffset = clampOptionalOffset(
+    input.selectionStartOffset,
+    code.length,
+  );
   const endOffset = clampOptionalOffset(input.selectionEndOffset, code.length);
 
   if (
@@ -467,7 +471,7 @@ const parseRetryAfterSeconds = (message: string) => {
 
 const buildContinuationMessages = (
   prompt: string,
-  content: string,
+  response: GeminiCompletionResult,
 ) => {
   const messages: GeminiChatMessage[] = [
     {
@@ -476,7 +480,10 @@ const buildContinuationMessages = (
     },
     {
       role: "model",
-      content,
+      content: response.content,
+      ...(response.reasoning_details !== undefined
+        ? { reasoning_details: response.reasoning_details }
+        : {}),
     },
     {
       role: "user",
@@ -493,9 +500,7 @@ const wait = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
-const sanitizeSuggestionRequestBody = (
-  input: ParsedSuggestionInput,
-) => {
+const sanitizeSuggestionRequestBody = (input: ParsedSuggestionInput) => {
   const code = input.code.slice(0, MAX_SOURCE_CODE_CHARS);
   const maxOffset = code.length;
 
@@ -510,8 +515,14 @@ const sanitizeSuggestionRequestBody = (
     cursorOffset: clampOptionalOffset(input.cursorOffset, maxOffset),
     selectedCode: input.selectedCode?.slice(0, MAX_CODE_WINDOW_CHARS),
     instruction: input.instruction?.slice(0, MAX_CONTEXT_CHARS),
-    selectionStartOffset: clampOptionalOffset(input.selectionStartOffset, maxOffset),
-    selectionEndOffset: clampOptionalOffset(input.selectionEndOffset, maxOffset),
+    selectionStartOffset: clampOptionalOffset(
+      input.selectionStartOffset,
+      maxOffset,
+    ),
+    selectionEndOffset: clampOptionalOffset(
+      input.selectionEndOffset,
+      maxOffset,
+    ),
     fileName: input.fileName?.trim(),
     language: input.language?.trim(),
     projectContext: sanitizeProjectContext(input.projectContext),
@@ -695,10 +706,7 @@ export async function generateSuggestion(
     if (!isAutocomplete && !suggestion.trim()) {
       const continuationResponse = await generateGeminiCompletion({
         model: GEMINI_MODEL,
-        messages: buildContinuationMessages(
-          execution.llmPrompt,
-          response.content,
-        ),
+        messages: buildContinuationMessages(execution.llmPrompt, response),
       });
 
       suggestion = normalizeSuggestion(
@@ -710,7 +718,7 @@ export async function generateSuggestion(
     }
 
     return {
-      modelName: GEMINI_MODEL,
+      modelName: response.model,
       suggestion,
       attempts: 1,
       latencyMs: Date.now() - startedAt,
@@ -719,4 +727,3 @@ export async function generateSuggestion(
     throw normalizeGenerationError(error);
   }
 }
-

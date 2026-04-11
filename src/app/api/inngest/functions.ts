@@ -1,13 +1,13 @@
 import { inngest } from "@/inngest/client";
 import { convex } from "@/lib/convex-client";
 import { suggestionRuntime } from "@/lib/completion-runtime";
-import {
-  generateGeminiCompletion,
-  GEMINI_MODEL_DEFAULT,
-} from "@/lib/gemini";
+import { generateGeminiCompletion, GEMINI_MODEL_DEFAULT } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
 import { buildWebContextFromText } from "@/lib/web-context";
 import {
+  type ConversationFileOperation,
+  type ConversationFileOperationExecutionResult,
+  type ConversationProjectFile,
   generateConversationTitle,
   runConversationAgentOrchestration,
 } from "@/lib/conversation-agents";
@@ -25,9 +25,10 @@ const MAX_HISTORY_MESSAGES = 40;
 
 type ProjectFileTreeNode = {
   name: string;
-  type: string;
+  type: "file" | "folder";
   parentId?: string | null;
   _id: string;
+  content?: string;
 };
 
 const buildFileTree = (files: ProjectFileTreeNode[]): string => {
@@ -62,6 +63,165 @@ const buildFileTree = (files: ProjectFileTreeNode[]): string => {
   };
 
   return renderNode(null, 0).join("\n");
+};
+
+const buildProjectFilePaths = (files: ProjectFileTreeNode[]) => {
+  const fileById = new Map(files.map((file) => [file._id, file]));
+  const pathById = new Map<string, string>();
+  const resolving = new Set<string>();
+
+  const resolvePath = (fileId: string): string => {
+    const cached = pathById.get(fileId);
+    if (cached) {
+      return cached;
+    }
+
+    const file = fileById.get(fileId);
+    if (!file) {
+      return fileId;
+    }
+
+    if (resolving.has(fileId)) {
+      return file.name;
+    }
+
+    resolving.add(fileId);
+
+    const parentPath = file.parentId ? resolvePath(file.parentId) : "";
+    const resolvedPath = parentPath ? `${parentPath}/${file.name}` : file.name;
+
+    pathById.set(fileId, resolvedPath);
+    resolving.delete(fileId);
+
+    return resolvedPath;
+  };
+
+  for (const file of files) {
+    resolvePath(file._id);
+  }
+
+  return pathById;
+};
+
+const buildConversationProjectFiles = (
+  files: ProjectFileTreeNode[],
+): ConversationProjectFile[] => {
+  const pathById = buildProjectFilePaths(files);
+
+  return files
+    .map((file) => ({
+      path: pathById.get(file._id) ?? file.name,
+      type: file.type,
+      content: file.type === "file" ? (file.content ?? "") : undefined,
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path));
+};
+
+const executeConversationFileOperation = async (args: {
+  projectId: Id<"projects">;
+  operation: ConversationFileOperation;
+}): Promise<ConversationFileOperationExecutionResult> => {
+  const { projectId, operation } = args;
+
+  try {
+    if (operation.type === "create_file") {
+      const result = await convex.mutation(api.system.agentCreateFileByPath, {
+        projectId,
+        path: operation.path,
+        content: operation.content,
+        overwrite: operation.overwrite,
+      });
+
+      return {
+        status: "applied",
+        message:
+          result.action === "created"
+            ? `Created file ${result.path}.`
+            : `Updated file ${result.path}.`,
+      };
+    }
+
+    if (operation.type === "create_folder") {
+      const result = await convex.mutation(api.system.agentCreateFolderByPath, {
+        projectId,
+        path: operation.path,
+      });
+
+      return {
+        status: result.action === "created" ? "applied" : "skipped",
+        message:
+          result.action === "created"
+            ? `Created folder ${result.path}.`
+            : `Folder ${result.path} already exists.`,
+      };
+    }
+
+    if (operation.type === "update_file") {
+      const result = await convex.mutation(api.system.agentUpdateFileByPath, {
+        projectId,
+        path: operation.path,
+        content: operation.content,
+        createIfMissing: operation.createIfMissing,
+      });
+
+      return {
+        status: "applied",
+        message:
+          result.action === "created"
+            ? `Created file ${result.path}.`
+            : `Updated file ${result.path}.`,
+      };
+    }
+
+    if (operation.type === "delete_path") {
+      const result = await convex.mutation(api.system.agentDeletePath, {
+        projectId,
+        path: operation.path,
+      });
+
+      if (result.status === "missing") {
+        return {
+          status: "skipped",
+          message: `Path ${result.path} was not found.`,
+        };
+      }
+
+      const nestedCount = result.deletedCount - 1;
+
+      return {
+        status: "applied",
+        message:
+          nestedCount > 0
+            ? `Deleted ${result.deletedType} ${result.path} and ${nestedCount} nested item(s).`
+            : `Deleted ${result.deletedType} ${result.path}.`,
+      };
+    }
+
+    const result = await convex.mutation(api.system.agentRenamePath, {
+      projectId,
+      path: operation.path,
+      newPath: operation.newPath,
+      createMissingParents: operation.createMissingParents,
+    });
+
+    if (result.status === "unchanged") {
+      return {
+        status: "skipped",
+        message: `Path ${result.path} is already named ${result.newPath}.`,
+      };
+    }
+
+    return {
+      status: "applied",
+      message: `Renamed ${result.path} to ${result.newPath}.`,
+    };
+  } catch (error) {
+    const classified = classifyError(error);
+    return {
+      status: "failed",
+      message: classified.message,
+    };
+  }
 };
 
 export const orbit = inngest.createFunction(
@@ -127,7 +287,8 @@ const isAssistantMessageCancelled = async (assistantMessageId: string) => {
 };
 
 const shouldGenerateConversationTitle = (title: string) =>
-  /^chat\s+\d+$/i.test(title.trim()) || /^new conversation$/i.test(title.trim());
+  /^chat\s+\d+$/i.test(title.trim()) ||
+  /^new conversation$/i.test(title.trim());
 
 const buildConversationHistoryBlock = (
   messages: Array<{
@@ -157,6 +318,33 @@ const buildConversationHistoryBlock = (
       return `${role}: ${historyMessage.content}`;
     })
     .join("\n\n");
+};
+
+const generateFallbackConversationReply = async (args: {
+  systemContext: string;
+  history: string;
+  message: string;
+  webContext?: string;
+}) => {
+  const fallbackPrompt = [
+    args.systemContext,
+    args.history ? ["", "Conversation history:", args.history].join("\n") : "",
+    args.webContext
+      ? ["", "Web context from referenced URLs:", args.webContext].join("\n")
+      : "",
+    "",
+    "User request:",
+    args.message,
+    "",
+    "Return a concise, practical coding answer.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return await generateGeminiCompletion({
+    model: GEMINI_MODEL,
+    messages: [{ role: "user", content: fallbackPrompt }],
+  });
 };
 
 export const conversationMessageRequested = inngest.createFunction(
@@ -205,11 +393,14 @@ export const conversationMessageRequested = inngest.createFunction(
         };
       }
 
-      const existingMessages = await step.run("load-message-history", async () => {
-        return await convex.query(api.system.getMessagesByConversation, {
-          conversationId: conversationId as Id<"conversations">,
-        });
-      });
+      const existingMessages = await step.run(
+        "load-message-history",
+        async () => {
+          return await convex.query(api.system.getMessagesByConversation, {
+            conversationId: conversationId as Id<"conversations">,
+          });
+        },
+      );
 
       const projectFiles = await step.run("load-project-files", async () => {
         return await convex.query(api.system.getProjectFiles, {
@@ -217,41 +408,67 @@ export const conversationMessageRequested = inngest.createFunction(
         });
       });
 
-      const projectContext = await step.run("build-project-context", async () => {
-        const fileTree = buildFileTree(
-          projectFiles.map((file) => ({
-            name: file.name,
-            type: file.type,
-            parentId: file.parentId ?? null,
-            _id: file._id,
-          })),
-        );
+      const projectFileNodes: ProjectFileTreeNode[] = projectFiles.map(
+        (file) => ({
+          name: file.name,
+          type: file.type,
+          parentId: file.parentId ?? null,
+          _id: file._id,
+          content: file.content,
+        }),
+      );
 
-        let fileContextChars = 0;
-        const fileContents: string[] = [];
+      const conversationProjectFiles =
+        buildConversationProjectFiles(projectFileNodes);
 
-        for (const file of projectFiles) {
-          if (file.type !== "file" || !file.content) continue;
-          if (fileContextChars + file.content.length > MAX_FILE_CONTEXT_CHARS) {
-            break;
+      const projectPathIndex = conversationProjectFiles
+        .map((file) =>
+          file.type === "folder"
+            ? `[folder] ${file.path}`
+            : `[file] ${file.path}`,
+        )
+        .join("\n");
+
+      const projectContext = await step.run(
+        "build-project-context",
+        async () => {
+          const fileTree = buildFileTree(projectFileNodes);
+
+          let fileContextChars = 0;
+          const fileContents: string[] = [];
+
+          for (const file of projectFiles) {
+            if (file.type !== "file" || !file.content) continue;
+            if (
+              fileContextChars + file.content.length >
+              MAX_FILE_CONTEXT_CHARS
+            ) {
+              break;
+            }
+
+            fileContents.push(`--- ${file.name} ---\n${file.content}`);
+            fileContextChars += file.content.length;
           }
 
-          fileContents.push(`--- ${file.name} ---\n${file.content}`);
-          fileContextChars += file.content.length;
-        }
+          return { fileTree, fileContents };
+        },
+      );
 
-        return { fileTree, fileContents };
-      });
-
-      const webContext = await step.run("scrape-message-web-context", async () => {
-        return await buildWebContextFromText(message);
-      });
+      const webContext = await step.run(
+        "scrape-message-web-context",
+        async () => {
+          return await buildWebContextFromText(message);
+        },
+      );
 
       const systemContext = [
         "You are Orbit AI, an intelligent coding assistant embedded in the Orbit code editor.",
         "You help developers write, debug, refactor, and understand code.",
         "Be concise, accurate, and helpful. Provide code examples when relevant.",
         "Use markdown formatting for code blocks, lists, and emphasis.",
+        "",
+        "Project path index:",
+        projectPathIndex || "(empty project)",
         "",
         "Project file structure:",
         projectContext.fileTree || "(empty project)",
@@ -267,23 +484,65 @@ export const conversationMessageRequested = inngest.createFunction(
       );
       const shouldTitleConversation =
         shouldGenerateConversationTitle(conversation.title) &&
-        existingMessages.filter((historyMessage) => historyMessage.role === "user")
-          .length <= 1;
+        existingMessages.filter(
+          (historyMessage) => historyMessage.role === "user",
+        ).length <= 1;
 
       const titlePromise = shouldTitleConversation
         ? generateConversationTitle(message).catch(() => null)
         : Promise.resolve(null);
 
-      const orchestrationPromise = runConversationAgentOrchestration({
-        message,
-        projectContext: systemContext,
-        history: conversationHistory,
-        webContext: webContext.markdown,
-      });
-
       const [generatedTitle, orchestration] = await Promise.all([
         titlePromise,
-        orchestrationPromise,
+        (async () => {
+          try {
+            return await runConversationAgentOrchestration({
+              message,
+              projectContext: systemContext,
+              history: conversationHistory,
+              webContext: webContext.markdown,
+              projectFiles: conversationProjectFiles,
+              executeFileOperation: async (operation) => {
+                if (await isAssistantMessageCancelled(assistantMessageId)) {
+                  return {
+                    status: "skipped",
+                    message: "Skipped because the response was cancelled.",
+                  } satisfies ConversationFileOperationExecutionResult;
+                }
+
+                return await executeConversationFileOperation({
+                  projectId: conversation.projectId,
+                  operation,
+                });
+              },
+            });
+          } catch (orchestrationError) {
+            const classified = classifyError(orchestrationError);
+            console.warn("conversation.orchestration.fallback", {
+              assistantMessageId,
+              conversationId,
+              reason: classified.message,
+              category: classified.category,
+            });
+
+            const fallback = await generateFallbackConversationReply({
+              systemContext,
+              history: conversationHistory,
+              message,
+              webContext: webContext.markdown,
+            });
+
+            return {
+              content: fallback.content,
+              assignments: [],
+              reports: [],
+              supervisorPlan: "fallback-direct-gemini",
+              operations: [],
+              operationResults: [],
+              fileOperationPlannerOutput: `fallback due to: ${classified.message}`,
+            };
+          }
+        })(),
       ]);
 
       if (generatedTitle) {
@@ -319,6 +578,8 @@ export const conversationMessageRequested = inngest.createFunction(
         conversationId,
         assistantMessageId,
         assignments: orchestration.assignments,
+        operations: orchestration.operations,
+        operationResults: orchestration.operationResults,
         status: saved ? "completed" : "cancelled",
       };
     } catch (error) {

@@ -1,9 +1,5 @@
-import {
-  createAgent,
-  gemini,
-  type AgentResult,
-} from "@inngest/agent-kit";
-import { GEMINI_MODEL_DEFAULT } from "@/lib/gemini";
+import { createAgent, gemini, type AgentResult } from "@inngest/agent-kit";
+import { GEMINI_MODEL_DEFAULT, generateGeminiCompletion } from "@/lib/gemini";
 
 const GEMINI_API_KEY =
   process.env.GEMINI_API_KEY?.trim() ||
@@ -18,6 +14,15 @@ const SPECIALIST_MODEL =
   GEMINI_MODEL_DEFAULT;
 const SYNTHESIS_MODEL =
   process.env.CONVERSATION_SYNTHESIS_MODEL?.trim() || GEMINI_MODEL_DEFAULT;
+const FILE_OPS_MODEL =
+  process.env.CONVERSATION_FILE_OPS_MODEL?.trim() || SPECIALIST_MODEL;
+
+const FILE_OPERATION_INTENT_PATTERN =
+  /\b(create|add|delete|remove|rename|move|update|edit|modify|write|rewrite|refactor|fix|implement|make|generate|scaffold|setup|build)\b/i;
+const FILE_OPERATION_PATH_HINT_PATTERN =
+  /(?:\b(?:src|app|components|lib|convex|public)\/)|(?:\b[a-z0-9_-]+\.[a-z0-9]{1,8}\b)/i;
+const MAX_FILE_OPERATIONS_PER_RUN = 12;
+const MAX_PROJECT_FILE_INVENTORY = 220;
 
 const createGeminiModel = (
   model: string,
@@ -53,12 +58,139 @@ type ConversationOrchestrationInput = {
   projectContext: string;
   history: string;
   webContext?: string;
+  projectFiles?: ConversationProjectFile[];
+  executeFileOperation?: ConversationFileOperationExecutor;
+};
+
+export type ConversationProjectFile = {
+  path: string;
+  type: "file" | "folder";
+  content?: string;
+};
+
+export type ConversationFileOperation =
+  | {
+      type: "create_file";
+      path: string;
+      content: string;
+      overwrite?: boolean;
+    }
+  | {
+      type: "create_folder";
+      path: string;
+    }
+  | {
+      type: "update_file";
+      path: string;
+      content: string;
+      createIfMissing?: boolean;
+    }
+  | {
+      type: "delete_path";
+      path: string;
+    }
+  | {
+      type: "rename_path";
+      path: string;
+      newPath: string;
+      createMissingParents?: boolean;
+    };
+
+export type ConversationFileOperationExecutionResult = {
+  status: "applied" | "skipped" | "failed";
+  message: string;
+};
+
+export type ConversationFileOperationExecutor = (
+  operation: ConversationFileOperation,
+) => Promise<ConversationFileOperationExecutionResult>;
+
+type ConversationFileOperationResult = {
+  operation: ConversationFileOperation;
+  status: "applied" | "skipped" | "failed";
+  message: string;
 };
 
 type SpecialistReport = {
   agent: SpecialistKey;
   task: string;
   content: string;
+};
+
+const SUPERVISOR_SYSTEM_PROMPT = [
+  "You are the main Orbit AI supervisor.",
+  "Read the user's request and assign focused work to specialist agents.",
+  "Return JSON only, with this shape:",
+  '{"assignments":[{"agent":"architecture","task":"short task"}],"reason":"short reason"}',
+  "Available agents:",
+  "- architecture: explains codebase structure, flow, dependencies, and design.",
+  "- code_quality: finds bugs, edge cases, risks, and test gaps.",
+  "- implementation: proposes concrete code changes, examples, and next steps.",
+  "- web_context: uses scraped URL/web context when the user references external docs, articles, or pages.",
+  "Pick only useful agents. Prefer 2-3 agents for normal requests and 1 agent for narrow requests.",
+].join("\n");
+
+const ARCHITECTURE_SYSTEM_PROMPT = [
+  "You are Orbit's architecture specialist.",
+  "Focus on project structure, data flow, API boundaries, and how the code fits together.",
+  "Return concise findings that another agent can synthesize into a final user answer.",
+].join("\n");
+
+const CODE_QUALITY_SYSTEM_PROMPT = [
+  "You are Orbit's code-quality specialist.",
+  "Focus on correctness, regressions, edge cases, and verification.",
+  "Be specific and avoid generic advice.",
+].join("\n");
+
+const IMPLEMENTATION_SYSTEM_PROMPT = [
+  "You are Orbit's implementation specialist.",
+  "Focus on concrete code changes, APIs, examples, and practical next steps.",
+  "Prefer local project patterns over new abstractions.",
+].join("\n");
+
+const WEB_CONTEXT_SYSTEM_PROMPT = [
+  "You are Orbit's web-context specialist.",
+  "Use only the supplied scraped web context for external facts.",
+  "Call out when the web context is absent or insufficient.",
+].join("\n");
+
+const SYNTHESIS_SYSTEM_PROMPT = [
+  "You are Orbit AI, an intelligent coding assistant embedded in the Orbit code editor.",
+  "Synthesize the specialist reports into one helpful response for the user.",
+  "Do not mention internal orchestration unless it is directly useful.",
+  "Be concise, accurate, and practical. Use markdown when helpful.",
+].join("\n");
+
+const TITLE_SYSTEM_PROMPT = [
+  "Create a short title for a coding assistant conversation.",
+  "Return only the title, no quotes, no punctuation at the end.",
+  "Use 3 to 6 words.",
+].join("\n");
+
+const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
+  "You plan deterministic file operations for an IDE assistant.",
+  "Only return JSON. Do not include prose outside JSON.",
+  "If the user did not request code/file changes, return an empty operations array.",
+  "If the user asked to implement, build, fix, create, or modify code, you MUST return one or more operations.",
+  "Prefer modifying existing files over creating duplicate files.",
+  "Use forward-slash relative paths like src/app/page.ts.",
+  "Allowed operation types:",
+  "- create_file: { type, path, content, overwrite? }",
+  "- create_folder: { type, path }",
+  "- update_file: { type, path, content, createIfMissing? }",
+  "- delete_path: { type, path }",
+  "- rename_path: { type, path, newPath, createMissingParents? }",
+  "JSON shape:",
+  '{"operations":[{"type":"update_file","path":"src/example.ts","content":"..."}]}',
+  "Do not emit operations that require assumptions you cannot justify from the request/context.",
+  "Keep operation count minimal and practical.",
+].join("\n");
+
+const SPECIALIST_SYSTEM_PROMPTS: Record<SpecialistKey, string> = {
+  architecture: ARCHITECTURE_SYSTEM_PROMPT,
+  code_quality: CODE_QUALITY_SYSTEM_PROMPT,
+  implementation: IMPLEMENTATION_SYSTEM_PROMPT,
+  web_context: WEB_CONTEXT_SYSTEM_PROMPT,
 };
 
 const supervisorAgent = createAgent({
@@ -68,32 +200,18 @@ const supervisorAgent = createAgent({
     temperature: 0.1,
     maxOutputTokens: 900,
   }),
-  system: [
-    "You are the main Orbit AI supervisor.",
-    "Read the user's request and assign focused work to specialist agents.",
-    "Return JSON only, with this shape:",
-    '{"assignments":[{"agent":"architecture","task":"short task"}],"reason":"short reason"}',
-    "Available agents:",
-    "- architecture: explains codebase structure, flow, dependencies, and design.",
-    "- code_quality: finds bugs, edge cases, risks, and test gaps.",
-    "- implementation: proposes concrete code changes, examples, and next steps.",
-    "- web_context: uses scraped URL/web context when the user references external docs, articles, or pages.",
-    "Pick only useful agents. Prefer 2-3 agents for normal requests and 1 agent for narrow requests.",
-  ].join("\n"),
+  system: SUPERVISOR_SYSTEM_PROMPT,
 });
 
 const architectureAgent = createAgent({
   name: "architecture",
-  description: "Understands codebase structure and explains how pieces connect.",
+  description:
+    "Understands codebase structure and explains how pieces connect.",
   model: createGeminiModel(SPECIALIST_MODEL, {
     temperature: 0.2,
     maxOutputTokens: 1800,
   }),
-  system: [
-    "You are Orbit's architecture specialist.",
-    "Focus on project structure, data flow, API boundaries, and how the code fits together.",
-    "Return concise findings that another agent can synthesize into a final user answer.",
-  ].join("\n"),
+  system: ARCHITECTURE_SYSTEM_PROMPT,
 });
 
 const codeQualityAgent = createAgent({
@@ -103,11 +221,7 @@ const codeQualityAgent = createAgent({
     temperature: 0.15,
     maxOutputTokens: 1800,
   }),
-  system: [
-    "You are Orbit's code-quality specialist.",
-    "Focus on correctness, regressions, edge cases, and verification.",
-    "Be specific and avoid generic advice.",
-  ].join("\n"),
+  system: CODE_QUALITY_SYSTEM_PROMPT,
 });
 
 const implementationAgent = createAgent({
@@ -117,11 +231,7 @@ const implementationAgent = createAgent({
     temperature: 0.25,
     maxOutputTokens: 2200,
   }),
-  system: [
-    "You are Orbit's implementation specialist.",
-    "Focus on concrete code changes, APIs, examples, and practical next steps.",
-    "Prefer local project patterns over new abstractions.",
-  ].join("\n"),
+  system: IMPLEMENTATION_SYSTEM_PROMPT,
 });
 
 const webContextAgent = createAgent({
@@ -131,11 +241,7 @@ const webContextAgent = createAgent({
     temperature: 0.1,
     maxOutputTokens: 1800,
   }),
-  system: [
-    "You are Orbit's web-context specialist.",
-    "Use only the supplied scraped web context for external facts.",
-    "Call out when the web context is absent or insufficient.",
-  ].join("\n"),
+  system: WEB_CONTEXT_SYSTEM_PROMPT,
 });
 
 const synthesisAgent = createAgent({
@@ -145,12 +251,7 @@ const synthesisAgent = createAgent({
     temperature: 0.35,
     maxOutputTokens: 5000,
   }),
-  system: [
-    "You are Orbit AI, an intelligent coding assistant embedded in the Orbit code editor.",
-    "Synthesize the specialist reports into one helpful response for the user.",
-    "Do not mention internal orchestration unless it is directly useful.",
-    "Be concise, accurate, and practical. Use markdown when helpful.",
-  ].join("\n"),
+  system: SYNTHESIS_SYSTEM_PROMPT,
 });
 
 const titleAgent = createAgent({
@@ -160,11 +261,18 @@ const titleAgent = createAgent({
     temperature: 0.2,
     maxOutputTokens: 40,
   }),
-  system: [
-    "Create a short title for a coding assistant conversation.",
-    "Return only the title, no quotes, no punctuation at the end.",
-    "Use 3 to 6 words.",
-  ].join("\n"),
+  system: TITLE_SYSTEM_PROMPT,
+});
+
+const fileOperationsPlannerAgent = createAgent({
+  name: "conversation_file_operations_planner",
+  description:
+    "Plans concrete file operations for explicit code-edit requests.",
+  model: createGeminiModel(FILE_OPS_MODEL, {
+    temperature: 0.1,
+    maxOutputTokens: 6_000,
+  }),
+  system: FILE_OPS_PLANNER_SYSTEM_PROMPT,
 });
 
 const specialistAgents = {
@@ -204,6 +312,68 @@ const textFromAgentResult = (result: AgentResult) =>
     .join("\n")
     .trim();
 
+const buildFallbackAgentPrompt = (systemPrompt: string, prompt: string) =>
+  [
+    systemPrompt,
+    "",
+    "Task input:",
+    prompt,
+  ].join("\n");
+
+const runAgentTextWithFallback = async (args: {
+  agent: { run: (prompt: string) => Promise<AgentResult> };
+  prompt: string;
+  systemPrompt: string;
+  model: string;
+  label: string;
+}) => {
+  let primaryError: unknown;
+
+  try {
+    const primaryResult = await args.agent.run(args.prompt);
+    const primaryText = textFromAgentResult(primaryResult).trim();
+    if (primaryText) {
+      return primaryText;
+    }
+
+    primaryError = new Error("Primary agent returned empty content.");
+  } catch (error) {
+    primaryError = error;
+  }
+
+  try {
+    const fallback = await generateGeminiCompletion({
+      model: args.model,
+      messages: [
+        {
+          role: "user",
+          content: buildFallbackAgentPrompt(args.systemPrompt, args.prompt),
+        },
+      ],
+    });
+
+    const fallbackText = fallback.content.trim();
+    if (fallbackText) {
+      return fallbackText;
+    }
+
+    throw new Error("Fallback model returned empty content.");
+  } catch (fallbackError) {
+    const primaryMessage =
+      primaryError instanceof Error
+        ? primaryError.message
+        : String(primaryError ?? "unknown");
+    const fallbackMessage =
+      fallbackError instanceof Error
+        ? fallbackError.message
+        : String(fallbackError);
+
+    throw new Error(
+      `${args.label} failed. primary=${primaryMessage}; fallback=${fallbackMessage}`,
+    );
+  }
+};
+
 const extractJsonObject = (value: string) => {
   const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
   const raw = fenced ?? value;
@@ -215,6 +385,341 @@ const extractJsonObject = (value: string) => {
   }
 
   return raw.slice(start, end + 1);
+};
+
+const toRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+
+const normalizeOperationPath = (rawPath: string) => {
+  const trimmed = rawPath.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const normalizedSlashes = trimmed
+    .replace(/\\/g, "/")
+    .replace(/^\//, "")
+    .replace(/\/+/g, "/")
+    .replace(/\/$/, "");
+
+  const withoutCurrentDir = normalizedSlashes.startsWith("./")
+    ? normalizedSlashes.slice(2)
+    : normalizedSlashes;
+
+  if (!withoutCurrentDir) {
+    return null;
+  }
+
+  const segments = withoutCurrentDir
+    .split("/")
+    .map((segment) => segment.trim());
+
+  if (
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
+    return null;
+  }
+
+  return segments.join("/");
+};
+
+const parseOptionalBoolean = (value: unknown) =>
+  typeof value === "boolean" ? value : undefined;
+
+const parseFileOperation = (
+  value: unknown,
+): ConversationFileOperation | null => {
+  const record = toRecord(value);
+  if (!record) {
+    return null;
+  }
+
+  const type =
+    typeof record.type === "string" ? record.type.trim().toLowerCase() : "";
+  const path =
+    typeof record.path === "string"
+      ? normalizeOperationPath(record.path)
+      : null;
+
+  if (!path) {
+    return null;
+  }
+
+  if (type === "create_folder") {
+    return {
+      type: "create_folder",
+      path,
+    };
+  }
+
+  if (type === "delete_path") {
+    return {
+      type: "delete_path",
+      path,
+    };
+  }
+
+  if (type === "create_file") {
+    if (typeof record.content !== "string") {
+      return null;
+    }
+
+    return {
+      type: "create_file",
+      path,
+      content: record.content,
+      overwrite: parseOptionalBoolean(record.overwrite),
+    };
+  }
+
+  if (type === "update_file") {
+    if (typeof record.content !== "string") {
+      return null;
+    }
+
+    return {
+      type: "update_file",
+      path,
+      content: record.content,
+      createIfMissing: parseOptionalBoolean(record.createIfMissing),
+    };
+  }
+
+  if (type === "rename_path") {
+    const newPath =
+      typeof record.newPath === "string"
+        ? normalizeOperationPath(record.newPath)
+        : null;
+
+    if (!newPath) {
+      return null;
+    }
+
+    return {
+      type: "rename_path",
+      path,
+      newPath,
+      createMissingParents: parseOptionalBoolean(record.createMissingParents),
+    };
+  }
+
+  return null;
+};
+
+const parseFileOperationPlan = (
+  value: unknown,
+): ConversationFileOperation[] => {
+  const record = toRecord(value);
+  if (!record || !Array.isArray(record.operations)) {
+    return [];
+  }
+
+  const operations = record.operations
+    .map((operation) => parseFileOperation(operation))
+    .filter(
+      (operation): operation is ConversationFileOperation => operation !== null,
+    )
+    .slice(0, MAX_FILE_OPERATIONS_PER_RUN);
+
+  return operations;
+};
+
+const buildProjectFileInventory = (files: ConversationProjectFile[] = []) => {
+  if (files.length === 0) {
+    return "(empty project)";
+  }
+
+  return files
+    .slice(0, MAX_PROJECT_FILE_INVENTORY)
+    .map((file) =>
+      file.type === "folder" ? `[folder] ${file.path}` : `[file] ${file.path}`,
+    )
+    .join("\n");
+};
+
+const buildFileOperationPlannerPrompt = (
+  input: ConversationOrchestrationInput,
+) =>
+  [
+    "User request:",
+    input.message,
+    "",
+    input.history ? `Conversation history:\n${input.history}` : "",
+    "",
+    "Known project files:",
+    buildProjectFileInventory(input.projectFiles),
+    "",
+    "Project context:",
+    input.projectContext,
+    input.webContext
+      ? ["", "Scraped web context:", input.webContext].join("\n")
+      : "",
+    "",
+    "Return JSON only with this shape:",
+    '{"operations":[{"type":"update_file","path":"src/example.ts","content":"..."}]}',
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+const buildFileOperationPlannerRetryPrompt = (
+  input: ConversationOrchestrationInput,
+  previousOutput: string,
+) =>
+  [
+    buildFileOperationPlannerPrompt(input),
+    "",
+    "Your previous response was empty or not valid JSON:",
+    previousOutput || "(empty)",
+    "",
+    "Return valid JSON only now.",
+    "If the request involves implementation or editing, include at least one operation.",
+    "Do not include markdown fences.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+const shouldPlanFileOperations = (input: ConversationOrchestrationInput) => {
+  if (FILE_OPERATION_INTENT_PATTERN.test(input.message)) {
+    return true;
+  }
+
+  if (FILE_OPERATION_PATH_HINT_PATTERN.test(input.message)) {
+    return true;
+  }
+
+  return false;
+};
+
+const describeFileOperation = (operation: ConversationFileOperation) => {
+  if (operation.type === "rename_path") {
+    return `${operation.type} ${operation.path} -> ${operation.newPath}`;
+  }
+
+  return `${operation.type} ${operation.path}`;
+};
+
+const planConversationFileOperations = async (
+  input: ConversationOrchestrationInput,
+) => {
+  if (!input.executeFileOperation) {
+    return {
+      operations: [] as ConversationFileOperation[],
+      plannerOutput: "",
+    };
+  }
+
+  if (!shouldPlanFileOperations(input)) {
+    return {
+      operations: [] as ConversationFileOperation[],
+      plannerOutput: "intent-skip",
+    };
+  }
+
+  const extractOperations = (output: string): ConversationFileOperation[] => {
+    const plannerJson = extractJsonObject(output);
+    if (!plannerJson) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(plannerJson) as unknown;
+      return parseFileOperationPlan(parsed);
+    } catch {
+      return [];
+    }
+  };
+
+  try {
+    const plannerOutput = await runAgentTextWithFallback({
+      agent: fileOperationsPlannerAgent,
+      prompt: buildFileOperationPlannerPrompt(input),
+      systemPrompt: FILE_OPS_PLANNER_SYSTEM_PROMPT,
+      model: FILE_OPS_MODEL,
+      label: "file-ops-planner",
+    });
+    const operations = extractOperations(plannerOutput);
+
+    if (operations.length > 0) {
+      return {
+        operations,
+        plannerOutput,
+      };
+    }
+
+    const retryOutput = await runAgentTextWithFallback({
+      agent: fileOperationsPlannerAgent,
+      prompt: buildFileOperationPlannerRetryPrompt(input, plannerOutput),
+      systemPrompt: FILE_OPS_PLANNER_SYSTEM_PROMPT,
+      model: FILE_OPS_MODEL,
+      label: "file-ops-planner-retry",
+    });
+    const retryOperations = extractOperations(retryOutput);
+
+    return {
+      operations: retryOperations,
+      plannerOutput: retryOutput || plannerOutput,
+    };
+  } catch (error) {
+    return {
+      operations: [] as ConversationFileOperation[],
+      plannerOutput: error instanceof Error ? error.message : "planner-error",
+    };
+  }
+};
+
+const executePlannedFileOperations = async (
+  operations: ConversationFileOperation[],
+  executeFileOperation?: ConversationFileOperationExecutor,
+): Promise<ConversationFileOperationResult[]> => {
+  if (operations.length === 0) {
+    return [];
+  }
+
+  if (!executeFileOperation) {
+    return operations.map((operation) => ({
+      operation,
+      status: "skipped",
+      message: "No execution handler is available.",
+    }));
+  }
+
+  const results: ConversationFileOperationResult[] = [];
+
+  for (const operation of operations) {
+    try {
+      const execution = await executeFileOperation(operation);
+      results.push({
+        operation,
+        status: execution.status,
+        message: execution.message.trim() || "No details returned.",
+      });
+    } catch (error) {
+      results.push({
+        operation,
+        status: "failed",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  return results;
+};
+
+const buildFileOperationSummary = (
+  operationResults: ConversationFileOperationResult[],
+) => {
+  if (operationResults.length === 0) {
+    return "No filesystem operations were executed.";
+  }
+
+  return operationResults
+    .map(
+      (result) =>
+        `- ${result.status.toUpperCase()}: ${describeFileOperation(result.operation)} (${result.message})`,
+    )
+    .join("\n");
 };
 
 const normalizeAssignments = (
@@ -347,6 +852,7 @@ const buildSpecialistPrompt = (
 const buildSynthesisPrompt = (
   input: ConversationOrchestrationInput,
   reports: SpecialistReport[],
+  operationResults: ConversationFileOperationResult[],
 ) =>
   [
     "User request:",
@@ -368,7 +874,11 @@ const buildSynthesisPrompt = (
       )
       .join("\n\n"),
     "",
+    "Filesystem operation results:",
+    buildFileOperationSummary(operationResults),
+    "",
     "Write the final answer for the user now.",
+    "If operations were applied, clearly list the changed paths and what changed.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -387,56 +897,134 @@ export const runConversationAgentOrchestration = async (
     input.webContext ? `\nScraped web context:\n${input.webContext}` : "",
   ].join("\n");
 
-  const supervisorResult = await supervisorAgent.run(supervisorPrompt);
-  const supervisorText = textFromAgentResult(supervisorResult);
-  const supervisorJson = extractJsonObject(supervisorText);
+  let supervisorText = "";
+  let supervisorJson: string | null = null;
   let parsedPlan: unknown = null;
 
-  if (supervisorJson) {
-    try {
-      parsedPlan = JSON.parse(supervisorJson);
-    } catch {
-      parsedPlan = null;
+  try {
+    supervisorText = await runAgentTextWithFallback({
+      agent: supervisorAgent,
+      prompt: supervisorPrompt,
+      systemPrompt: SUPERVISOR_SYSTEM_PROMPT,
+      model: SUPERVISOR_MODEL,
+      label: "supervisor",
+    });
+    supervisorJson = extractJsonObject(supervisorText);
+
+    if (supervisorJson) {
+      try {
+        parsedPlan = JSON.parse(supervisorJson);
+      } catch {
+        parsedPlan = null;
+      }
     }
+  } catch (error) {
+    supervisorText =
+      error instanceof Error
+        ? `supervisor-error: ${error.message}`
+        : "supervisor-error";
+    parsedPlan = null;
   }
 
   const assignments = normalizeAssignments(parsedPlan, input);
 
-  const reports = await Promise.all(
+  const settledReports = await Promise.allSettled(
     assignments.map(async (assignment) => {
       const agent = specialistAgents[assignment.agent];
-      const result = await agent.run(buildSpecialistPrompt(input, assignment));
+      const content = await runAgentTextWithFallback({
+        agent,
+        prompt: buildSpecialistPrompt(input, assignment),
+        systemPrompt: SPECIALIST_SYSTEM_PROMPTS[assignment.agent],
+        model: SPECIALIST_MODEL,
+        label: `specialist:${assignment.agent}`,
+      });
 
       return {
         agent: assignment.agent,
         task: assignment.task,
-        content: textFromAgentResult(result),
+        content,
       };
     }),
   );
 
-  const synthesisResult = await synthesisAgent.run(
-    buildSynthesisPrompt(input, reports),
+  const reports: SpecialistReport[] = settledReports.map(
+    (reportResult, index) => {
+      if (reportResult.status === "fulfilled") {
+        return reportResult.value;
+      }
+
+      const fallbackAssignment = assignments[index];
+      return {
+        agent: fallbackAssignment?.agent ?? "implementation",
+        task:
+          fallbackAssignment?.task ??
+          "Provide practical implementation guidance.",
+        content:
+          reportResult.reason instanceof Error
+            ? `Specialist unavailable: ${reportResult.reason.message}`
+            : "Specialist unavailable due to an unexpected error.",
+      };
+    },
   );
-  const content = textFromAgentResult(synthesisResult);
+
+  const fileOperationPlan = await planConversationFileOperations(input);
+  const operationResults = await executePlannedFileOperations(
+    fileOperationPlan.operations,
+    input.executeFileOperation,
+  );
+
+  let content = "";
+
+  try {
+    content = await runAgentTextWithFallback({
+      agent: synthesisAgent,
+      prompt: buildSynthesisPrompt(input, reports, operationResults),
+      systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
+      model: SYNTHESIS_MODEL,
+      label: "synthesis",
+    });
+  } catch (error) {
+    const fallbackErrorMessage =
+      error instanceof Error ? error.message : "Unexpected synthesis error";
+    content = [
+      "I completed what I could, but could not generate the full narrative response.",
+      "",
+      "Filesystem operation results:",
+      buildFileOperationSummary(operationResults),
+      "",
+      "Partial analysis:",
+      reports
+        .map(
+          (report) =>
+            `- ${report.agent}: ${report.content || "No details available."}`,
+        )
+        .join("\n"),
+      "",
+      `Synthesis error: ${fallbackErrorMessage}`,
+    ].join("\n");
+  }
 
   return {
     content,
     assignments,
     reports,
     supervisorPlan: supervisorText,
+    operations: fileOperationPlan.operations,
+    operationResults,
+    fileOperationPlannerOutput: fileOperationPlan.plannerOutput,
   };
 };
 
 export const generateConversationTitle = async (message: string) => {
-  const result = await titleAgent.run([
-    "Conversation starter:",
-    message,
-    "",
-    "Title:",
-  ].join("\n"));
+  const title = await runAgentTextWithFallback({
+    agent: titleAgent,
+    prompt: ["Conversation starter:", message, "", "Title:"].join("\n"),
+    systemPrompt: TITLE_SYSTEM_PROMPT,
+    model: SPECIALIST_MODEL,
+    label: "title",
+  });
 
-  return textFromAgentResult(result)
+  return title
     .replace(/^["'`]+|["'`.]+$/g, "")
     .replace(/\s+/g, " ")
     .trim()
