@@ -96,8 +96,7 @@ const USER_MESSAGES: Record<ErrorCategory, string> = {
     "AI is temporarily busy due to rate limits. Please wait a moment and try again.",
   quota_exceeded:
     "AI usage quota has been exceeded. Please check your API plan or try again later.",
-  auth:
-    "Authentication failed. Please sign in again to continue.",
+  auth: "Authentication failed. Please sign in again to continue.",
   network:
     "Unable to reach the server. Please check your internet connection and try again.",
   timeout:
@@ -106,10 +105,8 @@ const USER_MESSAGES: Record<ErrorCategory, string> = {
     "The request could not be processed. Please check your input and try again.",
   ai_unavailable:
     "AI service is temporarily unavailable. Please try again in a few moments.",
-  server:
-    "Something went wrong on our end. Please try again shortly.",
-  unknown:
-    "Something unexpected happened. Please try again.",
+  server: "Something went wrong on our end. Please try again shortly.",
+  unknown: "Something unexpected happened. Please try again.",
 };
 
 // ─── Retry-after parser ───────────────────────────────────────────────────────
@@ -122,6 +119,74 @@ const parseRetrySeconds = (text: string): number | undefined => {
       return Math.ceil(seconds);
     }
   }
+  return undefined;
+};
+
+const extractStatusCode = (error: unknown) => {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const record = error as Record<string, unknown>;
+
+  const directStatus =
+    typeof record.status === "number"
+      ? record.status
+      : typeof record.statusCode === "number"
+        ? record.statusCode
+        : undefined;
+
+  if (typeof directStatus === "number" && Number.isFinite(directStatus)) {
+    return directStatus;
+  }
+
+  if (
+    "response" in record &&
+    typeof record.response === "object" &&
+    record.response !== null
+  ) {
+    const response = record.response as Record<string, unknown>;
+    const responseStatus =
+      typeof response.status === "number"
+        ? response.status
+        : typeof response.statusCode === "number"
+          ? response.statusCode
+          : undefined;
+
+    if (typeof responseStatus === "number" && Number.isFinite(responseStatus)) {
+      return responseStatus;
+    }
+  }
+
+  return undefined;
+};
+
+const extractRetryAfterSeconds = (error: unknown, text: string) => {
+  const parsedFromText = parseRetrySeconds(text);
+  if (parsedFromText !== undefined) {
+    return parsedFromText;
+  }
+
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const record = error as Record<string, unknown>;
+  const directRetryAfter =
+    typeof record.retryAfterSeconds === "number"
+      ? record.retryAfterSeconds
+      : typeof record.retryAfter === "number"
+        ? record.retryAfter
+        : undefined;
+
+  if (
+    typeof directRetryAfter === "number" &&
+    Number.isFinite(directRetryAfter) &&
+    directRetryAfter > 0
+  ) {
+    return Math.ceil(directRetryAfter);
+  }
+
   return undefined;
 };
 
@@ -143,13 +208,55 @@ export const classifyError = (error: unknown): ClassifiedError => {
         : "";
 
   const text = rawMessage.replace(/\s+/g, " ").trim();
+  const statusCode = extractStatusCode(error);
+
+  if (statusCode === 429) {
+    return {
+      message: USER_MESSAGES.rate_limit,
+      category: "rate_limit",
+      retryAfterSeconds: extractRetryAfterSeconds(error, text) ?? 10,
+      retryable: true,
+    };
+  }
+
+  if (statusCode === 401 || statusCode === 403) {
+    return {
+      message: USER_MESSAGES.auth,
+      category: "auth",
+      retryable: false,
+    };
+  }
+
+  if (statusCode === 408 || statusCode === 504) {
+    return {
+      message: USER_MESSAGES.timeout,
+      category: "timeout",
+      retryable: true,
+    };
+  }
+
+  if (statusCode === 503 || statusCode === 502) {
+    return {
+      message: USER_MESSAGES.ai_unavailable,
+      category: "ai_unavailable",
+      retryable: true,
+    };
+  }
+
+  if (statusCode === 400 || statusCode === 422) {
+    return {
+      message: USER_MESSAGES.validation,
+      category: "validation",
+      retryable: false,
+    };
+  }
 
   // Check rate limiting first (most common AI error)
   if (RATE_LIMIT_PATTERNS.some((p) => p.test(text))) {
     return {
       message: USER_MESSAGES.rate_limit,
       category: "rate_limit",
-      retryAfterSeconds: parseRetrySeconds(text) ?? 10,
+      retryAfterSeconds: extractRetryAfterSeconds(error, text) ?? 10,
       retryable: true,
     };
   }
@@ -159,7 +266,7 @@ export const classifyError = (error: unknown): ClassifiedError => {
     return {
       message: USER_MESSAGES.quota_exceeded,
       category: "quota_exceeded",
-      retryAfterSeconds: parseRetrySeconds(text) ?? 60,
+      retryAfterSeconds: extractRetryAfterSeconds(error, text) ?? 60,
       retryable: true,
     };
   }

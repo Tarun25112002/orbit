@@ -214,6 +214,28 @@ class ProjectWebcontainerRuntime {
     return exitCode;
   }
 
+  public async readFileIfExists(path: string) {
+    const instance = await this.ensureBooted();
+
+    try {
+      const content = await instance.fs.readFile(toFsPath(path), "utf-8");
+      if (typeof content === "string") {
+        return content;
+      }
+
+      return new TextDecoder().decode(content);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : String(error ?? "unknown");
+
+      if (message.includes("ENOENT") || message.includes("EISDIR")) {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
   public async startBackgroundCommand(args: {
     key: string;
     command: string;

@@ -1,5 +1,10 @@
 import { createAgent, gemini, type AgentResult } from "@inngest/agent-kit";
-import { GEMINI_MODEL_DEFAULT, generateGeminiCompletion } from "@/lib/gemini";
+import {
+  GEMINI_MODEL_DEFAULT,
+  generateGeminiCompletion,
+  getGeminiModelCooldownSeconds,
+  isGeminiModelCoolingDown,
+} from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
 
 const GEMINI_API_KEY =
@@ -382,22 +387,31 @@ const runAgentTextWithFallback = async (args: {
   label: string;
 }) => {
   let primaryError: unknown;
+  const targetModel = args.model.trim();
+  const skipPrimary = isGeminiModelCoolingDown(targetModel);
 
-  try {
-    const primaryResult = await args.agent.run(args.prompt);
-    const primaryText = textFromAgentResult(primaryResult).trim();
-    if (primaryText) {
-      return primaryText;
+  if (skipPrimary) {
+    const retryIn = getGeminiModelCooldownSeconds(targetModel);
+    primaryError = new Error(
+      `Primary agent call skipped for ${targetModel} due to cooldown (${retryIn}s remaining).`,
+    );
+  } else {
+    try {
+      const primaryResult = await args.agent.run(args.prompt);
+      const primaryText = textFromAgentResult(primaryResult).trim();
+      if (primaryText) {
+        return primaryText;
+      }
+
+      primaryError = new Error("Primary agent returned empty content.");
+    } catch (error) {
+      primaryError = error;
     }
-
-    primaryError = new Error("Primary agent returned empty content.");
-  } catch (error) {
-    primaryError = error;
   }
 
   try {
     const fallback = await generateGeminiCompletion({
-      model: args.model,
+      model: targetModel,
       messages: [
         {
           role: "user",
@@ -422,9 +436,30 @@ const runAgentTextWithFallback = async (args: {
         ? fallbackError.message
         : String(fallbackError);
 
-    throw new Error(
+    const wrapped = new Error(
       `${args.label} failed. primary=${primaryMessage}; fallback=${fallbackMessage}`,
     );
+
+    if (typeof fallbackError === "object" && fallbackError !== null) {
+      const fallbackRecord = fallbackError as Record<string, unknown>;
+
+      if (typeof fallbackRecord.status === "number") {
+        (wrapped as Error & { status?: number }).status =
+          fallbackRecord.status;
+      }
+
+      if (typeof fallbackRecord.statusCode === "number") {
+        (wrapped as Error & { statusCode?: number }).statusCode =
+          fallbackRecord.statusCode;
+      }
+
+      if (typeof fallbackRecord.retryAfterSeconds === "number") {
+        (wrapped as Error & { retryAfterSeconds?: number }).retryAfterSeconds =
+          fallbackRecord.retryAfterSeconds;
+      }
+    }
+
+    throw wrapped;
   }
 };
 
@@ -1575,6 +1610,13 @@ const buildSynthesisPrompt = (
 export const runConversationAgentOrchestration = async (
   input: ConversationOrchestrationInput,
 ) => {
+  const useReducedAgentPlan = [
+    SUPERVISOR_MODEL,
+    SPECIALIST_MODEL,
+    SYNTHESIS_MODEL,
+    FILE_OPS_MODEL,
+  ].some((model) => isGeminiModelCoolingDown(model.trim()));
+
   const supervisorPrompt = [
     "User request:",
     input.message,
@@ -1590,29 +1632,41 @@ export const runConversationAgentOrchestration = async (
   let supervisorJson: string | null = null;
   let parsedPlan: unknown = null;
 
-  try {
-    supervisorText = await runAgentTextWithFallback({
-      agent: supervisorAgent,
-      prompt: supervisorPrompt,
-      systemPrompt: SUPERVISOR_SYSTEM_PROMPT,
-      model: SUPERVISOR_MODEL,
-      label: "supervisor",
-    });
-    supervisorJson = extractJsonObject(supervisorText);
+  if (useReducedAgentPlan) {
+    supervisorText = "supervisor-skipped-due-to-gemini-cooldown";
+    parsedPlan = {
+      assignments: [
+        {
+          agent: "implementation",
+          task: "Provide a direct, concise answer and include code when needed.",
+        },
+      ],
+    };
+  } else {
+    try {
+      supervisorText = await runAgentTextWithFallback({
+        agent: supervisorAgent,
+        prompt: supervisorPrompt,
+        systemPrompt: SUPERVISOR_SYSTEM_PROMPT,
+        model: SUPERVISOR_MODEL,
+        label: "supervisor",
+      });
+      supervisorJson = extractJsonObject(supervisorText);
 
-    if (supervisorJson) {
-      try {
-        parsedPlan = JSON.parse(supervisorJson);
-      } catch {
-        parsedPlan = null;
+      if (supervisorJson) {
+        try {
+          parsedPlan = JSON.parse(supervisorJson);
+        } catch {
+          parsedPlan = null;
+        }
       }
+    } catch (error) {
+      supervisorText =
+        error instanceof Error
+          ? `supervisor-error: ${error.message}`
+          : "supervisor-error";
+      parsedPlan = null;
     }
-  } catch (error) {
-    supervisorText =
-      error instanceof Error
-        ? `supervisor-error: ${error.message}`
-        : "supervisor-error";
-    parsedPlan = null;
   }
 
   const assignments = normalizeAssignments(parsedPlan, input);
@@ -1687,6 +1741,20 @@ export const runConversationAgentOrchestration = async (
       projectFiles: postOperationProjectFiles,
       operationResults,
     });
+  } else if (useReducedAgentPlan && reports.length === 1) {
+    const reducedContent = reports[0]?.content.trim() || "";
+    content =
+      operationResults.length > 0
+        ? [
+            reducedContent ||
+              "Generated response under provider cooldown mode.",
+            "",
+            "Pipeline operation results:",
+            buildFileOperationSummary(operationResults),
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : reducedContent || "Generated response under provider cooldown mode.";
   } else {
     try {
       content = await runAgentTextWithFallback({

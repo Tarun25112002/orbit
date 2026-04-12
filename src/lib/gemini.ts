@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 const LOCAL_ENV_PATH = resolve(process.cwd(), ".env.local");
 let cachedLocalEnvMtimeMs: number | null = null;
 let cachedLocalEnvValues: Record<string, string> = {};
+const geminiModelCooldownUntilMs = new Map<string, number>();
 
 const parseLocalEnvFile = (content: string) => {
   const values: Record<string, string> = {};
@@ -71,6 +72,110 @@ const getRuntimeEnvValue = (name: string) => {
 const getGeminiApiKey = () =>
   getRuntimeEnvValue("GEMINI_API_KEY") || getRuntimeEnvValue("GOOGLE_API_KEY");
 
+const parseRetryAfterSeconds = (value: string) => {
+  const retryInMatch = value.match(/retry\s*(?:in|after)\s+([\d.]+)\s*s/i);
+  if (retryInMatch?.[1]) {
+    const seconds = Number.parseFloat(retryInMatch[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.ceil(seconds);
+    }
+  }
+
+  const retryDelayMatch = value.match(/"retryDelay"\s*:\s*"([\d.]+)s"/i);
+  if (retryDelayMatch?.[1]) {
+    const seconds = Number.parseFloat(retryDelayMatch[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.ceil(seconds);
+    }
+  }
+
+  return null;
+};
+
+const extractRawErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (typeof error !== "object" || error === null) {
+    return "Gemini request failed";
+  }
+
+  const record = error as Record<string, unknown>;
+
+  if (typeof record.message === "string" && record.message.trim()) {
+    return record.message;
+  }
+
+  if (
+    "error" in record &&
+    typeof record.error === "object" &&
+    record.error !== null
+  ) {
+    const nestedError = record.error as Record<string, unknown>;
+    if (typeof nestedError.message === "string" && nestedError.message.trim()) {
+      return nestedError.message;
+    }
+
+    try {
+      return JSON.stringify(record.error);
+    } catch {
+      return "Gemini request failed";
+    }
+  }
+
+  try {
+    return JSON.stringify(record);
+  } catch {
+    return "Gemini request failed";
+  }
+};
+
+const getGeminiFallbackModels = () => {
+  const configured = getRuntimeEnvValue("GEMINI_FALLBACK_MODELS")
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+
+  return Array.from(
+    new Set([
+      ...configured,
+      "gemini-2.0-flash-lite",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
+    ]),
+  );
+};
+
+const getGeminiModelCandidates = (preferredModel: string) =>
+  Array.from(new Set([preferredModel, ...getGeminiFallbackModels()]));
+
+const getModelCooldownSeconds = (model: string) => {
+  const until = geminiModelCooldownUntilMs.get(model);
+  if (!until) {
+    return 0;
+  }
+
+  const remainingMs = until - Date.now();
+  return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
+};
+
+const setModelCooldown = (model: string, retryAfterSeconds: number | null) => {
+  const seconds =
+    retryAfterSeconds && retryAfterSeconds > 0 ? retryAfterSeconds : 10;
+  geminiModelCooldownUntilMs.set(model, Date.now() + seconds * 1000);
+};
+
+export const isGeminiModelCoolingDown = (model: string) =>
+  getModelCooldownSeconds(model) > 0;
+
+export const getGeminiModelCooldownSeconds = (model: string) =>
+  getModelCooldownSeconds(model);
+
 const parseBooleanEnv = (value: string | undefined, fallback: boolean) => {
   if (!value) {
     return fallback;
@@ -126,7 +231,7 @@ const getOpenRouterConfig = () => {
 
 /** Default model used across the app — configurable via GEMINI_MODEL env var */
 export const GEMINI_MODEL_DEFAULT =
-  process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+  getRuntimeEnvValue("GEMINI_MODEL") || "gemini-2.5-flash";
 
 export type GeminiChatMessage = {
   role: "user" | "model";
@@ -452,6 +557,15 @@ const generateOpenRouterFallbackCompletion = async (args: {
         });
       } catch (error) {
         if (error instanceof GeminiRequestError) {
+          if (
+            error.status === 429 &&
+            /rate.?limit|too many requests|free-models-per-(?:min|minute|day)/i.test(
+              error.message,
+            )
+          ) {
+            throw error;
+          }
+
           lastError = error;
 
           if (!isRetryableOpenRouterError(error)) {
@@ -486,7 +600,9 @@ export const generateGeminiCompletion = async (args: {
   temperature?: number;
 }): Promise<GeminiCompletionResult> => {
   const ai = getClient();
-  const modelName = args.model ?? GEMINI_MODEL_DEFAULT;
+  const modelName = (args.model ?? GEMINI_MODEL_DEFAULT).trim();
+  const modelCandidates = getGeminiModelCandidates(modelName);
+  let lastQuotaOrRateLimitError: GeminiRequestError | null = null;
 
   // Build contents for multi-turn conversation
   const contents = args.messages.map((msg) => ({
@@ -494,106 +610,139 @@ export const generateGeminiCompletion = async (args: {
     parts: [{ text: msg.content }],
   }));
 
-  try {
-    const response = await ai.models.generateContent({
-      model: modelName,
-      contents,
-      config: {
-        maxOutputTokens: args.maxTokens,
-        temperature: args.temperature,
-      },
-    });
-
-    const text = response.text ?? "";
-
-    if (!text) {
-      throw new GeminiRequestError({
-        message: "Gemini response did not include any content",
-        status: 502,
+  for (const candidateModel of modelCandidates) {
+    const cooldownSeconds = getModelCooldownSeconds(candidateModel);
+    if (cooldownSeconds > 0) {
+      lastQuotaOrRateLimitError = new GeminiRequestError({
+        message: `Model ${candidateModel} is temporarily rate-limited. Please retry in ${cooldownSeconds}s.`,
+        status: 429,
       });
+      continue;
     }
 
-    return {
-      content: text,
-      model: modelName,
-    };
-  } catch (error) {
-    if (error instanceof GeminiRequestError) {
-      throw error;
-    }
-
-    const rawMessage =
-      error instanceof Error ? error.message : "Gemini request failed";
-
-    // Detect rate limiting / quota issues
-    const isRateLimited =
-      rawMessage.includes("429") ||
-      /rate.?limit/i.test(rawMessage) ||
-      /quota/i.test(rawMessage) ||
-      /resource.?exhausted/i.test(rawMessage) ||
-      /too many requests/i.test(rawMessage);
-
-    // Detect quota specifically (different from transient rate limit)
-    const isQuotaExhausted =
-      /quota.?exceed/i.test(rawMessage) ||
-      /resource.?exhausted/i.test(rawMessage) ||
-      /free.?tier/i.test(rawMessage) ||
-      /limit:\s*0/i.test(rawMessage);
-
-    if (isQuotaExhausted) {
-      try {
-        return await generateOpenRouterFallbackCompletion({
-          messages: args.messages,
-          maxTokens: args.maxTokens,
+    try {
+      const response = await ai.models.generateContent({
+        model: candidateModel,
+        contents,
+        config: {
+          maxOutputTokens: args.maxTokens,
           temperature: args.temperature,
-        });
-      } catch (fallbackError) {
-        if (fallbackError instanceof GeminiRequestError) {
-          throw fallbackError;
-        }
+        },
+      });
 
+      const text = response.text ?? "";
+
+      if (!text) {
+        throw new GeminiRequestError({
+          message: "Gemini response did not include any content",
+          status: 502,
+        });
+      }
+
+      return {
+        content: text,
+        model: candidateModel,
+      };
+    } catch (error) {
+      if (error instanceof GeminiRequestError) {
+        throw error;
+      }
+
+      const rawMessage = extractRawErrorMessage(error);
+      const retryAfterSeconds = parseRetryAfterSeconds(rawMessage);
+
+      // Detect rate limiting / quota issues
+      const isRateLimited =
+        rawMessage.includes("429") ||
+        /rate.?limit/i.test(rawMessage) ||
+        /quota/i.test(rawMessage) ||
+        /resource.?exhausted/i.test(rawMessage) ||
+        /too many requests/i.test(rawMessage);
+
+      // Detect quota specifically (different from transient rate limit)
+      const isQuotaExhausted =
+        /quota.?exceed/i.test(rawMessage) ||
+        /resource.?exhausted/i.test(rawMessage) ||
+        /free.?tier/i.test(rawMessage) ||
+        /limit:\s*0/i.test(rawMessage);
+
+      if (isQuotaExhausted || isRateLimited) {
+        setModelCooldown(candidateModel, retryAfterSeconds);
+
+        const cooldownForMessage =
+          retryAfterSeconds ?? getModelCooldownSeconds(candidateModel) ?? 10;
+        lastQuotaOrRateLimitError = new GeminiRequestError({
+          message: isQuotaExhausted
+            ? `AI usage quota for ${candidateModel} is exhausted. Retry in ${cooldownForMessage}s or use a fallback provider.`
+            : `AI model ${candidateModel} is rate-limited. Retry in ${cooldownForMessage}s.`,
+          status: 429,
+        });
+
+        continue;
+      }
+
+      // Detect network / connectivity issues
+      if (
+        /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
+          rawMessage,
+        )
+      ) {
         throw new GeminiRequestError({
           message:
-            fallbackError instanceof Error
-              ? fallbackError.message
-              : "AI usage quota has been exceeded.",
+            "Unable to reach the AI service. Please check your internet connection.",
+          status: 503,
+        });
+      }
+
+      // Detect invalid API key
+      if (/api.?key|permission.?denied|forbidden/i.test(rawMessage)) {
+        throw new GeminiRequestError({
+          message:
+            "AI API key is invalid or missing. Please check your configuration.",
+          status: 401,
+        });
+      }
+
+      throw new GeminiRequestError({
+        message:
+          rawMessage || "AI service encountered an error. Please try again.",
+        status: 500,
+      });
+    }
+  }
+
+  try {
+    return await generateOpenRouterFallbackCompletion({
+      messages: args.messages,
+      maxTokens: args.maxTokens,
+      temperature: args.temperature,
+    });
+  } catch (fallbackError) {
+    if (fallbackError instanceof GeminiRequestError) {
+      if (fallbackError.status >= 500 && lastQuotaOrRateLimitError) {
+        throw lastQuotaOrRateLimitError;
+      }
+
+      if (fallbackError.status === 429 && lastQuotaOrRateLimitError) {
+        throw new GeminiRequestError({
+          message:
+            "All configured AI providers are currently rate-limited. Please retry shortly.",
           status: 429,
         });
       }
+
+      throw fallbackError;
     }
 
-    if (isRateLimited) {
-      throw new GeminiRequestError({
-        message:
-          "AI is temporarily busy due to rate limits. Please wait a moment and try again.",
-        status: 429,
-      });
-    }
-
-    // Detect network / connectivity issues
-    if (
-      /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
-        rawMessage,
-      )
-    ) {
-      throw new GeminiRequestError({
-        message:
-          "Unable to reach the AI service. Please check your internet connection.",
-        status: 503,
-      });
-    }
-
-    // Detect invalid API key
-    if (/api.?key|permission.?denied|forbidden/i.test(rawMessage)) {
-      throw new GeminiRequestError({
-        message:
-          "AI API key is invalid or missing. Please check your configuration.",
-        status: 401,
-      });
+    if (lastQuotaOrRateLimitError) {
+      throw lastQuotaOrRateLimitError;
     }
 
     throw new GeminiRequestError({
-      message: "AI service encountered an error. Please try again.",
+      message:
+        fallbackError instanceof Error
+          ? fallbackError.message
+          : "AI service encountered an error. Please try again.",
       status: 500,
     });
   }

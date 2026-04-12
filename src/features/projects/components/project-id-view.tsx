@@ -50,6 +50,22 @@ const RUNTIME_LOG_LIMIT = 700;
 const RUNTIME_DEV_SERVER_KEY = "dev-server";
 const RUNTIME_DEV_SERVER_PORT = 4173;
 const RUNTIME_FILE_SYNC_TIMEOUT_MS = 6000;
+const RUNTIME_COMMAND_SYNC_MAX_PATHS = 600;
+const RUNTIME_COMMAND_SYNC_PATH_CANDIDATES = [
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+  "index.html",
+  "vite.config.js",
+  "vite.config.mjs",
+  "vite.config.ts",
+  "vite.config.cjs",
+  "tsconfig.json",
+  "jsconfig.json",
+] as const;
 
 type RuntimePackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
@@ -192,6 +208,11 @@ const wait = (ms: number) =>
   new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
   });
+
+const isInlineHtmlPreviewFile = (pathOrName: string) => {
+  const lower = pathOrName.trim().toLowerCase();
+  return lower.endsWith(".html") || lower.endsWith(".htm");
+};
 
 const describeRuntimeOperation = (operation: AiPipelineOperation) => {
   if (operation.type === "run_command") {
@@ -840,6 +861,21 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     return filePathById.get(selectedFileId);
   }, [filePathById, selectedFileId]);
 
+  const inlineHtmlPreviewDocument = useMemo(() => {
+    if (selectedFile?.type !== "file") {
+      return null;
+    }
+
+    const previewPath = selectedFilePath ?? selectedFile.name;
+    if (!isInlineHtmlPreviewFile(previewPath)) {
+      return null;
+    }
+
+    return draftContent;
+  }, [draftContent, selectedFile, selectedFilePath]);
+
+  const hasInlineHtmlPreview = !!inlineHtmlPreviewDocument;
+
   const editorTabs = useMemo(
     () =>
       openTabs.map((fileId) => ({
@@ -1198,6 +1234,61 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     });
   }, [appendRuntimeLog]);
 
+  const syncRuntimeCommandChangesToProject = useCallback(
+    async (contextLabel: string) => {
+      const knownPaths = Array.from(projectFileContentByPathRef.current.keys());
+      const trackedPaths = Array.from(
+        new Set([...knownPaths, ...RUNTIME_COMMAND_SYNC_PATH_CANDIDATES]),
+      ).slice(0, RUNTIME_COMMAND_SYNC_MAX_PATHS);
+
+      if (trackedPaths.length === 0) {
+        return;
+      }
+
+      let createdOrUpdated = 0;
+      let deleted = 0;
+
+      for (const path of trackedPaths) {
+        const runtimeContent = await projectWebcontainerRuntime.readFileIfExists(
+          path,
+        );
+        const projectContent = projectFileContentByPathRef.current.get(path);
+
+        if (runtimeContent === null) {
+          if (projectContent === undefined) {
+            continue;
+          }
+
+          await convex.mutation(api.system.agentDeletePath, {
+            projectId,
+            path,
+          });
+          deleted += 1;
+          continue;
+        }
+
+        if (runtimeContent === projectContent) {
+          continue;
+        }
+
+        await convex.mutation(api.system.agentUpdateFileByPath, {
+          projectId,
+          path,
+          content: runtimeContent,
+          createIfMissing: true,
+        });
+        createdOrUpdated += 1;
+      }
+
+      if (createdOrUpdated > 0 || deleted > 0) {
+        appendRuntimeLog(
+          `${contextLabel}: synced runtime file changes (${createdOrUpdated} upserted, ${deleted} deleted).`,
+        );
+      }
+    },
+    [appendRuntimeLog, convex, projectId],
+  );
+
   const maybeStartRuntimeDevServer = useCallback(async () => {
     if (
       runtimeDevServerStartedRef.current &&
@@ -1265,6 +1356,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
       runtimeDependenciesFingerprintRef.current = dependenciesFingerprint;
       appendRuntimeLog("Dependencies installed successfully.");
+      await syncRuntimeCommandChangesToProject("Dependency install");
     }
 
     const devCommand = buildDevServerCommand(packageManager);
@@ -1282,7 +1374,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
     runtimeDevServerStartedRef.current = true;
     return true;
-  }, [appendRuntimeLog]);
+  }, [appendRuntimeLog, syncRuntimeCommandChangesToProject]);
 
   const ensurePreviewReady = useCallback(
     async (options?: { switchToPreview?: boolean; forceRestart?: boolean }) => {
@@ -1338,6 +1430,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       return;
     }
 
+    if (hasInlineHtmlPreview) {
+      return;
+    }
+
     if (runtimePreviewUrl || isPreviewBooting) {
       return;
     }
@@ -1348,7 +1444,13 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
     previewAutoLaunchTriedRef.current = true;
     void ensurePreviewReady({ switchToPreview: false });
-  }, [activeView, ensurePreviewReady, isPreviewBooting, runtimePreviewUrl]);
+  }, [
+    activeView,
+    ensurePreviewReady,
+    hasInlineHtmlPreview,
+    isPreviewBooting,
+    runtimePreviewUrl,
+  ]);
 
   useEffect(() => {
     if (runtimePreviewUrl) {
@@ -1436,6 +1538,9 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               log: appendRuntimeLog,
             });
             appendRuntimeLog(`Command exited with code ${exitCode}.`);
+            await syncRuntimeCommandChangesToProject(
+              `Operation command ${operation.command}`,
+            );
             continue;
           }
 
@@ -1491,6 +1596,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [
       appendRuntimeLog,
       maybeStartRuntimeDevServer,
+      syncRuntimeCommandChangesToProject,
       syncProjectSnapshotToRuntime,
       waitForRuntimeFileSync,
     ],
@@ -1538,6 +1644,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
     try {
       await projectWebcontainerRuntime.ensureBooted(appendRuntimeLog);
+      await syncProjectSnapshotToRuntime();
       const exitCode = await projectWebcontainerRuntime.runCommand({
         command,
         commandArgs,
@@ -1545,6 +1652,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       });
 
       appendRuntimeLog(`Command exited with code ${exitCode}.`);
+      await syncRuntimeCommandChangesToProject(`Manual command ${command}`);
     } catch (error) {
       appendRuntimeLog(
         `Command failed: ${
@@ -1559,6 +1667,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     isRuntimeBusy,
     isRuntimeCommandRunning,
     runtimeCommand,
+    syncRuntimeCommandChangesToProject,
+    syncProjectSnapshotToRuntime,
   ]);
 
   return (
@@ -1743,17 +1853,29 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               </Button>
               <Button
                 className="h-7 px-2.5 text-xs"
-                disabled={!runtimePreviewUrl}
+                disabled={!runtimePreviewUrl && !hasInlineHtmlPreview}
                 onClick={() => {
-                  if (!runtimePreviewUrl) {
+                  if (runtimePreviewUrl) {
+                    window.open(
+                      runtimePreviewUrl,
+                      "_blank",
+                      "noopener,noreferrer",
+                    );
                     return;
                   }
 
-                  window.open(
-                    runtimePreviewUrl,
-                    "_blank",
-                    "noopener,noreferrer",
-                  );
+                  if (!inlineHtmlPreviewDocument) {
+                    return;
+                  }
+
+                  const blob = new Blob([inlineHtmlPreviewDocument], {
+                    type: "text/html;charset=utf-8",
+                  });
+                  const previewUrl = URL.createObjectURL(blob);
+                  window.open(previewUrl, "_blank", "noopener,noreferrer");
+                  window.setTimeout(() => {
+                    URL.revokeObjectURL(previewUrl);
+                  }, 15_000);
                 }}
                 type="button"
                 variant="secondary"
@@ -1763,6 +1885,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               <div className="ml-auto truncate text-[11px] text-[#8f8f8f]">
                 {runtimePreviewUrl
                   ? `Live preview: ${runtimePreviewUrl}`
+                  : hasInlineHtmlPreview
+                    ? `Inline preview: ${selectedFilePath ?? selectedFile?.name ?? "HTML"}`
                   : isPreviewBooting
                     ? "Booting preview..."
                     : "Preview idle."}
@@ -1776,6 +1900,13 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
                   src={runtimePreviewUrl}
                   title="Generated app preview"
+                />
+              ) : hasInlineHtmlPreview && inlineHtmlPreviewDocument ? (
+                <iframe
+                  className="h-full w-full bg-white"
+                  sandbox="allow-scripts allow-forms allow-modals allow-pointer-lock allow-popups"
+                  srcDoc={inlineHtmlPreviewDocument}
+                  title="Inline HTML preview"
                 />
               ) : (
                 <div className="flex h-full items-center justify-center p-6">
