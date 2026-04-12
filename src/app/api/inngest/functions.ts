@@ -129,6 +129,22 @@ const executeConversationFileOperation = async (args: {
   const { projectId, operation } = args;
 
   try {
+    if (operation.type === "run_command") {
+      const argsPreview = operation.commandArgs?.join(" ") ?? "";
+      return {
+        status: "applied",
+        message: `Queued runtime command: ${operation.command}${argsPreview ? ` ${argsPreview}` : ""}`,
+      };
+    }
+
+    if (operation.type === "start_background_command") {
+      const argsPreview = operation.commandArgs?.join(" ") ?? "";
+      return {
+        status: "applied",
+        message: `Queued background command (${operation.key}): ${operation.command}${argsPreview ? ` ${argsPreview}` : ""}`,
+      };
+    }
+
     if (operation.type === "create_file") {
       const result = await convex.mutation(api.system.agentCreateFileByPath, {
         projectId,
@@ -280,6 +296,23 @@ type OrchestrationOperationResult = {
 const toAiPipelineOperation = (
   operation: ConversationFileOperation,
 ): AiPipelineOperation => {
+  if (operation.type === "run_command") {
+    return {
+      type: "run_command",
+      command: operation.command,
+      commandArgs: operation.commandArgs,
+    };
+  }
+
+  if (operation.type === "start_background_command") {
+    return {
+      type: "start_background_command",
+      key: operation.key,
+      command: operation.command,
+      commandArgs: operation.commandArgs,
+    };
+  }
+
   if (operation.type === "rename_path") {
     return {
       type: "rename_path",
@@ -308,7 +341,9 @@ const buildConversationExecutionTrace = (args: {
 }): AiExecutionTrace => ({
   version: 1,
   generatedAt: Date.now(),
-  operations: args.operations.map((operation) => toAiPipelineOperation(operation)),
+  operations: args.operations.map((operation) =>
+    toAiPipelineOperation(operation),
+  ),
   operationResults: args.operationResults.map((result) =>
     toAiPipelineOperationResult(result),
   ),
@@ -337,7 +372,10 @@ const updateAssistantMessage = async (args: {
   };
 
   if (args.reasoningDetails === undefined) {
-    return await convex.mutation(api.system.completeMessageIfProcessing, baseArgs);
+    return await convex.mutation(
+      api.system.completeMessageIfProcessing,
+      baseArgs,
+    );
   }
 
   try {
@@ -357,7 +395,10 @@ const updateAssistantMessage = async (args: {
       },
     );
 
-    return await convex.mutation(api.system.completeMessageIfProcessing, baseArgs);
+    return await convex.mutation(
+      api.system.completeMessageIfProcessing,
+      baseArgs,
+    );
   }
 };
 
