@@ -19,6 +19,17 @@ export type AiPipelineOperation =
       type: "rename_path";
       path: string;
       newPath: string;
+    }
+  | {
+      type: "run_command";
+      command: string;
+      commandArgs?: string[];
+    }
+  | {
+      type: "start_background_command";
+      key: string;
+      command: string;
+      commandArgs?: string[];
     };
 
 export type AiPipelineOperationStatus = "applied" | "skipped" | "failed";
@@ -67,11 +78,44 @@ const normalizePath = (value: unknown) => {
   }
 
   const segments = normalized.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+  if (
+    segments.some((segment) => !segment || segment === "." || segment === "..")
+  ) {
     return null;
   }
 
   return segments.join("/");
+};
+
+const parseCommandArgs = (value: unknown) => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const args = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .slice(0, 40);
+
+  return args.length > 0 ? args : undefined;
+};
+
+const normalizeCommandKey = (value: unknown) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "-");
+  if (!normalized) {
+    return null;
+  }
+
+  if (!/^[a-z0-9._-]{1,64}$/.test(normalized)) {
+    return null;
+  }
+
+  return normalized;
 };
 
 const parseOperation = (value: unknown): AiPipelineOperation | null => {
@@ -80,8 +124,40 @@ const parseOperation = (value: unknown): AiPipelineOperation | null => {
   }
 
   const type = value.type.trim().toLowerCase();
-  const path = normalizePath(value.path);
 
+  if (type === "run_command") {
+    const command =
+      typeof value.command === "string" ? value.command.trim() : "";
+
+    if (!command) {
+      return null;
+    }
+
+    return {
+      type: "run_command",
+      command,
+      commandArgs: parseCommandArgs(value.commandArgs),
+    };
+  }
+
+  if (type === "start_background_command") {
+    const command =
+      typeof value.command === "string" ? value.command.trim() : "";
+    const key = normalizeCommandKey(value.key);
+
+    if (!command || !key) {
+      return null;
+    }
+
+    return {
+      type: "start_background_command",
+      key,
+      command,
+      commandArgs: parseCommandArgs(value.commandArgs),
+    };
+  }
+
+  const path = normalizePath(value.path);
   if (!path) {
     return null;
   }
@@ -138,7 +214,9 @@ const parseStatus = (value: unknown): AiPipelineOperationStatus | null => {
   return null;
 };
 
-const parseOperationResult = (value: unknown): AiPipelineOperationResult | null => {
+const parseOperationResult = (
+  value: unknown,
+): AiPipelineOperationResult | null => {
   if (!isRecord(value)) {
     return null;
   }
@@ -157,7 +235,9 @@ const parseOperationResult = (value: unknown): AiPipelineOperationResult | null 
   };
 };
 
-export const parseAiExecutionTrace = (value: unknown): AiExecutionTrace | null => {
+export const parseAiExecutionTrace = (
+  value: unknown,
+): AiExecutionTrace | null => {
   if (!isRecord(value)) {
     return null;
   }
@@ -165,13 +245,17 @@ export const parseAiExecutionTrace = (value: unknown): AiExecutionTrace | null =
   const operations = Array.isArray(value.operations)
     ? value.operations
         .map((operation) => parseOperation(operation))
-        .filter((operation): operation is AiPipelineOperation => operation !== null)
+        .filter(
+          (operation): operation is AiPipelineOperation => operation !== null,
+        )
     : [];
 
   const operationResults = Array.isArray(value.operationResults)
     ? value.operationResults
         .map((result) => parseOperationResult(result))
-        .filter((result): result is AiPipelineOperationResult => result !== null)
+        .filter(
+          (result): result is AiPipelineOperationResult => result !== null,
+        )
     : [];
 
   const generatedAt =
