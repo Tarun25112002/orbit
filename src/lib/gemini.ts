@@ -1,12 +1,76 @@
 import { GoogleGenAI } from "@google/genai";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 
-const GEMINI_API_KEY =
-  process.env.GEMINI_API_KEY?.trim() ||
-  process.env.GOOGLE_API_KEY?.trim() ||
-  "";
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY?.trim() || "";
-const OPENROUTER_BASE_URL =
-  process.env.OPENROUTER_BASE_URL?.trim() || "https://openrouter.ai/api/v1";
+const LOCAL_ENV_PATH = resolve(process.cwd(), ".env.local");
+let cachedLocalEnvMtimeMs: number | null = null;
+let cachedLocalEnvValues: Record<string, string> = {};
+
+const parseLocalEnvFile = (content: string) => {
+  const values: Record<string, string> = {};
+
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const equalsIndex = trimmed.indexOf("=");
+    if (equalsIndex <= 0) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, equalsIndex).trim();
+    const rawValue = trimmed.slice(equalsIndex + 1).trim();
+
+    const unquoted =
+      (rawValue.startsWith('"') && rawValue.endsWith('"')) ||
+      (rawValue.startsWith("'") && rawValue.endsWith("'"))
+        ? rawValue.slice(1, -1)
+        : rawValue;
+
+    values[key] = unquoted;
+  }
+
+  return values;
+};
+
+const getLocalEnvValues = () => {
+  try {
+    if (!existsSync(LOCAL_ENV_PATH)) {
+      cachedLocalEnvMtimeMs = null;
+      cachedLocalEnvValues = {};
+      return cachedLocalEnvValues;
+    }
+
+    const stats = statSync(LOCAL_ENV_PATH);
+    if (cachedLocalEnvMtimeMs === stats.mtimeMs) {
+      return cachedLocalEnvValues;
+    }
+
+    const content = readFileSync(LOCAL_ENV_PATH, "utf8");
+    cachedLocalEnvValues = parseLocalEnvFile(content);
+    cachedLocalEnvMtimeMs = stats.mtimeMs;
+
+    return cachedLocalEnvValues;
+  } catch {
+    return cachedLocalEnvValues;
+  }
+};
+
+const getRuntimeEnvValue = (name: string) => {
+  const localValue = getLocalEnvValues()[name];
+  if (typeof localValue === "string" && localValue.trim()) {
+    return localValue.trim();
+  }
+
+  const processValue = process.env[name];
+  return typeof processValue === "string" ? processValue.trim() : "";
+};
+
+const getGeminiApiKey = () =>
+  getRuntimeEnvValue("GEMINI_API_KEY") || getRuntimeEnvValue("GOOGLE_API_KEY");
+
 const parseBooleanEnv = (value: string | undefined, fallback: boolean) => {
   if (!value) {
     return fallback;
@@ -23,30 +87,42 @@ const parseBooleanEnv = (value: string | undefined, fallback: boolean) => {
 
   return fallback;
 };
-const OPENROUTER_GEMMA_MODEL =
-  process.env.OPENROUTER_GEMMA_MODEL?.trim() ||
-  "google/gemma-4-26b-a4b-it:free";
-const OPENROUTER_FALLBACK_MODELS = Array.from(
-  new Set([
-    ...(process.env.OPENROUTER_FALLBACK_MODELS?.split(",")
-      .map((model) => model.trim())
-      .filter(Boolean) ?? []),
-    "google/gemma-4-31b-it:free",
-    "google/gemma-3-27b-it:free",
-    "openai/gpt-oss-20b:free",
-  ]),
-);
-const OPENROUTER_APP_NAME = process.env.OPENROUTER_APP_NAME?.trim() || "Orbit";
-const OPENROUTER_HTTP_REFERER =
-  process.env.OPENROUTER_HTTP_REFERER?.trim() || "http://localhost:3000";
-const OPENROUTER_REASONING_ENABLED = parseBooleanEnv(
-  process.env.OPENROUTER_REASONING_ENABLED,
-  true,
-);
-const OPENROUTER_PRESERVE_REASONING_DETAILS = parseBooleanEnv(
-  process.env.OPENROUTER_PRESERVE_REASONING_DETAILS,
-  true,
-);
+
+const getOpenRouterConfig = () => {
+  const fallbackModels = Array.from(
+    new Set([
+      ...(getRuntimeEnvValue("OPENROUTER_FALLBACK_MODELS")
+        .split(",")
+        .map((model) => model.trim())
+        .filter(Boolean) ?? []),
+      "google/gemma-4-31b-it:free",
+      "google/gemma-3-27b-it:free",
+      "openai/gpt-oss-20b:free",
+    ]),
+  );
+
+  return {
+    apiKey: getRuntimeEnvValue("OPENROUTER_API_KEY"),
+    baseUrl:
+      getRuntimeEnvValue("OPENROUTER_BASE_URL") ||
+      "https://openrouter.ai/api/v1",
+    primaryModel:
+      getRuntimeEnvValue("OPENROUTER_GEMMA_MODEL") ||
+      "google/gemma-4-26b-a4b-it:free",
+    fallbackModels,
+    appName: getRuntimeEnvValue("OPENROUTER_APP_NAME") || "Orbit",
+    httpReferer:
+      getRuntimeEnvValue("OPENROUTER_HTTP_REFERER") || "http://localhost:3000",
+    reasoningEnabled: parseBooleanEnv(
+      getRuntimeEnvValue("OPENROUTER_REASONING_ENABLED"),
+      true,
+    ),
+    preserveReasoningDetails: parseBooleanEnv(
+      getRuntimeEnvValue("OPENROUTER_PRESERVE_REASONING_DETAILS"),
+      true,
+    ),
+  };
+};
 
 /** Default model used across the app — configurable via GEMINI_MODEL env var */
 export const GEMINI_MODEL_DEFAULT =
@@ -75,7 +151,7 @@ export class GeminiRequestError extends Error {
 }
 
 const getClient = () => {
-  const apiKey = GEMINI_API_KEY;
+  const apiKey = getGeminiApiKey();
   if (!apiKey) {
     throw new GeminiRequestError({
       message: "GEMINI_API_KEY is not configured",
@@ -173,10 +249,12 @@ const isRetryableOpenRouterError = (error: GeminiRequestError) => {
   return false;
 };
 
-const getOpenRouterModelCandidates = () => {
+const getOpenRouterModelCandidates = (
+  config: ReturnType<typeof getOpenRouterConfig>,
+) => {
   const unique = new Set<string>([
-    OPENROUTER_GEMMA_MODEL,
-    ...OPENROUTER_FALLBACK_MODELS,
+    config.primaryModel,
+    ...config.fallbackModels,
   ]);
   return [...unique];
 };
@@ -203,13 +281,15 @@ const requestOpenRouterCompletion = async (args: {
   enableReasoning: boolean;
   includeReasoningDetails: boolean;
 }) => {
-  const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+  const openRouter = getOpenRouterConfig();
+
+  const response = await fetch(`${openRouter.baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      "HTTP-Referer": OPENROUTER_HTTP_REFERER,
-      "X-Title": OPENROUTER_APP_NAME,
+      Authorization: `Bearer ${openRouter.apiKey}`,
+      "HTTP-Referer": openRouter.httpReferer,
+      "X-Title": openRouter.appName,
     },
     body: JSON.stringify({
       model: args.model,
@@ -323,7 +403,9 @@ const generateOpenRouterFallbackCompletion = async (args: {
   maxTokens?: number;
   temperature?: number;
 }): Promise<GeminiCompletionResult> => {
-  if (!OPENROUTER_API_KEY) {
+  const openRouter = getOpenRouterConfig();
+
+  if (!openRouter.apiKey) {
     throw new GeminiRequestError({
       message:
         "Gemini quota exceeded and OpenRouter fallback is not configured. Add OPENROUTER_API_KEY in .env.local.",
@@ -333,12 +415,12 @@ const generateOpenRouterFallbackCompletion = async (args: {
 
   const strategies = [
     {
-      enableReasoning: OPENROUTER_REASONING_ENABLED,
-      includeReasoningDetails: OPENROUTER_PRESERVE_REASONING_DETAILS,
+      enableReasoning: openRouter.reasoningEnabled,
+      includeReasoningDetails: openRouter.preserveReasoningDetails,
     },
     {
       enableReasoning: false,
-      includeReasoningDetails: OPENROUTER_PRESERVE_REASONING_DETAILS,
+      includeReasoningDetails: openRouter.preserveReasoningDetails,
     },
     {
       enableReasoning: false,
@@ -354,7 +436,7 @@ const generateOpenRouterFallbackCompletion = async (args: {
       ) === index,
   );
 
-  const models = getOpenRouterModelCandidates();
+  const models = getOpenRouterModelCandidates(openRouter);
   let lastError: GeminiRequestError | null = null;
 
   for (const model of models) {
