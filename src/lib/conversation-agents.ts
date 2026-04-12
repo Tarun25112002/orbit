@@ -444,8 +444,7 @@ const runAgentTextWithFallback = async (args: {
       const fallbackRecord = fallbackError as Record<string, unknown>;
 
       if (typeof fallbackRecord.status === "number") {
-        (wrapped as Error & { status?: number }).status =
-          fallbackRecord.status;
+        (wrapped as Error & { status?: number }).status = fallbackRecord.status;
       }
 
       if (typeof fallbackRecord.statusCode === "number") {

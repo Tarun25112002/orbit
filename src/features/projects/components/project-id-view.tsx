@@ -1249,9 +1249,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       let deleted = 0;
 
       for (const path of trackedPaths) {
-        const runtimeContent = await projectWebcontainerRuntime.readFileIfExists(
-          path,
-        );
+        const runtimeContent =
+          await projectWebcontainerRuntime.readFileIfExists(path);
         const projectContent = projectFileContentByPathRef.current.get(path);
 
         if (runtimeContent === null) {
@@ -1887,9 +1886,9 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   ? `Live preview: ${runtimePreviewUrl}`
                   : hasInlineHtmlPreview
                     ? `Inline preview: ${selectedFilePath ?? selectedFile?.name ?? "HTML"}`
-                  : isPreviewBooting
-                    ? "Booting preview..."
-                    : "Preview idle."}
+                    : isPreviewBooting
+                      ? "Booting preview..."
+                      : "Preview idle."}
               </div>
             </div>
 
