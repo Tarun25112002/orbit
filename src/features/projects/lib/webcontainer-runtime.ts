@@ -47,6 +47,8 @@ class ProjectWebcontainerRuntime {
 
   private backgroundProcesses = new Map<string, WebContainerProcess>();
 
+  private syncedProjectFilePaths = new Set<string>();
+
   public onServerReady(handler: ServerReadyHandler) {
     this.serverReadyHandlers.add(handler);
 
@@ -99,6 +101,13 @@ class ProjectWebcontainerRuntime {
       return;
     }
 
+    if (
+      operation.type === "run_command" ||
+      operation.type === "start_background_command"
+    ) {
+      return;
+    }
+
     if (operation.type === "delete_path") {
       await instance.fs.rm(toFsPath(operation.path), {
         force: true,
@@ -145,6 +154,51 @@ class ProjectWebcontainerRuntime {
     await instance.fs.writeFile(toFsPath(operation.path), content);
   }
 
+  public async syncProjectFiles(args: {
+    filesByPath: Map<string, string>;
+    log?: RuntimeLogWriter;
+  }) {
+    const instance = await this.ensureBooted(args.log);
+    const nextPaths = new Set<string>();
+
+    for (const [rawPath, content] of args.filesByPath.entries()) {
+      const normalizedPath = normalizePath(rawPath);
+      if (!normalizedPath) {
+        continue;
+      }
+
+      const parentPath = getParentPath(normalizedPath);
+      if (parentPath) {
+        await instance.fs.mkdir(toFsPath(parentPath), { recursive: true });
+      }
+
+      await instance.fs.writeFile(toFsPath(normalizedPath), content);
+      nextPaths.add(normalizedPath);
+    }
+
+    for (const previousPath of this.syncedProjectFilePaths) {
+      if (nextPaths.has(previousPath)) {
+        continue;
+      }
+
+      try {
+        await instance.fs.rm(toFsPath(previousPath), {
+          force: true,
+          recursive: true,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : String(error ?? "unknown");
+
+        if (!message.includes("ENOENT")) {
+          throw error;
+        }
+      }
+    }
+
+    this.syncedProjectFilePaths = nextPaths;
+  }
+
   public async runCommand(args: {
     command: string;
     commandArgs?: string[];
@@ -167,6 +221,7 @@ class ProjectWebcontainerRuntime {
     log?: RuntimeLogWriter;
   }) {
     if (this.backgroundProcesses.has(args.key)) {
+      args.log?.(`Background command (${args.key}) is already running.`);
       return;
     }
 
@@ -183,7 +238,9 @@ class ProjectWebcontainerRuntime {
     void process.exit
       .then((code) => {
         this.backgroundProcesses.delete(args.key);
-        args.log?.(`Background command (${args.key}) exited with code ${code}.`);
+        args.log?.(
+          `Background command (${args.key}) exited with code ${code}.`,
+        );
       })
       .catch((error) => {
         this.backgroundProcesses.delete(args.key);
@@ -191,6 +248,29 @@ class ProjectWebcontainerRuntime {
           error instanceof Error ? error.message : String(error ?? "unknown");
         args.log?.(`Background command (${args.key}) failed: ${message}`);
       });
+  }
+
+  public stopBackgroundCommand(args: { key: string; log?: RuntimeLogWriter }) {
+    const process = this.backgroundProcesses.get(args.key);
+    if (!process) {
+      return false;
+    }
+
+    try {
+      process.kill();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : String(error ?? "unknown");
+      args.log?.(`Failed to stop background command (${args.key}): ${message}`);
+    }
+
+    this.backgroundProcesses.delete(args.key);
+    args.log?.(`Stopped background command (${args.key}).`);
+    return true;
+  }
+
+  public isBackgroundCommandRunning(key: string) {
+    return this.backgroundProcesses.has(key);
   }
 
   private async pipeProcessOutput(
@@ -219,13 +299,22 @@ class ProjectWebcontainerRuntime {
     this.serverReadyUnsubscribe?.();
     this.serverReadyUnsubscribe = null;
 
+    for (const process of this.backgroundProcesses.values()) {
+      try {
+        process.kill();
+      } catch {
+        // Best-effort shutdown; teardown continues even if a process is already gone.
+      }
+    }
+    this.backgroundProcesses.clear();
+
     if (this.instance) {
       this.instance.teardown();
     }
 
     this.instance = null;
     this.bootPromise = null;
-    this.backgroundProcesses.clear();
+    this.syncedProjectFilePaths.clear();
   }
 }
 
