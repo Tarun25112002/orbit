@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
+import { ConvexHttpClient } from "convex/browser";
 import { convex } from "@/lib/convex-client";
 import { api } from "../../../../../convex/_generated/api";
 import type { Id } from "../../../../../convex/_generated/dataModel";
@@ -13,7 +14,7 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const { userId } = await auth();
+  const { userId, getToken } = await auth();
   if (!userId) {
     return NextResponse.json(
       { error: "Please sign in to continue." },
@@ -37,6 +38,34 @@ export async function POST(request: Request) {
   }
 
   try {
+    const convexToken = await getToken({ template: "convex" });
+    if (!convexToken) {
+      return NextResponse.json(
+        { error: "Could not verify workspace access." },
+        { status: 401 },
+      );
+    }
+
+    const message = await convex.query(api.system.getMessageById, {
+      messageId: parsed.data.messageId as Id<"messages">,
+    });
+
+    if (!message || message.role !== "assistant") {
+      return NextResponse.json(
+        { error: "Assistant message not found." },
+        { status: 404 },
+      );
+    }
+
+    const userConvex = new ConvexHttpClient(
+      process.env.NEXT_PUBLIC_CONVEX_URL!,
+    );
+    userConvex.setAuth(convexToken);
+
+    await userConvex.query(api.conversations.getById, {
+      id: message.conversationId,
+    });
+
     await convex.mutation(api.system.updateMessageContent, {
       messageId: parsed.data.messageId as Id<"messages">,
       content: parsed.data.content,
@@ -46,9 +75,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true });
   } catch (error) {
     const classified = classifyError(error);
-    return NextResponse.json(
-      { error: classified.message },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: classified.message }, { status: 500 });
   }
 }
