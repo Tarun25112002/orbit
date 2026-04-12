@@ -437,7 +437,7 @@ export const conversationMessageRequested = inngest.createFunction(
           let fileContextChars = 0;
           const fileContents: string[] = [];
 
-          for (const file of projectFiles) {
+          for (const file of conversationProjectFiles) {
             if (file.type !== "file" || !file.content) continue;
             if (
               fileContextChars + file.content.length >
@@ -446,7 +446,7 @@ export const conversationMessageRequested = inngest.createFunction(
               break;
             }
 
-            fileContents.push(`--- ${file.name} ---\n${file.content}`);
+            fileContents.push(`--- ${file.path} ---\n${file.content}`);
             fileContextChars += file.content.length;
           }
 
@@ -514,6 +514,30 @@ export const conversationMessageRequested = inngest.createFunction(
                   projectId: conversation.projectId,
                   operation,
                 });
+              },
+              loadProjectFilesAfterOperations: async () => {
+                if (await isAssistantMessageCancelled(assistantMessageId)) {
+                  return conversationProjectFiles;
+                }
+
+                const latestFiles = await convex.query(
+                  api.system.getProjectFiles,
+                  {
+                    projectId: conversation.projectId,
+                  },
+                );
+
+                const latestFileNodes: ProjectFileTreeNode[] = latestFiles.map(
+                  (file) => ({
+                    name: file.name,
+                    type: file.type,
+                    parentId: file.parentId ?? null,
+                    _id: file._id,
+                    content: file.content,
+                  }),
+                );
+
+                return buildConversationProjectFiles(latestFileNodes);
               },
             });
           } catch (orchestrationError) {

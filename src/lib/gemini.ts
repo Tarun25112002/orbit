@@ -26,14 +26,16 @@ const parseBooleanEnv = (value: string | undefined, fallback: boolean) => {
 const OPENROUTER_GEMMA_MODEL =
   process.env.OPENROUTER_GEMMA_MODEL?.trim() ||
   "google/gemma-4-26b-a4b-it:free";
-const OPENROUTER_FALLBACK_MODELS =
-  process.env.OPENROUTER_FALLBACK_MODELS?.split(",")
-    .map((model) => model.trim())
-    .filter(Boolean) ?? [
+const OPENROUTER_FALLBACK_MODELS = Array.from(
+  new Set([
+    ...(process.env.OPENROUTER_FALLBACK_MODELS?.split(",")
+      .map((model) => model.trim())
+      .filter(Boolean) ?? []),
     "google/gemma-4-31b-it:free",
     "google/gemma-3-27b-it:free",
     "openai/gpt-oss-20b:free",
-  ];
+  ]),
+);
 const OPENROUTER_APP_NAME = process.env.OPENROUTER_APP_NAME?.trim() || "Orbit";
 const OPENROUTER_HTTP_REFERER =
   process.env.OPENROUTER_HTTP_REFERER?.trim() || "http://localhost:3000";

@@ -1,5 +1,6 @@
 import { createAgent, gemini, type AgentResult } from "@inngest/agent-kit";
 import { GEMINI_MODEL_DEFAULT, generateGeminiCompletion } from "@/lib/gemini";
+import { classifyError } from "@/lib/errors";
 
 const GEMINI_API_KEY =
   process.env.GEMINI_API_KEY?.trim() ||
@@ -21,8 +22,15 @@ const FILE_OPERATION_INTENT_PATTERN =
   /\b(create|add|delete|remove|rename|move|update|edit|modify|write|rewrite|refactor|fix|implement|make|generate|scaffold|setup|build)\b/i;
 const FILE_OPERATION_PATH_HINT_PATTERN =
   /(?:\b(?:src|app|components|lib|convex|public)\/)|(?:\b[a-z0-9_-]+\.[a-z0-9]{1,8}\b)/i;
+const CODE_GENERATION_INTENT_PATTERN =
+  /\b(create|build|generate|scaffold|setup|implement|develop|write|add|new|from scratch|boilerplate|starter|component|page|route|endpoint|api|project|app)\b/i;
+const CODE_UPDATE_INTENT_PATTERN =
+  /\b(fix|update|modify|edit|refactor|improve|optimize|rename|move|delete|remove|patch|change|cleanup)\b/i;
+const PLACEHOLDER_CONTENT_PATTERN =
+  /\b(?:TODO|TBD)\b|<code here>|your code here/i;
 const MAX_FILE_OPERATIONS_PER_RUN = 12;
 const MAX_PROJECT_FILE_INVENTORY = 220;
+const MAX_STRUCTURED_TREE_ENTRIES = 220;
 
 const createGeminiModel = (
   model: string,
@@ -48,6 +56,8 @@ type SpecialistKey =
   | "implementation"
   | "web_context";
 
+type ConversationIntent = "analysis" | "code_generation" | "code_update";
+
 type AgentAssignment = {
   agent: SpecialistKey;
   task: string;
@@ -60,6 +70,7 @@ type ConversationOrchestrationInput = {
   webContext?: string;
   projectFiles?: ConversationProjectFile[];
   executeFileOperation?: ConversationFileOperationExecutor;
+  loadProjectFilesAfterOperations?: ConversationProjectFilesLoader;
 };
 
 export type ConversationProjectFile = {
@@ -104,6 +115,10 @@ export type ConversationFileOperationExecutionResult = {
 export type ConversationFileOperationExecutor = (
   operation: ConversationFileOperation,
 ) => Promise<ConversationFileOperationExecutionResult>;
+
+export type ConversationProjectFilesLoader = () => Promise<
+  ConversationProjectFile[]
+>;
 
 type ConversationFileOperationResult = {
   operation: ConversationFileOperation;
@@ -159,6 +174,19 @@ const SYNTHESIS_SYSTEM_PROMPT = [
   "Synthesize the specialist reports into one helpful response for the user.",
   "Do not mention internal orchestration unless it is directly useful.",
   "Be concise, accurate, and practical. Use markdown when helpful.",
+  "For implementation or file-change requests, always return this structure:",
+  "Project Structure:",
+  "- folder/",
+  "  - subfolder/",
+  "    - file.ext",
+  "",
+  "Files: (or Updated Files: for change requests)",
+  "// full/path/to/file.ext",
+  "```language",
+  "full file content",
+  "```",
+  "",
+  "Always provide complete runnable code with valid imports/exports and no placeholder text.",
 ].join("\n");
 
 const TITLE_SYSTEM_PROMPT = [
@@ -173,6 +201,9 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "If the user did not request code/file changes, return an empty operations array.",
   "If the user asked to implement, build, fix, create, or modify code, you MUST return one or more operations.",
   "Prefer modifying existing files over creating duplicate files.",
+  "When generating code, produce complete runnable files (including imports/exports and required config/dependencies).",
+  "Never use placeholders like TODO, TBD, or <code here>.",
+  "If the request is a change to existing code, modify only the relevant files.",
   "Use forward-slash relative paths like src/app/page.ts.",
   "Allowed operation types:",
   "- create_file: { type, path, content, overwrite? }",
@@ -313,12 +344,7 @@ const textFromAgentResult = (result: AgentResult) =>
     .trim();
 
 const buildFallbackAgentPrompt = (systemPrompt: string, prompt: string) =>
-  [
-    systemPrompt,
-    "",
-    "Task input:",
-    prompt,
-  ].join("\n");
+  [systemPrompt, "", "Task input:", prompt].join("\n");
 
 const runAgentTextWithFallback = async (args: {
   agent: { run: (prompt: string) => Promise<AgentResult> };
@@ -526,6 +552,49 @@ const parseFileOperationPlan = (
   return operations;
 };
 
+const inferConversationIntent = (message: string): ConversationIntent => {
+  const hasGenerationIntent = CODE_GENERATION_INTENT_PATTERN.test(message);
+  const hasUpdateIntent = CODE_UPDATE_INTENT_PATTERN.test(message);
+
+  if (hasUpdateIntent && !hasGenerationIntent) {
+    return "code_update";
+  }
+
+  if (hasGenerationIntent) {
+    return "code_generation";
+  }
+
+  if (FILE_OPERATION_PATH_HINT_PATTERN.test(message)) {
+    return "code_update";
+  }
+
+  return "analysis";
+};
+
+const validateFileOperationPlan = (operations: ConversationFileOperation[]) => {
+  const issues: string[] = [];
+
+  for (const operation of operations) {
+    if (operation.type !== "create_file" && operation.type !== "update_file") {
+      continue;
+    }
+
+    if (!operation.content.trim()) {
+      issues.push(
+        `${operation.type} ${operation.path} has empty content; full file content is required.`,
+      );
+    }
+
+    if (PLACEHOLDER_CONTENT_PATTERN.test(operation.content)) {
+      issues.push(
+        `${operation.type} ${operation.path} contains placeholder text (TODO/TBD/code here).`,
+      );
+    }
+  }
+
+  return Array.from(new Set(issues));
+};
+
 const buildProjectFileInventory = (files: ConversationProjectFile[] = []) => {
   if (files.length === 0) {
     return "(empty project)";
@@ -557,6 +626,12 @@ const buildFileOperationPlannerPrompt = (
       ? ["", "Scraped web context:", input.webContext].join("\n")
       : "",
     "",
+    "Requirements:",
+    "- For create_file and update_file operations, include complete runnable file content.",
+    "- Do not use TODO, TBD, or placeholder text.",
+    "- If creating a new project/app, include all required folders/files for a runnable setup.",
+    "- If user requested changes, touch only relevant files.",
+    "",
     "Return JSON only with this shape:",
     '{"operations":[{"type":"update_file","path":"src/example.ts","content":"..."}]}',
   ]
@@ -566,6 +641,7 @@ const buildFileOperationPlannerPrompt = (
 const buildFileOperationPlannerRetryPrompt = (
   input: ConversationOrchestrationInput,
   previousOutput: string,
+  issues: string[] = [],
 ) =>
   [
     buildFileOperationPlannerPrompt(input),
@@ -573,6 +649,13 @@ const buildFileOperationPlannerRetryPrompt = (
     "Your previous response was empty or not valid JSON:",
     previousOutput || "(empty)",
     "",
+    issues.length > 0
+      ? [
+          "Plan issues to fix:",
+          ...issues.map((issue) => `- ${issue}`),
+          "",
+        ].join("\n")
+      : "",
     "Return valid JSON only now.",
     "If the request involves implementation or editing, include at least one operation.",
     "Do not include markdown fences.",
@@ -581,6 +664,11 @@ const buildFileOperationPlannerRetryPrompt = (
     .join("\n");
 
 const shouldPlanFileOperations = (input: ConversationOrchestrationInput) => {
+  const intent = inferConversationIntent(input.message);
+  if (intent !== "analysis") {
+    return true;
+  }
+
   if (FILE_OPERATION_INTENT_PATTERN.test(input.message)) {
     return true;
   }
@@ -640,26 +728,43 @@ const planConversationFileOperations = async (
       label: "file-ops-planner",
     });
     const operations = extractOperations(plannerOutput);
+    const issues = validateFileOperationPlan(operations);
 
-    if (operations.length > 0) {
+    if (operations.length > 0 && issues.length === 0) {
       return {
         operations,
         plannerOutput,
       };
     }
 
+    const retryIssues =
+      operations.length === 0 ? ["No valid operations were returned."] : issues;
+
     const retryOutput = await runAgentTextWithFallback({
       agent: fileOperationsPlannerAgent,
-      prompt: buildFileOperationPlannerRetryPrompt(input, plannerOutput),
+      prompt: buildFileOperationPlannerRetryPrompt(
+        input,
+        plannerOutput,
+        retryIssues,
+      ),
       systemPrompt: FILE_OPS_PLANNER_SYSTEM_PROMPT,
       model: FILE_OPS_MODEL,
       label: "file-ops-planner-retry",
     });
     const retryOperations = extractOperations(retryOutput);
+    const retryValidationIssues = validateFileOperationPlan(retryOperations);
 
     return {
-      operations: retryOperations,
-      plannerOutput: retryOutput || plannerOutput,
+      operations: retryValidationIssues.length === 0 ? retryOperations : [],
+      plannerOutput:
+        retryValidationIssues.length === 0
+          ? retryOutput || plannerOutput
+          : [
+              retryOutput || plannerOutput,
+              "",
+              "Plan validation failed:",
+              ...retryValidationIssues.map((issue) => `- ${issue}`),
+            ].join("\n"),
     };
   } catch (error) {
     return {
@@ -720,6 +825,316 @@ const buildFileOperationSummary = (
         `- ${result.status.toUpperCase()}: ${describeFileOperation(result.operation)} (${result.message})`,
     )
     .join("\n");
+};
+
+type StructuredTreeEntry = {
+  path: string;
+  type: "file" | "folder";
+};
+
+type StructuredChangedFile = {
+  path: string;
+  content: string;
+};
+
+type StructuredFolderEntry = {
+  path: string;
+};
+
+type StructuredTreeNode = {
+  folders: Map<string, StructuredTreeNode>;
+  files: Set<string>;
+};
+
+const getCodeBlockLanguage = (path: string) => {
+  const extension = path.split(".").at(-1)?.toLowerCase() ?? "";
+
+  switch (extension) {
+    case "ts":
+      return "ts";
+    case "tsx":
+      return "tsx";
+    case "js":
+      return "js";
+    case "jsx":
+      return "jsx";
+    case "json":
+      return "json";
+    case "css":
+      return "css";
+    case "scss":
+      return "scss";
+    case "html":
+      return "html";
+    case "md":
+      return "md";
+    case "yml":
+    case "yaml":
+      return "yaml";
+    case "sh":
+      return "bash";
+    default:
+      return "text";
+  }
+};
+
+const formatFileCodeBlock = (path: string, content: string) => {
+  const language = getCodeBlockLanguage(path);
+  const normalizedContent = content.replace(/\r\n/g, "\n").trimEnd();
+  const fence = normalizedContent.includes("```") ? "~~~~" : "```";
+
+  return [`// ${path}`, `${fence}${language}`, normalizedContent, fence].join(
+    "\n",
+  );
+};
+
+const isPathRelated = (leftPath: string, rightPath: string) =>
+  leftPath === rightPath ||
+  leftPath.startsWith(`${rightPath}/`) ||
+  rightPath.startsWith(`${leftPath}/`);
+
+const collectStructuredChangedFiles = (
+  operationResults: ConversationFileOperationResult[],
+) => {
+  const changedByPath = new Map<string, StructuredChangedFile>();
+
+  for (const result of operationResults) {
+    if (result.status !== "applied") {
+      continue;
+    }
+
+    if (
+      result.operation.type === "create_file" ||
+      result.operation.type === "update_file"
+    ) {
+      changedByPath.set(result.operation.path, {
+        path: result.operation.path,
+        content: result.operation.content,
+      });
+      continue;
+    }
+
+    if (result.operation.type === "rename_path") {
+      const existing = changedByPath.get(result.operation.path);
+      if (existing) {
+        changedByPath.delete(result.operation.path);
+        changedByPath.set(result.operation.newPath, {
+          ...existing,
+          path: result.operation.newPath,
+        });
+      }
+    }
+  }
+
+  return Array.from(changedByPath.values()).sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+};
+
+const collectStructuredFolderEntries = (
+  operationResults: ConversationFileOperationResult[],
+) => {
+  const folderEntries = new Map<string, StructuredFolderEntry>();
+
+  for (const result of operationResults) {
+    if (result.status !== "applied") {
+      continue;
+    }
+
+    if (result.operation.type === "create_folder") {
+      folderEntries.set(result.operation.path, {
+        path: result.operation.path,
+      });
+    }
+  }
+
+  return Array.from(folderEntries.values()).sort((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+};
+
+const buildStructuredTreeEntries = (args: {
+  changedFiles: StructuredChangedFile[];
+  folderEntries: StructuredFolderEntry[];
+  projectFiles: ConversationProjectFile[];
+}): StructuredTreeEntry[] => {
+  const anchorPaths = new Set([
+    ...args.changedFiles.map((file) => file.path),
+    ...args.folderEntries.map((entry) => entry.path),
+  ]);
+  const changedEntries: StructuredTreeEntry[] = args.changedFiles.map(
+    (file) => ({
+      path: file.path,
+      type: "file",
+    }),
+  );
+  const folderTreeEntries: StructuredTreeEntry[] = args.folderEntries.map(
+    (entry) => ({
+      path: entry.path,
+      type: "folder",
+    }),
+  );
+
+  const anchorEntries = [...changedEntries, ...folderTreeEntries];
+
+  if (args.projectFiles.length === 0) {
+    return anchorEntries;
+  }
+
+  const projectEntries: StructuredTreeEntry[] = args.projectFiles.map(
+    (file) => ({
+      path: file.path,
+      type: file.type,
+    }),
+  );
+
+  const relatedEntries = projectEntries.filter((entry) =>
+    Array.from(anchorPaths).some((anchorPath) =>
+      isPathRelated(entry.path, anchorPath),
+    ),
+  );
+
+  if (relatedEntries.length > 0) {
+    return relatedEntries.slice(0, MAX_STRUCTURED_TREE_ENTRIES);
+  }
+
+  return anchorEntries.slice(0, MAX_STRUCTURED_TREE_ENTRIES);
+};
+
+const buildProjectStructureLines = (entries: StructuredTreeEntry[]) => {
+  const normalizedEntries = entries
+    .map((entry) => {
+      const normalizedPath = normalizeOperationPath(entry.path);
+      return normalizedPath ? { path: normalizedPath, type: entry.type } : null;
+    })
+    .filter((entry): entry is StructuredTreeEntry => entry !== null);
+
+  if (normalizedEntries.length === 0) {
+    return ["- (empty)"];
+  }
+
+  const root: StructuredTreeNode = {
+    folders: new Map(),
+    files: new Set(),
+  };
+
+  for (const entry of normalizedEntries) {
+    const segments = entry.path.split("/");
+    let node = root;
+
+    if (entry.type === "folder") {
+      for (const segment of segments) {
+        let nextNode = node.folders.get(segment);
+        if (!nextNode) {
+          nextNode = {
+            folders: new Map(),
+            files: new Set(),
+          };
+          node.folders.set(segment, nextNode);
+        }
+        node = nextNode;
+      }
+      continue;
+    }
+
+    for (const segment of segments.slice(0, -1)) {
+      let nextNode = node.folders.get(segment);
+      if (!nextNode) {
+        nextNode = {
+          folders: new Map(),
+          files: new Set(),
+        };
+        node.folders.set(segment, nextNode);
+      }
+      node = nextNode;
+    }
+
+    const fileName = segments.at(-1);
+    if (fileName) {
+      node.files.add(fileName);
+    }
+  }
+
+  const render = (node: StructuredTreeNode, depth: number): string[] => {
+    const lines: string[] = [];
+    const indent = "  ".repeat(depth);
+
+    const folderNames = Array.from(node.folders.keys()).sort((left, right) =>
+      left.localeCompare(right),
+    );
+    const fileNames = Array.from(node.files).sort((left, right) =>
+      left.localeCompare(right),
+    );
+
+    for (const folderName of folderNames) {
+      lines.push(`${indent}- ${folderName}/`);
+      const child = node.folders.get(folderName);
+      if (child) {
+        lines.push(...render(child, depth + 1));
+      }
+    }
+
+    for (const fileName of fileNames) {
+      lines.push(`${indent}- ${fileName}`);
+    }
+
+    return lines;
+  };
+
+  const rendered = render(root, 0);
+  return rendered.length > 0 ? rendered : ["- (empty)"];
+};
+
+const shouldUseStructuredCodeResponse = (args: {
+  intent: ConversationIntent;
+  changedFiles: StructuredChangedFile[];
+  folderEntries: StructuredFolderEntry[];
+}) =>
+  (args.intent === "code_generation" || args.intent === "code_update") &&
+  (args.changedFiles.length > 0 || args.folderEntries.length > 0);
+
+const buildStructuredCodeResponse = (args: {
+  intent: ConversationIntent;
+  changedFiles: StructuredChangedFile[];
+  folderEntries: StructuredFolderEntry[];
+  projectFiles: ConversationProjectFile[];
+  operationResults: ConversationFileOperationResult[];
+}) => {
+  const structureLines = buildProjectStructureLines(
+    buildStructuredTreeEntries({
+      changedFiles: args.changedFiles,
+      folderEntries: args.folderEntries,
+      projectFiles: args.projectFiles,
+    }),
+  );
+
+  const fileBlocks = args.changedFiles.map((file) =>
+    formatFileCodeBlock(file.path, file.content),
+  );
+
+  const nonFileOperations = args.operationResults
+    .filter(
+      (result) =>
+        result.status === "applied" &&
+        result.operation.type !== "create_file" &&
+        result.operation.type !== "update_file",
+    )
+    .map(
+      (result) =>
+        `- ${describeFileOperation(result.operation)} (${result.message})`,
+    );
+
+  return [
+    "Project Structure:",
+    ...structureLines,
+    "",
+    args.intent === "code_update" ? "Updated Files:" : "Files:",
+    "",
+    ...fileBlocks,
+    ...(nonFileOperations.length > 0
+      ? ["", "Applied Non-File Operations:", ...nonFileOperations]
+      : []),
+  ].join("\n");
 };
 
 const normalizeAssignments = (
@@ -879,6 +1294,7 @@ const buildSynthesisPrompt = (
     "",
     "Write the final answer for the user now.",
     "If operations were applied, clearly list the changed paths and what changed.",
+    "For code implementation responses, start with Project Structure, then Files/Updated Files with full file contents.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -959,10 +1375,7 @@ export const runConversationAgentOrchestration = async (
         task:
           fallbackAssignment?.task ??
           "Provide practical implementation guidance.",
-        content:
-          reportResult.reason instanceof Error
-            ? `Specialist unavailable: ${reportResult.reason.message}`
-            : "Specialist unavailable due to an unexpected error.",
+        content: classifyError(reportResult.reason).message,
       };
     },
   );
@@ -973,35 +1386,52 @@ export const runConversationAgentOrchestration = async (
     input.executeFileOperation,
   );
 
+  const intent = inferConversationIntent(input.message);
+  const changedFiles = collectStructuredChangedFiles(operationResults);
+  const folderEntries = collectStructuredFolderEntries(operationResults);
+
+  let postOperationProjectFiles = input.projectFiles ?? [];
+  if (
+    operationResults.some((result) => result.status === "applied") &&
+    input.loadProjectFilesAfterOperations
+  ) {
+    try {
+      postOperationProjectFiles = await input.loadProjectFilesAfterOperations();
+    } catch {
+      postOperationProjectFiles = input.projectFiles ?? [];
+    }
+  }
+
   let content = "";
 
-  try {
-    content = await runAgentTextWithFallback({
-      agent: synthesisAgent,
-      prompt: buildSynthesisPrompt(input, reports, operationResults),
-      systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
-      model: SYNTHESIS_MODEL,
-      label: "synthesis",
+  if (
+    shouldUseStructuredCodeResponse({ intent, changedFiles, folderEntries })
+  ) {
+    content = buildStructuredCodeResponse({
+      intent,
+      changedFiles,
+      folderEntries,
+      projectFiles: postOperationProjectFiles,
+      operationResults,
     });
-  } catch (error) {
-    const fallbackErrorMessage =
-      error instanceof Error ? error.message : "Unexpected synthesis error";
-    content = [
-      "I completed what I could, but could not generate the full narrative response.",
-      "",
-      "Filesystem operation results:",
-      buildFileOperationSummary(operationResults),
-      "",
-      "Partial analysis:",
-      reports
-        .map(
-          (report) =>
-            `- ${report.agent}: ${report.content || "No details available."}`,
-        )
-        .join("\n"),
-      "",
-      `Synthesis error: ${fallbackErrorMessage}`,
-    ].join("\n");
+  } else {
+    try {
+      content = await runAgentTextWithFallback({
+        agent: synthesisAgent,
+        prompt: buildSynthesisPrompt(input, reports, operationResults),
+        systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
+        model: SYNTHESIS_MODEL,
+        label: "synthesis",
+      });
+    } catch (error) {
+      const classified = classifyError(error);
+      content =
+        operationResults.length > 0
+          ? [classified.message, buildFileOperationSummary(operationResults)]
+              .filter(Boolean)
+              .join("\n")
+          : classified.message;
+    }
   }
 
   return {
