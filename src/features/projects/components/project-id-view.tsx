@@ -9,11 +9,19 @@ import type { Doc } from "../../../../convex/_generated/dataModel";
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/errors";
 import {
+  ORBIT_AI_EXECUTION_TRACE_EVENT,
+  type AiPipelineOperation,
+  type OrbitAiExecutionTraceEventDetail,
+} from "@/lib/ai-execution";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import { Terminal } from "@/components/ai-elements/terminal";
 
 import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
@@ -30,6 +38,7 @@ import { EditorStatusBar } from "../../editor/components/editor-status-bar";
 import { WelcomeTab } from "../../editor/components/welcome-tab";
 import type { CursorState } from "../../editor/store/use-editor-store";
 import { useProjectHeaderContext } from "./project-header-context";
+import { projectWebcontainerRuntime } from "../lib/webcontainer-runtime";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
@@ -37,6 +46,29 @@ const DEFAULT_SIDEBAR_WIDTH = 350;
 const DEFAULT_MAIN_SIZE = 1000;
 const AUTO_SAVE_DELAY_MS = 2000;
 const AUTO_SAVE_RETRY_DELAY_MS = 3000;
+const RUNTIME_LOG_LIMIT = 700;
+const RUNTIME_DEV_SERVER_KEY = "dev-server";
+const RUNTIME_DEV_SERVER_PORT = 4173;
+const RUNTIME_FILE_SYNC_TIMEOUT_MS = 6000;
+
+const tokenizeCommandLine = (value: string) => {
+  const matches = value.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+
+  return matches.map((token) => token.replace(/^(["'])|(["'])$/g, ""));
+};
+
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+
+const describeRuntimeOperation = (operation: AiPipelineOperation) => {
+  if (operation.type === "rename_path") {
+    return `${operation.type} ${operation.path} -> ${operation.newPath}`;
+  }
+
+  return `${operation.type} ${operation.path}`;
+};
 
 const EmptyState = ({ label }: { label: string }) => {
   return (
@@ -464,9 +496,16 @@ const BreadcrumbBar = ({
 
 export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const { setBadge } = useProjectHeaderContext();
-  const [activeView, setActiveView] = useState<"editor" | "preview">("editor");
+  const [activeView, setActiveView] = useState<
+    "editor" | "preview" | "runtime"
+  >("editor");
   const [inlineSuggestionsEnabled, setInlineSuggestionsEnabled] =
     useState(true);
+  const [runtimeLogs, setRuntimeLogs] = useState<string[]>([]);
+  const [runtimePreviewUrl, setRuntimePreviewUrl] = useState("");
+  const [runtimeCommand, setRuntimeCommand] = useState("");
+  const [isRuntimeBusy, setIsRuntimeBusy] = useState(false);
+  const [isRuntimeCommandRunning, setIsRuntimeCommandRunning] = useState(false);
   const [draftContent, setDraftContent] = useState("");
   const [isAutoSaving, setIsAutoSaving] = useState(false);
   const [autoSaveError, setAutoSaveError] = useState<string | null>(null);
@@ -520,6 +559,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const lastSavedContentRef = useRef("");
   const draftContentRef = useRef("");
   const isDirtyRef = useRef(false);
+  const runtimeExecutedMessagesRef = useRef(new Set<string>());
+  const runtimeDependenciesInstalledRef = useRef(false);
+  const runtimeDevServerStartedRef = useRef(false);
+  const projectFileContentByPathRef = useRef(new Map<string, string>());
   const selectedEditableFileIdRef = useRef<Id<"files"> | null>(null);
   const persistFileContentRef = useRef<
     (fileId: Id<"files">, content: string) => Promise<void>
@@ -601,6 +644,43 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     () => buildProjectFilePathMap(projectFiles ?? []),
     [projectFiles],
   );
+  const projectFileContentByPath = useMemo(() => {
+    const byPath = new Map<string, string>();
+
+    for (const item of projectFiles ?? []) {
+      if (item.type !== "file") {
+        continue;
+      }
+
+      const path = filePathById.get(item._id);
+      if (!path) {
+        continue;
+      }
+
+      byPath.set(path, item.content ?? "");
+    }
+
+    return byPath;
+  }, [filePathById, projectFiles]);
+
+  useEffect(() => {
+    projectFileContentByPathRef.current = projectFileContentByPath;
+  }, [projectFileContentByPath]);
+
+  const appendRuntimeLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    const line = `[${timestamp}] ${message}`;
+
+    setRuntimeLogs((previous) => {
+      const next = [...previous, line];
+      if (next.length > RUNTIME_LOG_LIMIT) {
+        return next.slice(next.length - RUNTIME_LOG_LIMIT);
+      }
+
+      return next;
+    });
+  }, []);
+
   const selectedFilePath = useMemo(() => {
     if (!selectedFileId) {
       return undefined;
@@ -894,6 +974,229 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     };
   }, [setBadge]);
 
+  useEffect(() => {
+    const unsubscribe = projectWebcontainerRuntime.onServerReady(({ port, url }) => {
+      setRuntimePreviewUrl(url);
+      appendRuntimeLog(`Preview server ready on port ${port}: ${url}`);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [appendRuntimeLog]);
+
+  const waitForRuntimeFileSync = useCallback(
+    async (operations: AiPipelineOperation[]) => {
+      const requiredPaths = operations
+        .filter(
+          (operation) =>
+            operation.type === "create_file" || operation.type === "update_file",
+        )
+        .map((operation) => operation.path);
+
+      if (requiredPaths.length === 0) {
+        return;
+      }
+
+      const deadline = Date.now() + RUNTIME_FILE_SYNC_TIMEOUT_MS;
+
+      while (Date.now() < deadline) {
+        const filesByPath = projectFileContentByPathRef.current;
+        if (requiredPaths.every((path) => filesByPath.has(path))) {
+          return;
+        }
+
+        await wait(120);
+      }
+    },
+    [],
+  );
+
+  const maybeStartRuntimeDevServer = useCallback(async () => {
+    if (runtimeDevServerStartedRef.current) {
+      return;
+    }
+
+    const packageJson = projectFileContentByPathRef.current.get("package.json");
+    if (!packageJson) {
+      return;
+    }
+
+    let hasDevScript = false;
+    try {
+      const parsed = JSON.parse(packageJson) as {
+        scripts?: Record<string, string>;
+      };
+      hasDevScript = typeof parsed.scripts?.dev === "string";
+    } catch {
+      appendRuntimeLog("Skipping preview server start: package.json is invalid JSON.");
+      return;
+    }
+
+    if (!hasDevScript) {
+      appendRuntimeLog("Skipping preview server start: no npm dev script found.");
+      return;
+    }
+
+    if (!runtimeDependenciesInstalledRef.current) {
+      appendRuntimeLog("Installing dependencies with npm install...");
+      const installExitCode = await projectWebcontainerRuntime.runCommand({
+        command: "npm",
+        commandArgs: ["install"],
+        log: appendRuntimeLog,
+      });
+
+      if (installExitCode !== 0) {
+        appendRuntimeLog(
+          `Dependency install failed with exit code ${installExitCode}.`,
+        );
+        return;
+      }
+
+      runtimeDependenciesInstalledRef.current = true;
+      appendRuntimeLog("Dependencies installed successfully.");
+    }
+
+    appendRuntimeLog(
+      `Starting npm run dev on port ${RUNTIME_DEV_SERVER_PORT}...`,
+    );
+
+    await projectWebcontainerRuntime.startBackgroundCommand({
+      key: RUNTIME_DEV_SERVER_KEY,
+      command: "npm",
+      commandArgs: [
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        String(RUNTIME_DEV_SERVER_PORT),
+      ],
+      log: appendRuntimeLog,
+    });
+
+    runtimeDevServerStartedRef.current = true;
+  }, [appendRuntimeLog]);
+
+  const runAiExecutionTrace = useCallback(
+    async (detail: OrbitAiExecutionTraceEventDetail) => {
+      if (runtimeExecutedMessagesRef.current.has(detail.assistantMessageId)) {
+        return;
+      }
+
+      runtimeExecutedMessagesRef.current.add(detail.assistantMessageId);
+      setActiveView("runtime");
+      setIsRuntimeBusy(true);
+      appendRuntimeLog(`AI execution started for ${detail.assistantMessageId}.`);
+
+      try {
+        await projectWebcontainerRuntime.ensureBooted(appendRuntimeLog);
+        await waitForRuntimeFileSync(detail.trace.operations);
+
+        if (detail.trace.operations.length === 0) {
+          appendRuntimeLog("No file operations were planned for this request.");
+        }
+
+        for (const [index, operation] of detail.trace.operations.entries()) {
+          appendRuntimeLog(
+            `Step ${index + 1}/${detail.trace.operations.length}: ${describeRuntimeOperation(operation)}`,
+          );
+
+          await projectWebcontainerRuntime.applyOperation({
+            operation,
+            readFileContentByPath: (path) =>
+              projectFileContentByPathRef.current.get(path),
+          });
+
+          const result = detail.trace.operationResults[index];
+          if (result) {
+            const statusLabel = result.status.toUpperCase();
+            const message = result.message.trim();
+            appendRuntimeLog(
+              `${statusLabel}: ${message || describeRuntimeOperation(result.operation)}`,
+            );
+          }
+        }
+
+        await maybeStartRuntimeDevServer();
+      } catch (error) {
+        runtimeExecutedMessagesRef.current.delete(detail.assistantMessageId);
+        appendRuntimeLog(
+          `Execution pipeline failed: ${
+            error instanceof Error ? error.message : String(error ?? "unknown")
+          }`,
+        );
+      } finally {
+        setIsRuntimeBusy(false);
+      }
+    },
+    [appendRuntimeLog, maybeStartRuntimeDevServer, waitForRuntimeFileSync],
+  );
+
+  useEffect(() => {
+    const onExecutionTrace = (event: Event) => {
+      const customEvent = event as CustomEvent<OrbitAiExecutionTraceEventDetail>;
+      if (!customEvent.detail) {
+        return;
+      }
+
+      void runAiExecutionTrace(customEvent.detail);
+    };
+
+    window.addEventListener(
+      ORBIT_AI_EXECUTION_TRACE_EVENT,
+      onExecutionTrace as EventListener,
+    );
+
+    return () => {
+      window.removeEventListener(
+        ORBIT_AI_EXECUTION_TRACE_EVENT,
+        onExecutionTrace as EventListener,
+      );
+    };
+  }, [runAiExecutionTrace]);
+
+  const handleRunRuntimeCommand = useCallback(async () => {
+    const rawCommand = runtimeCommand.trim();
+    if (!rawCommand || isRuntimeCommandRunning) {
+      return;
+    }
+
+    const [command, ...commandArgs] = tokenizeCommandLine(rawCommand);
+    if (!command) {
+      return;
+    }
+
+    setRuntimeCommand("");
+    setActiveView("runtime");
+    setIsRuntimeCommandRunning(true);
+    appendRuntimeLog(`$ ${rawCommand}`);
+
+    try {
+      await projectWebcontainerRuntime.ensureBooted(appendRuntimeLog);
+      const exitCode = await projectWebcontainerRuntime.runCommand({
+        command,
+        commandArgs,
+        log: appendRuntimeLog,
+      });
+
+      appendRuntimeLog(`Command exited with code ${exitCode}.`);
+    } catch (error) {
+      appendRuntimeLog(
+        `Command failed: ${
+          error instanceof Error ? error.message : String(error ?? "unknown")
+        }`,
+      );
+    } finally {
+      setIsRuntimeCommandRunning(false);
+    }
+  }, [
+    appendRuntimeLog,
+    isRuntimeCommandRunning,
+    runtimeCommand,
+  ]);
+
   return (
     <div className="h-full flex flex-col">
       <nav className="h-8.75 flex items-center bg-sidebar border-b">
@@ -906,6 +1209,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           label="Preview"
           isActive={activeView === "preview"}
           onClick={() => setActiveView("preview")}
+        />
+        <Tab
+          label="Runtime"
+          isActive={activeView === "runtime"}
+          onClick={() => setActiveView("runtime")}
         />
       </nav>
       <div className="flex-1 relative">
@@ -1059,6 +1367,83 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               </pre>
             </div>
           )}
+        </div>
+        <div
+          className={cn(
+            "absolute inset-0",
+            activeView === "runtime" ? "visible" : "invisible",
+          )}
+        >
+          <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_minmax(0,24rem)] bg-[#111111]">
+            <div className="border-b border-[#2d2d2d]">
+              {runtimePreviewUrl ? (
+                <iframe
+                  className="h-full w-full"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
+                  src={runtimePreviewUrl}
+                  title="WebContainer preview"
+                />
+              ) : (
+                <EmptyState label="Runtime preview will appear after a dev server starts." />
+              )}
+            </div>
+
+            <div className="min-h-0 p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <Input
+                  className="h-8 bg-[#1f1f1f] text-xs text-[#d4d4d4]"
+                  onChange={(event) => setRuntimeCommand(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") {
+                      return;
+                    }
+
+                    event.preventDefault();
+                    void handleRunRuntimeCommand();
+                  }}
+                  placeholder="Run command in WebContainer (for example: npm test)"
+                  value={runtimeCommand}
+                />
+                <Button
+                  className="h-8 px-3 text-xs"
+                  disabled={
+                    !runtimeCommand.trim() ||
+                    isRuntimeCommandRunning ||
+                    isRuntimeBusy
+                  }
+                  onClick={() => {
+                    void handleRunRuntimeCommand();
+                  }}
+                  type="button"
+                >
+                  Run
+                </Button>
+                <Button
+                  className="h-8 px-3 text-xs"
+                  onClick={() => setRuntimeLogs([])}
+                  type="button"
+                  variant="secondary"
+                >
+                  Clear
+                </Button>
+              </div>
+
+              <div className="mb-2 text-[11px] text-[#8f8f8f]">
+                {isRuntimeBusy
+                  ? "Applying AI execution steps in WebContainer..."
+                  : isRuntimeCommandRunning
+                    ? "Running command..."
+                    : "Runtime idle."}
+              </div>
+
+              <Terminal
+                className="h-[calc(100%-3rem)] border-[#2d2d2d]"
+                isStreaming={isRuntimeBusy || isRuntimeCommandRunning}
+                onClear={() => setRuntimeLogs([])}
+                output={runtimeLogs.join("\n")}
+              />
+            </div>
+          </div>
         </div>
       </div>
     </div>

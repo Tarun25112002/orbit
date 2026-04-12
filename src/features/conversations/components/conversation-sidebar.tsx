@@ -13,6 +13,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { classifyError, type ClassifiedError } from "@/lib/errors";
+import {
+  ORBIT_AI_EXECUTION_TRACE_EVENT,
+  parseAiExecutionTrace,
+  type AiExecutionTrace,
+  type OrbitAiExecutionTraceEventDetail,
+} from "@/lib/ai-execution";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
 import {
@@ -51,6 +57,69 @@ const STARTER_SUGGESTIONS = [
   "Suggest refactoring improvements",
   "Help me add a new feature",
 ];
+
+const describePipelineOperation = (
+  operation: AiExecutionTrace["operations"][number],
+) => {
+  if (operation.type === "rename_path") {
+    return `${operation.type} ${operation.path} -> ${operation.newPath}`;
+  }
+
+  return `${operation.type} ${operation.path}`;
+};
+
+const extractExecutionTrace = (reasoningDetails: unknown) => {
+  if (typeof reasoningDetails !== "object" || reasoningDetails === null) {
+    return null;
+  }
+
+  const record = reasoningDetails as Record<string, unknown>;
+  return parseAiExecutionTrace(record.executionTrace);
+};
+
+const ExecutionTimeline = ({ trace }: { trace: AiExecutionTrace }) => {
+  if (trace.operationResults.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-2.5 rounded-md border border-[#2d2d2d] bg-[#252526]/70 p-2.5 text-[11px]">
+      <div className="mb-1.5 text-[10px] font-medium tracking-wide text-[#9cdcfe] uppercase">
+        Execution Pipeline
+      </div>
+      <div className="space-y-1">
+        {trace.operationResults.map((result, index) => {
+          const statusColor =
+            result.status === "applied"
+              ? "text-emerald-300"
+              : result.status === "failed"
+                ? "text-red-300"
+                : "text-amber-300";
+
+          return (
+            <div
+              key={`${index}:${result.status}:${result.message}`}
+              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 text-[#c7c7c7]"
+            >
+              <span className="text-[#858585]">{index + 1}.</span>
+              <div className="min-w-0">
+                <div className="break-all">
+                  {describePipelineOperation(result.operation)}
+                </div>
+                {result.message ? (
+                  <div className="text-[#7f7f7f]">{result.message}</div>
+                ) : null}
+              </div>
+              <span className={cn("font-medium uppercase", statusColor)}>
+                {result.status}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
 // ─── Conversation List Item ───────────────────────────────────────────────────
 
@@ -152,14 +221,18 @@ const ChatMessage = ({
   role,
   content,
   status,
+  reasoningDetails,
 }: {
   role: "user" | "assistant";
   content: string;
   status?: string | null;
+  reasoningDetails?: unknown;
 }) => {
   const isProcessing = status === "processing";
   const isFailed = status === "failed";
   const isCancelled = status === "cancelled";
+  const executionTrace =
+    role === "assistant" ? extractExecutionTrace(reasoningDetails) : null;
 
   return (
     <Message from={role}>
@@ -179,7 +252,10 @@ const ChatMessage = ({
             <span>{content || "Response cancelled."}</span>
           </div>
         ) : role === "assistant" ? (
-          <MessageResponse>{content}</MessageResponse>
+          <>
+            <MessageResponse>{content}</MessageResponse>
+            {executionTrace ? <ExecutionTimeline trace={executionTrace} /> : null}
+          </>
         ) : (
           <p className="text-sm whitespace-pre-wrap">{content}</p>
         )}
@@ -206,6 +282,7 @@ const ChatView = ({
   const [cancellingMessageId, setCancellingMessageId] =
     useState<Id<"messages"> | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
+  const dispatchedExecutionTraceRef = useRef<Set<Id<"messages">>>(new Set());
 
   const processingAssistantMessage = [...(messages ?? [])]
     .reverse()
@@ -231,6 +308,43 @@ const ChatView = ({
       setPendingAssistantMessageId(null);
     }
   }, [messages, pendingAssistantMessageId]);
+
+  useEffect(() => {
+    if (!messages || typeof window === "undefined") {
+      return;
+    }
+
+    for (const message of messages) {
+      if (message.role !== "assistant" || message.status !== "completed") {
+        continue;
+      }
+
+      if (dispatchedExecutionTraceRef.current.has(message._id)) {
+        continue;
+      }
+
+      const trace = extractExecutionTrace(message.reasoning_details);
+      if (!trace) {
+        continue;
+      }
+
+      const detail: OrbitAiExecutionTraceEventDetail = {
+        assistantMessageId: message._id,
+        trace,
+      };
+
+      window.dispatchEvent(
+        new CustomEvent<OrbitAiExecutionTraceEventDetail>(
+          ORBIT_AI_EXECUTION_TRACE_EVENT,
+          {
+            detail,
+          },
+        ),
+      );
+
+      dispatchedExecutionTraceRef.current.add(message._id);
+    }
+  }, [messages]);
 
   const handleSend = useCallback(
     async (content: string) => {
@@ -411,6 +525,7 @@ const ChatView = ({
                 role={msg.role}
                 content={msg.content}
                 status={msg.status}
+                reasoningDetails={msg.reasoning_details}
               />
             ))
           )}

@@ -11,6 +11,11 @@ import {
   generateConversationTitle,
   runConversationAgentOrchestration,
 } from "@/lib/conversation-agents";
+import type {
+  AiExecutionTrace,
+  AiPipelineOperation,
+  AiPipelineOperationResult,
+} from "@/lib/ai-execution";
 import {
   generateSuggestion,
   type ParsedSuggestionInput,
@@ -266,16 +271,94 @@ type ConversationMessageRequestedEvent = {
   userId: string;
 };
 
+type OrchestrationOperationResult = {
+  operation: ConversationFileOperation;
+  status: "applied" | "skipped" | "failed";
+  message: string;
+};
+
+const toAiPipelineOperation = (
+  operation: ConversationFileOperation,
+): AiPipelineOperation => {
+  if (operation.type === "rename_path") {
+    return {
+      type: "rename_path",
+      path: operation.path,
+      newPath: operation.newPath,
+    };
+  }
+
+  return {
+    type: operation.type,
+    path: operation.path,
+  };
+};
+
+const toAiPipelineOperationResult = (
+  result: OrchestrationOperationResult,
+): AiPipelineOperationResult => ({
+  operation: toAiPipelineOperation(result.operation),
+  status: result.status,
+  message: result.message,
+});
+
+const buildConversationExecutionTrace = (args: {
+  operations: ConversationFileOperation[];
+  operationResults: OrchestrationOperationResult[];
+}): AiExecutionTrace => ({
+  version: 1,
+  generatedAt: Date.now(),
+  operations: args.operations.map((operation) => toAiPipelineOperation(operation)),
+  operationResults: args.operationResults.map((result) =>
+    toAiPipelineOperationResult(result),
+  ),
+});
+
+const isReasoningDetailsValidatorMismatch = (error: unknown) => {
+  const message =
+    error instanceof Error ? error.message : String(error ?? "unknown-error");
+
+  return (
+    message.includes("ArgumentValidationError") &&
+    message.includes("reasoningDetails")
+  );
+};
+
 const updateAssistantMessage = async (args: {
   assistantMessageId: string;
   content: string;
   status: "completed" | "failed";
+  reasoningDetails?: unknown;
 }) => {
-  return await convex.mutation(api.system.completeMessageIfProcessing, {
+  const baseArgs = {
     messageId: args.assistantMessageId as Id<"messages">,
     content: args.content,
     status: args.status,
-  });
+  };
+
+  if (args.reasoningDetails === undefined) {
+    return await convex.mutation(api.system.completeMessageIfProcessing, baseArgs);
+  }
+
+  try {
+    return await convex.mutation(api.system.completeMessageIfProcessing, {
+      ...baseArgs,
+      reasoningDetails: args.reasoningDetails,
+    });
+  } catch (error) {
+    if (!isReasoningDetailsValidatorMismatch(error)) {
+      throw error;
+    }
+
+    console.warn(
+      "conversation.reasoning-details.validator-mismatch; retrying without reasoning details",
+      {
+        assistantMessageId: args.assistantMessageId,
+      },
+    );
+
+    return await convex.mutation(api.system.completeMessageIfProcessing, baseArgs);
+  }
 };
 
 const isAssistantMessageCancelled = async (assistantMessageId: string) => {
@@ -591,10 +674,19 @@ export const conversationMessageRequested = inngest.createFunction(
       }
 
       const saved = await step.run("save-assistant-message", async () => {
+        const executionTrace = buildConversationExecutionTrace({
+          operations: orchestration.operations,
+          operationResults:
+            orchestration.operationResults as OrchestrationOperationResult[],
+        });
+
         return await updateAssistantMessage({
           assistantMessageId,
           content: orchestration.content,
           status: "completed",
+          reasoningDetails: {
+            executionTrace,
+          },
         });
       });
 

@@ -291,12 +291,23 @@ export const updateMessageContent = mutation({
     messageId: v.id("messages"),
     content: v.string(),
     status: v.union(v.literal("completed"), v.literal("failed")),
+    reasoningDetails: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.messageId, {
+    const patch: {
+      content: string;
+      status: "completed" | "failed";
+      reasoning_details?: unknown;
+    } = {
       content: args.content,
       status: args.status,
-    });
+    };
+
+    if (args.reasoningDetails !== undefined) {
+      patch.reasoning_details = args.reasoningDetails;
+    }
+
+    await ctx.db.patch(args.messageId, patch);
   },
 });
 
@@ -305,6 +316,7 @@ export const completeMessageIfProcessing = mutation({
     messageId: v.id("messages"),
     content: v.string(),
     status: v.union(v.literal("completed"), v.literal("failed")),
+    reasoningDetails: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     const message = await ctx.db.get(args.messageId);
@@ -312,10 +324,20 @@ export const completeMessageIfProcessing = mutation({
       return false;
     }
 
-    await ctx.db.patch(args.messageId, {
+    const patch: {
+      content: string;
+      status: "completed" | "failed";
+      reasoning_details?: unknown;
+    } = {
       content: args.content,
       status: args.status,
-    });
+    };
+
+    if (args.reasoningDetails !== undefined) {
+      patch.reasoning_details = args.reasoningDetails;
+    }
+
+    await ctx.db.patch(args.messageId, patch);
 
     return true;
   },
