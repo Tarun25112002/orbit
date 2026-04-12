@@ -87,6 +87,28 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const classified = classifyError(error);
-    return NextResponse.json({ error: classified.message }, { status: 500 });
+    const statusCode =
+      classified.category === "rate_limit" ||
+      classified.category === "quota_exceeded"
+        ? 429
+        : classified.category === "auth"
+          ? 401
+          : classified.category === "timeout"
+            ? 504
+            : 500;
+
+    return NextResponse.json(
+      { error: classified.message },
+      {
+        status: statusCode,
+        ...(classified.retryAfterSeconds
+          ? {
+              headers: {
+                "Retry-After": String(classified.retryAfterSeconds),
+              },
+            }
+          : {}),
+      },
+    );
   }
 }
