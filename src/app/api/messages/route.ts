@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
+import { ConvexHttpClient } from "convex/browser";
 import { inngest } from "@/inngest/client";
-import { convex } from "@/lib/convex-client";
 import { classifyError } from "@/lib/errors";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
@@ -15,7 +15,7 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const { userId } = await auth();
+  const { userId, getToken } = await auth();
   if (!userId) {
     return NextResponse.json(
       { error: "Please sign in to continue." },
@@ -42,14 +42,62 @@ export async function POST(request: Request) {
     parsed.data;
 
   try {
-    const conversation = await convex.query(api.system.getConversationById, {
-      conversationId: conversationId as Id<"conversations">,
+    const convexToken = await getToken({ template: "convex" });
+    if (!convexToken) {
+      return NextResponse.json(
+        { error: "Could not verify workspace access." },
+        { status: 401 },
+      );
+    }
+
+    const userConvex = new ConvexHttpClient(
+      process.env.NEXT_PUBLIC_CONVEX_URL!,
+    );
+    userConvex.setAuth(convexToken);
+
+    const conversation = await userConvex.query(api.conversations.getById, {
+      id: conversationId as Id<"conversations">,
     });
 
     if (!conversation) {
       return NextResponse.json(
         { error: "Conversation not found" },
         { status: 404 },
+      );
+    }
+
+    const conversationMessages = await userConvex.query(
+      api.conversations.getMessages,
+      {
+        conversationId: conversationId as Id<"conversations">,
+      },
+    );
+
+    const userMessage = conversationMessages.find(
+      (candidate) => candidate._id === (userMessageId as Id<"messages">),
+    );
+    const assistantMessage = conversationMessages.find(
+      (candidate) => candidate._id === (assistantMessageId as Id<"messages">),
+    );
+
+    if (!userMessage || userMessage.role !== "user") {
+      return NextResponse.json(
+        { error: "User message was not found in this conversation." },
+        { status: 400 },
+      );
+    }
+
+    if (!assistantMessage || assistantMessage.role !== "assistant") {
+      return NextResponse.json(
+        { error: "Assistant message was not found in this conversation." },
+        { status: 400 },
+      );
+    }
+
+    if (assistantMessage.status !== "processing") {
+      return NextResponse.json(
+        { error: "Assistant message is no longer processing." },
+        { status: 409 },
       );
     }
 
@@ -60,7 +108,7 @@ export async function POST(request: Request) {
         conversationId,
         userMessageId,
         assistantMessageId,
-        message,
+        message: userMessage.content.trim() || message,
         userId,
       },
     });
