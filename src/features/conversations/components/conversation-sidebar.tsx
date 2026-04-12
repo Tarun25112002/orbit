@@ -61,6 +61,16 @@ const STARTER_SUGGESTIONS = [
 const describePipelineOperation = (
   operation: AiExecutionTrace["operations"][number],
 ) => {
+  if (operation.type === "run_command") {
+    const args = operation.commandArgs?.join(" ") ?? "";
+    return `run_command ${operation.command}${args ? ` ${args}` : ""}`;
+  }
+
+  if (operation.type === "start_background_command") {
+    const args = operation.commandArgs?.join(" ") ?? "";
+    return `start_background_command[${operation.key}] ${operation.command}${args ? ` ${args}` : ""}`;
+  }
+
   if (operation.type === "rename_path") {
     return `${operation.type} ${operation.path} -> ${operation.newPath}`;
   }
@@ -254,7 +264,9 @@ const ChatMessage = ({
         ) : role === "assistant" ? (
           <>
             <MessageResponse>{content}</MessageResponse>
-            {executionTrace ? <ExecutionTimeline trace={executionTrace} /> : null}
+            {executionTrace ? (
+              <ExecutionTimeline trace={executionTrace} />
+            ) : null}
           </>
         ) : (
           <p className="text-sm whitespace-pre-wrap">{content}</p>
@@ -283,6 +295,12 @@ const ChatView = ({
     useState<Id<"messages"> | null>(null);
   const [error, setError] = useState<ClassifiedError | null>(null);
   const dispatchedExecutionTraceRef = useRef<Set<Id<"messages">>>(new Set());
+  const hasHydratedTraceDispatchRef = useRef(false);
+
+  useEffect(() => {
+    dispatchedExecutionTraceRef.current.clear();
+    hasHydratedTraceDispatchRef.current = false;
+  }, [conversationId]);
 
   const processingAssistantMessage = [...(messages ?? [])]
     .reverse()
@@ -311,6 +329,24 @@ const ChatView = ({
 
   useEffect(() => {
     if (!messages || typeof window === "undefined") {
+      return;
+    }
+
+    if (!hasHydratedTraceDispatchRef.current) {
+      for (const message of messages) {
+        if (message.role !== "assistant" || message.status !== "completed") {
+          continue;
+        }
+
+        const trace = extractExecutionTrace(message.reasoning_details);
+        if (!trace) {
+          continue;
+        }
+
+        dispatchedExecutionTraceRef.current.add(message._id);
+      }
+
+      hasHydratedTraceDispatchRef.current = true;
       return;
     }
 
