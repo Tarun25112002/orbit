@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
+import { ConvexHttpClient } from "convex/browser";
 import { inngest } from "@/inngest/client";
 import { convex } from "@/lib/convex-client";
 import { classifyError } from "@/lib/errors";
@@ -12,7 +13,7 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const { userId } = await auth();
+  const { userId, getToken } = await auth();
   if (!userId) {
     return NextResponse.json(
       { error: "Please sign in to continue." },
@@ -38,6 +39,34 @@ export async function POST(request: Request) {
   const { assistantMessageId } = parsed.data;
 
   try {
+    const convexToken = await getToken({ template: "convex" });
+    if (!convexToken) {
+      return NextResponse.json(
+        { error: "Could not verify workspace access." },
+        { status: 401 },
+      );
+    }
+
+    const assistantMessage = await convex.query(api.system.getMessageById, {
+      messageId: assistantMessageId as Id<"messages">,
+    });
+
+    if (!assistantMessage || assistantMessage.role !== "assistant") {
+      return NextResponse.json(
+        { error: "Assistant message not found." },
+        { status: 404 },
+      );
+    }
+
+    const userConvex = new ConvexHttpClient(
+      process.env.NEXT_PUBLIC_CONVEX_URL!,
+    );
+    userConvex.setAuth(convexToken);
+
+    await userConvex.query(api.conversations.getById, {
+      id: assistantMessage.conversationId,
+    });
+
     const cancelled = await convex.mutation(api.system.cancelMessage, {
       messageId: assistantMessageId as Id<"messages">,
     });
@@ -58,9 +87,6 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     const classified = classifyError(error);
-    return NextResponse.json(
-      { error: classified.message },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: classified.message }, { status: 500 });
   }
 }
