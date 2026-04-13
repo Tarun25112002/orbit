@@ -642,12 +642,8 @@ const ChatView = ({
                   ? "bg-[#3e3e42] hover:bg-[#4a4a50] w-auto px-2.5 text-[10px]"
                   : "bg-[#007acc] hover:bg-[#0065a9] w-7",
               )}
-            >
-              {activeAssistantMessageId
-                ? isCancellingActiveAssistant
-                  ? "Cancelling..."
-                  : "Cancel"
-                : undefined}
+              >
+              {activeAssistantMessageId ? undefined : undefined}
             </PromptInputSubmit>
           </PromptInputFooter>
         </PromptInput>
