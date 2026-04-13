@@ -75,6 +75,13 @@ const TIMEOUT_PATTERNS = [
   /gateway.?timeout/i,
 ];
 
+const MODEL_CONFIG_PATTERNS = [
+  /model.*not.*found/i,
+  /invalid model/i,
+  /unknown model/i,
+  /not supported for generatecontent/i,
+];
+
 const AI_UNAVAILABLE_PATTERNS = [
   /model.*not.*found/i,
   /model.*unavailable/i,
@@ -251,6 +258,14 @@ export const classifyError = (error: unknown): ClassifiedError => {
     };
   }
 
+  if (statusCode === 404) {
+    return {
+      message: USER_MESSAGES.validation,
+      category: "validation",
+      retryable: false,
+    };
+  }
+
   // Check rate limiting first (most common AI error)
   if (RATE_LIMIT_PATTERNS.some((p) => p.test(text))) {
     return {
@@ -295,6 +310,14 @@ export const classifyError = (error: unknown): ClassifiedError => {
       message: USER_MESSAGES.timeout,
       category: "timeout",
       retryable: true,
+    };
+  }
+
+  if (MODEL_CONFIG_PATTERNS.some((p) => p.test(text))) {
+    return {
+      message: USER_MESSAGES.validation,
+      category: "validation",
+      retryable: false,
     };
   }
 
