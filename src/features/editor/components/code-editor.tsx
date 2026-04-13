@@ -62,6 +62,7 @@ const ASYNC_SUGGESTION_TIMEOUT_MS = 180_000;
 const INLINE_SUGGESTION_LINE_WINDOW = 20;
 const INLINE_SUGGESTION_CACHE_LIMIT = 30;
 const INLINE_SUGGESTION_MIN_AUTOMATIC_PREFIX_CHARS = 3;
+const INLINE_SUGGESTION_MIN_REQUEST_INTERVAL_MS = 1_200;
 const INLINE_SUGGESTION_ERROR_TOAST_COOLDOWN_MS = 8_000;
 const INLINE_SUGGESTION_PROVIDER_COOLDOWN_FALLBACK_MS = 30_000;
 const INLINE_SUGGESTION_PROVIDER_RATE_LIMIT_PATTERN =
@@ -197,7 +198,7 @@ export const CodeEditor = ({
   onBlur,
   activeFileId,
   projectFiles = [],
-  inlineSuggestionsEnabled = true,
+  inlineSuggestionsEnabled = false,
 }: CodeEditorProps) => {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
@@ -205,9 +206,11 @@ export const CodeEditor = ({
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
   const inlineSuggestionCacheRef = useRef<Map<string, string>>(new Map());
-  const inlineSuggestionsEnabledRef = useRef(true);
+  const inlineSuggestionsEnabledRef = useRef(inlineSuggestionsEnabled);
   const inlineSuggestionCooldownUntilRef = useRef(0);
   const lastInlineSuggestionErrorAtRef = useRef(0);
+  const lastInlineSuggestionRequestAtRef = useRef(0);
+  const inlineSuggestionInFlightRef = useRef(false);
   const inlineSuggestAbortRef = useRef<AbortController | null>(null);
 
   const [selectionBar, setSelectionBar] = useState<{
@@ -390,6 +393,7 @@ export const CodeEditor = ({
     return () => {
       inlineSuggestAbortRef.current?.abort();
       inlineSuggestAbortRef.current = null;
+      inlineSuggestionInFlightRef.current = false;
 
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
@@ -748,7 +752,8 @@ export const CodeEditor = ({
             outcome: "error",
             suggestion: "",
             retryAfterSeconds,
-            message: payload?.error ?? "Inline suggestions are unavailable right now.",
+            message:
+              payload?.error ?? "Inline suggestions are unavailable right now.",
           } satisfies InlineSuggestionFetchResult;
         }
 
@@ -796,11 +801,14 @@ export const CodeEditor = ({
   useEffect(() => {
     if (inlineSuggestionsEnabled) {
       inlineSuggestionCooldownUntilRef.current = 0;
+      lastInlineSuggestionRequestAtRef.current = 0;
       return;
     }
 
     inlineSuggestionCooldownUntilRef.current = 0;
+    lastInlineSuggestionRequestAtRef.current = 0;
     inlineSuggestionCacheRef.current.clear();
+    inlineSuggestionInFlightRef.current = false;
     inlineSuggestAbortRef.current?.abort();
     inlineSuggestAbortRef.current = null;
 
@@ -897,7 +905,9 @@ export const CodeEditor = ({
 
       const nextCode = payload?.suggestion ?? payload?.sugegstions ?? "";
       if (!nextCode) {
-        toast.error("AI did not return a result. Please try again with different instructions.");
+        toast.error(
+          "AI did not return a result. Please try again with different instructions.",
+        );
         return;
       }
 
@@ -938,7 +948,12 @@ export const CodeEditor = ({
         updateSelectionBarLayout();
       });
     } catch (error) {
-      toast.error(getFriendlyErrorMessage(error, "Unable to apply AI changes. Please try again."));
+      toast.error(
+        getFriendlyErrorMessage(
+          error,
+          "Unable to apply AI changes. Please try again.",
+        ),
+      );
     } finally {
       setIsApplyingAi(false);
     }
@@ -1174,7 +1189,10 @@ export const CodeEditor = ({
             }
 
             const lineContent = model.getLineContent(position.lineNumber);
-            const linePrefix = lineContent.slice(0, Math.max(0, position.column - 1));
+            const linePrefix = lineContent.slice(
+              0,
+              Math.max(0, position.column - 1),
+            );
             const lineSuffix = lineContent.slice(position.column - 1);
 
             // Skip if line is empty or whitespace-only
@@ -1198,7 +1216,10 @@ export const CodeEditor = ({
             }
 
             // Skip comment-only lines (user is writing comments, not code)
-            if (/^\s*\/\/\s*$/.test(linePrefix) || /^\s*#\s*$/.test(linePrefix)) {
+            if (
+              /^\s*\/\/\s*$/.test(linePrefix) ||
+              /^\s*#\s*$/.test(linePrefix)
+            ) {
               return { items: [] };
             }
 
@@ -1235,8 +1256,25 @@ export const CodeEditor = ({
               return { items: [] };
             }
 
-            // Abort any previous in-flight request
-            inlineSuggestAbortRef.current?.abort();
+            if (inlineSuggestionInFlightRef.current) {
+              return { items: [] };
+            }
+
+            const now = Date.now();
+            const isAutomaticTrigger =
+              context.triggerKind ===
+              monacoApi.languages.InlineCompletionTriggerKind.Automatic;
+
+            if (
+              isAutomaticTrigger &&
+              now - lastInlineSuggestionRequestAtRef.current <
+                INLINE_SUGGESTION_MIN_REQUEST_INTERVAL_MS
+            ) {
+              return { items: [] };
+            }
+
+            lastInlineSuggestionRequestAtRef.current = now;
+            inlineSuggestionInFlightRef.current = true;
             const controller = new AbortController();
             inlineSuggestAbortRef.current = controller;
 
@@ -1297,6 +1335,7 @@ export const CodeEditor = ({
               if (inlineSuggestAbortRef.current === controller) {
                 inlineSuggestAbortRef.current = null;
               }
+              inlineSuggestionInFlightRef.current = false;
             }
           },
           disposeInlineCompletions: () => {},
