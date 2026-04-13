@@ -662,7 +662,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     "editor" | "preview" | "runtime"
   >("editor");
   const [inlineSuggestionsEnabled, setInlineSuggestionsEnabled] =
-    useState(true);
+    useState(false);
   const [runtimeLogs, setRuntimeLogs] = useState<string[]>([]);
   const [runtimePreviewUrl, setRuntimePreviewUrl] = useState("");
   const [runtimeCommand, setRuntimeCommand] = useState("");
