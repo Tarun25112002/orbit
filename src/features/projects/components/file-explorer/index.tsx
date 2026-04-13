@@ -56,7 +56,7 @@ export const FileExplorer = ({
   const project = useProject(projectId);
   const files = useProjectFiles({
     projectId,
-    enabled: isOpen,
+    enabled: isOpen && project !== undefined && project !== null,
   });
   const treeModel = useMemo(() => buildTreeModel(files ?? []), [files]);
   const itemsById = useMemo(

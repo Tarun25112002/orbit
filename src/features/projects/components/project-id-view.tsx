@@ -1855,11 +1855,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                 disabled={!runtimePreviewUrl && !hasInlineHtmlPreview}
                 onClick={() => {
                   if (runtimePreviewUrl) {
-                    window.open(
-                      runtimePreviewUrl,
-                      "_blank",
-                      "noopener,noreferrer",
-                    );
+                    const previewTab = window.open(runtimePreviewUrl, "_blank");
+                    if (!previewTab) {
+                      setPreviewError(
+                        "Preview tab was blocked by the browser. Allow popups and try again.",
+                      );
+                    }
                     return;
                   }
 
@@ -1879,7 +1880,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                 type="button"
                 variant="secondary"
               >
-                Open New Tab
+                {runtimePreviewUrl ? "Open Connected Tab" : "Open New Tab"}
               </Button>
               <div className="ml-auto truncate text-[11px] text-[#8f8f8f]">
                 {runtimePreviewUrl

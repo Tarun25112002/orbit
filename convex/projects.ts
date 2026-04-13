@@ -84,11 +84,10 @@ export const getById = query({
   handler: async (ctx, args) => {
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.id);
-    if (!project) {
-      throw new Error("Project not found");
-    }
-    if (project.ownerId !== identity.subject) {
-      throw new Error("Unauthorized access to this project");
+    // Return null instead of throwing so route/layout guards can render
+    // a not-found UI without crashing client query consumers.
+    if (!project || project.ownerId !== identity.subject) {
+      return null;
     }
     return project;
   },

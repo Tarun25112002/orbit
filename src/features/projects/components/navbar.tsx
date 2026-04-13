@@ -108,6 +108,16 @@ export const Navbar = ({ projectId }: NavbarProps) => {
           <div className="px-2">
             <Spinner className="size-3.5 text-ring" />
           </div>
+        ) : project === null ? (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>Project unavailable</span>
+            <Link
+              href="/"
+              className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground hover:bg-accent"
+            >
+              Back
+            </Link>
+          </div>
         ) : (
           <div className="flex items-center gap-2">
             <ProjectNameEditor projectId={projectId} name={project.name} />
