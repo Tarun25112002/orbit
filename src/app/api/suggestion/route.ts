@@ -14,6 +14,29 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
+type SuggestionGenerationResult = Awaited<
+  ReturnType<typeof generateSuggestion>
+>;
+
+declare global {
+  var __orbitAutocompleteInFlight__:
+    | Map<string, Promise<SuggestionGenerationResult>>
+    | undefined;
+}
+
+const resolveAutocompleteInFlight = () => {
+  const existing = globalThis.__orbitAutocompleteInFlight__;
+  if (existing) {
+    return existing;
+  }
+
+  const next = new Map<string, Promise<SuggestionGenerationResult>>();
+  globalThis.__orbitAutocompleteInFlight__ = next;
+  return next;
+};
+
+const autocompleteInFlight = resolveAutocompleteInFlight();
+
 const getSessionKey = (request: NextRequest) => {
   const forwardedFor = request.headers.get("x-forwarded-for") ?? "";
   const userAgent = request.headers.get("user-agent") ?? "unknown";
@@ -49,10 +72,14 @@ const buildSuggestionErrorResponse = (error: unknown) => {
         })();
 
   const retryAfterSeconds = normalized.retryAfterSeconds ?? undefined;
+  const errorMessage =
+    normalized.statusCode === 429
+      ? "Suggestion service is rate-limited right now."
+      : normalized.message;
 
   return NextResponse.json(
     {
-      error: normalized.message,
+      error: errorMessage,
       retryAfterSeconds,
     },
     {
@@ -113,6 +140,37 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (prepared.mode === "autocomplete") {
+    const inFlight = autocompleteInFlight.get(prepared.fingerprint);
+    if (inFlight) {
+      try {
+        const generation = await inFlight;
+
+        return NextResponse.json(
+          suggestionRuntime.createCachedResponse({
+            fingerprint: prepared.fingerprint,
+            mode: prepared.mode,
+            suggestion: generation.suggestion,
+            model: generation.modelName,
+          }),
+        );
+      } catch (error) {
+        if (
+          error instanceof SuggestionGenerationError &&
+          error.statusCode === 429
+        ) {
+          const sessionKey = getSessionKey(request);
+          suggestionRuntime.setProviderCooldown(
+            sessionKey,
+            error.retryAfterSeconds,
+          );
+        }
+
+        return buildSuggestionErrorResponse(error);
+      }
+    }
+  }
+
   const sessionKey = getSessionKey(request);
   const providerCooldown = suggestionRuntime.getProviderCooldown(sessionKey);
   if (providerCooldown) {
@@ -147,11 +205,11 @@ export async function POST(request: NextRequest) {
   }
 
   if (prepared.mode === "autocomplete") {
+    const generationPromise = generateSuggestion(prepared.mode, prepared.input);
+    autocompleteInFlight.set(prepared.fingerprint, generationPromise);
+
     try {
-      const generation = await generateSuggestion(
-        prepared.mode,
-        prepared.input,
-      );
+      const generation = await generationPromise;
 
       return NextResponse.json(
         suggestionRuntime.createSyncResponse({
@@ -175,6 +233,11 @@ export async function POST(request: NextRequest) {
       }
 
       return buildSuggestionErrorResponse(error);
+    } finally {
+      const activePromise = autocompleteInFlight.get(prepared.fingerprint);
+      if (activePromise === generationPromise) {
+        autocompleteInFlight.delete(prepared.fingerprint);
+      }
     }
   }
 
