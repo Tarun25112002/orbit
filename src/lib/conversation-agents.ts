@@ -41,6 +41,9 @@ const MAX_PROJECT_FILE_INVENTORY = 220;
 const MAX_STRUCTURED_TREE_ENTRIES = 220;
 const STEPWISE_TASK_INTENT_PATTERN =
   /\b(step|steps|task|tasks|crud|create|read|update|delete|rename|move|folder|file)\b/i;
+const COMMAND_CHAINING_TOKEN_PATTERN = /^(?:&&|\|\||[|;])$/;
+const DISALLOWED_COMMAND_SEQUENCE_PATTERN =
+  /\b(?:git\s+reset\s+--hard|git\s+checkout\s+--|rm\s+-rf|rmdir\s+\/s|del\s+\/(?:s|q|f)|mkfs|format|shutdown|reboot)\b/i;
 
 const createGeminiModel = (
   model: string,
@@ -179,75 +182,39 @@ const CODE_QUALITY_SYSTEM_PROMPT = [
 ].join("\n");
 
 const IMPLEMENTATION_SYSTEM_PROMPT = [
-  "You are Orbit's implementation specialist.",
-  "Focus on concrete code changes, APIs, examples, and practical next steps.",
-  "Prefer local project patterns over new abstractions.",
+  "You are Implementation Specialist - PRIMARY role.",
+  "Write working code that can run.",
+  "For file ops: create complete files with proper imports/exports.",
+  "For framework tasks (Next.js/React/auth/API): create all needed frontend + backend files.",
+  "Include package updates for new dependencies.",
+  "Output: working code only, no TODOs.",
 ].join("\n");
 
 const WEB_CONTEXT_SYSTEM_PROMPT = [
-  "You are Orbit's web-context specialist.",
-  "Use only the supplied scraped web context for external facts.",
-  "Call out when the web context is absent or insufficient.",
+  "Use provided web context only.",
+  "Reference external docs only when provided in input.",
 ].join("\n");
 
 const SYNTHESIS_SYSTEM_PROMPT = [
-  "You are Orbit AI, an intelligent coding assistant embedded in the Orbit code editor.",
-  "Synthesize the specialist reports into one helpful response for the user.",
-  "Do not mention internal orchestration unless it is directly useful.",
-  "Be concise, accurate, and practical. Use markdown when helpful.",
-  "For implementation or file-change requests, always return this structure:",
-  "Project Structure:",
-  "- folder/",
-  "  - subfolder/",
-  "    - file.ext",
-  "",
-  "Files: (or Updated Files: for change requests)",
-  "// full/path/to/file.ext",
-  "```language",
-  "full file content",
-  "```",
-  "",
-  "Always provide complete runnable code with valid imports/exports and no placeholder text.",
+  "Combine findings into final response.",
+  "For file ops: show structure + full file contents.",
+  "Be concise and actionable.",
 ].join("\n");
 
-const TITLE_SYSTEM_PROMPT = [
-  "Create a short title for a coding assistant conversation.",
-  "Return only the title, no quotes, no punctuation at the end.",
-  "Use 3 to 6 words.",
-].join("\n");
+const TITLE_SYSTEM_PROMPT = "Create 3-6 word conversation title.";
 
 const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
-  "You plan deterministic file operations for an IDE assistant.",
-  "Only return JSON. Do not include prose outside JSON.",
-  "If the user did not request code/file changes, return an empty operations array.",
-  "If the user asked to implement, build, fix, create, or modify code, you MUST return one or more operations.",
-  "Plan operations in explicit execution order (step-by-step).",
-  "Prefer modifying existing files over creating duplicate files.",
-  "When generating code, produce complete runnable files (including imports/exports and required config/dependencies).",
-  "Never use placeholders like TODO, TBD, or <code here>.",
-  "If the request is a change to existing code, modify only the relevant files.",
-  "Use forward-slash relative paths like src/app/page.ts.",
-  "CRUD mapping:",
-  "- Create -> create_folder/create_file",
-  "- Update -> update_file",
-  "- Delete -> delete_path",
-  "- Rename/Move -> rename_path",
-  "Read/analyze tasks should not fabricate write operations.",
-  "Allowed operation types:",
-  "- create_file: { type, path, content, overwrite? }",
-  "- create_folder: { type, path }",
-  "- update_file: { type, path, content, createIfMissing? }",
-  "- delete_path: { type, path }",
-  "- rename_path: { type, path, newPath, createMissingParents? }",
-  "- run_command: { type, command, commandArgs? }",
-  "- start_background_command: { type, key, command, commandArgs? }",
-  "Each operation may include optional metadata fields like step/reason; these are ignored by execution but useful for planning clarity.",
-  "JSON shape:",
-  '{"operations":[{"type":"update_file","path":"src/example.ts","content":"..."}]}',
-  "Commands must be deterministic and non-interactive.",
-  "Use command operations for install/build/test/dev-server tasks only; source file edits must be represented as file operations.",
-  "Do not emit operations that require assumptions you cannot justify from the request/context.",
-  "Keep operation count minimal and practical.",
+  "Plan file operations as JSON. You are Orbit AI in a real code editor.",
+  "For implementation requests, you MUST create working code with proper imports/exports.",
+  "CRUD mapping: create_folder/create_file, update_file, delete_path, rename_path.",
+  "Allowed ops: create_file, create_folder, update_file, delete_path, rename_path, run_command, start_background_command.",
+  "Command rules: command is single token (npm/pnpm/yarn), args in commandArgs. No shell chaining (&&, ||, ;).",
+  "For framework requests (auth/API/full-stack/Next.js/React):",
+  "- Include ALL needed files: routes, components, API routes, configs, types",
+  "- Update package.json dependencies with run_command for npm install",
+  "- Include necessary env, config, and setup files",
+  "- Full working code only - no TODOs or placeholders",
+  'Return JSON: {"operations":[{"type":"update_file","path":"src/page.ts","content":"..."}]}',
 ].join("\n");
 
 const SPECIALIST_SYSTEM_PROMPTS: Record<SpecialistKey, string> = {
@@ -465,14 +432,31 @@ const runAgentTextWithFallback = async (args: {
 const extractJsonObject = (value: string) => {
   const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
   const raw = fenced ?? value;
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
+  const objectStart = raw.indexOf("{");
+  const arrayStart = raw.indexOf("[");
 
-  if (start === -1 || end === -1 || end <= start) {
+  if (objectStart === -1 && arrayStart === -1) {
     return null;
   }
 
-  return raw.slice(start, end + 1);
+  const shouldUseObjectRoot =
+    objectStart !== -1 && (arrayStart === -1 || objectStart < arrayStart);
+
+  if (shouldUseObjectRoot) {
+    const end = raw.lastIndexOf("}");
+    if (end === -1 || end <= objectStart) {
+      return null;
+    }
+
+    return raw.slice(objectStart, end + 1);
+  }
+
+  const end = raw.lastIndexOf("]");
+  if (end === -1 || end <= arrayStart) {
+    return null;
+  }
+
+  return raw.slice(arrayStart, end + 1);
 };
 
 const toRecord = (value: unknown): Record<string, unknown> | null =>
@@ -545,6 +529,192 @@ const normalizeCommandKey = (value: unknown) => {
   }
 
   return normalized;
+};
+
+const normalizeOperationType = (
+  value: unknown,
+): ConversationFileOperation["type"] | null => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+
+  switch (normalized) {
+    case "create_file":
+    case "add_file":
+    case "new_file":
+    case "write_file":
+      return "create_file";
+    case "create_folder":
+    case "create_dir":
+    case "create_directory":
+    case "add_folder":
+    case "mkdir":
+      return "create_folder";
+    case "update_file":
+    case "edit_file":
+    case "modify_file":
+    case "rewrite_file":
+    case "patch_file":
+    case "replace_file":
+      return "update_file";
+    case "delete_path":
+    case "delete_file":
+    case "delete_folder":
+    case "remove_path":
+    case "remove_file":
+    case "remove_folder":
+      return "delete_path";
+    case "rename_path":
+    case "move_path":
+    case "rename_file":
+    case "move_file":
+    case "rename_folder":
+    case "move_folder":
+      return "rename_path";
+    case "run_command":
+    case "command":
+    case "execute_command":
+    case "run_shell":
+    case "shell_command":
+      return "run_command";
+    case "start_background_command":
+    case "background_command":
+    case "start_background":
+    case "run_background_command":
+      return "start_background_command";
+    default:
+      return null;
+  }
+};
+
+const tokenizeCommandLine = (value: string) => {
+  const matches = value.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+
+  return matches.map((token) => token.replace(/^("|')|("|')$/g, ""));
+};
+
+const parseCommandSpec = (args: {
+  commandValue: unknown;
+  commandArgsValue: unknown;
+}) => {
+  const rawCommand =
+    typeof args.commandValue === "string" ? args.commandValue.trim() : "";
+
+  if (!rawCommand) {
+    return null;
+  }
+
+  const commandTokens = tokenizeCommandLine(rawCommand);
+  if (commandTokens.length === 0) {
+    return null;
+  }
+
+  const explicitArgs = parseCommandArgs(args.commandArgsValue) ?? [];
+  const [command, ...inlineArgs] = commandTokens;
+  const mergedArgs = [...inlineArgs, ...explicitArgs].slice(0, 40);
+
+  return {
+    command,
+    commandArgs: mergedArgs.length > 0 ? mergedArgs : undefined,
+  };
+};
+
+const getStringField = (
+  record: Record<string, unknown>,
+  keys: string[],
+): string | null => {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+
+  return null;
+};
+
+const unwrapOperationContainer = (value: unknown): unknown => {
+  const record = toRecord(value);
+  if (!record) {
+    return value;
+  }
+
+  const nested =
+    ("operation" in record ? record.operation : undefined) ??
+    ("action" in record ? record.action : undefined) ??
+    ("payload" in record ? record.payload : undefined);
+
+  if (nested === undefined) {
+    return record;
+  }
+
+  return nested;
+};
+
+const collectOperationCandidates = (value: unknown): unknown[] => {
+  if (Array.isArray(value)) {
+    return value.map((candidate) => unwrapOperationContainer(candidate));
+  }
+
+  const record = toRecord(value);
+  if (!record) {
+    return [];
+  }
+
+  const candidates: unknown[] = [];
+
+  const pushCollection = (collection: unknown) => {
+    if (!Array.isArray(collection)) {
+      return;
+    }
+
+    for (const item of collection) {
+      candidates.push(unwrapOperationContainer(item));
+    }
+  };
+
+  pushCollection(record.operations);
+  pushCollection(record.steps);
+  pushCollection(record.actions);
+
+  const planRecord = toRecord(record.plan);
+  if (planRecord) {
+    pushCollection(planRecord.operations);
+    pushCollection(planRecord.steps);
+    pushCollection(planRecord.actions);
+  }
+
+  const batchRecord = toRecord(record.batch);
+  if (batchRecord) {
+    pushCollection(batchRecord.operations);
+    pushCollection(batchRecord.steps);
+    pushCollection(batchRecord.actions);
+  }
+
+  const dataRecord = toRecord(record.data);
+  if (dataRecord) {
+    pushCollection(dataRecord.operations);
+    pushCollection(dataRecord.steps);
+    pushCollection(dataRecord.actions);
+  }
+
+  if (
+    candidates.length === 0 &&
+    (normalizeOperationType(record.type) !== null ||
+      normalizeOperationType(record.operation) !== null ||
+      normalizeOperationType(record.action) !== null ||
+      toRecord(record.operation) !== null ||
+      toRecord(record.action) !== null)
+  ) {
+    candidates.push(unwrapOperationContainer(record));
+  }
+
+  return candidates;
 };
 
 const getParentPath = (path: string) => {
@@ -666,45 +836,65 @@ const parseFileOperation = (
     return null;
   }
 
-  const type =
-    typeof record.type === "string" ? record.type.trim().toLowerCase() : "";
+  const type = normalizeOperationType(
+    record.type ?? record.operation ?? record.action,
+  );
+
+  if (!type) {
+    return null;
+  }
 
   if (type === "run_command") {
-    const command =
-      typeof record.command === "string" ? record.command.trim() : "";
+    const commandSpec = parseCommandSpec({
+      commandValue:
+        record.command ?? record.cmd ?? record.shell ?? record.script,
+      commandArgsValue:
+        record.commandArgs ?? record.args ?? record.arguments ?? record.params,
+    });
 
-    if (!command) {
+    if (!commandSpec) {
       return null;
     }
 
     return {
       type: "run_command",
-      command,
-      commandArgs: parseCommandArgs(record.commandArgs),
+      ...commandSpec,
     };
   }
 
   if (type === "start_background_command") {
-    const command =
-      typeof record.command === "string" ? record.command.trim() : "";
-    const key = normalizeCommandKey(record.key);
+    const commandSpec = parseCommandSpec({
+      commandValue:
+        record.command ?? record.cmd ?? record.shell ?? record.script,
+      commandArgsValue:
+        record.commandArgs ?? record.args ?? record.arguments ?? record.params,
+    });
+    const key = normalizeCommandKey(
+      record.key ?? record.name ?? record.id ?? "background-command",
+    );
 
-    if (!command || !key) {
+    if (!commandSpec || !key) {
       return null;
     }
 
     return {
       type: "start_background_command",
       key,
-      command,
-      commandArgs: parseCommandArgs(record.commandArgs),
+      ...commandSpec,
     };
   }
 
-  const path =
-    typeof record.path === "string"
-      ? normalizeOperationPath(record.path)
-      : null;
+  const path = normalizeOperationPath(
+    getStringField(record, [
+      "path",
+      "filePath",
+      "filepath",
+      "folderPath",
+      "directoryPath",
+      "dirPath",
+      "targetPath",
+    ]) ?? "",
+  );
 
   if (!path) {
     return null;
@@ -725,36 +915,58 @@ const parseFileOperation = (
   }
 
   if (type === "create_file") {
-    if (typeof record.content !== "string") {
+    const content =
+      typeof record.content === "string"
+        ? record.content
+        : typeof record.fileContent === "string"
+          ? record.fileContent
+          : typeof record.value === "string"
+            ? record.value
+            : null;
+
+    if (typeof content !== "string") {
       return null;
     }
 
     return {
       type: "create_file",
       path,
-      content: record.content,
+      content,
       overwrite: parseOptionalBoolean(record.overwrite) ?? true,
     };
   }
 
   if (type === "update_file") {
-    if (typeof record.content !== "string") {
+    const content =
+      typeof record.content === "string"
+        ? record.content
+        : typeof record.fileContent === "string"
+          ? record.fileContent
+          : typeof record.value === "string"
+            ? record.value
+            : null;
+
+    if (typeof content !== "string") {
       return null;
     }
 
     return {
       type: "update_file",
       path,
-      content: record.content,
+      content,
       createIfMissing: parseOptionalBoolean(record.createIfMissing) ?? true,
     };
   }
 
   if (type === "rename_path") {
-    const newPath =
-      typeof record.newPath === "string"
-        ? normalizeOperationPath(record.newPath)
-        : null;
+    const newPath = normalizeOperationPath(
+      getStringField(record, [
+        "newPath",
+        "toPath",
+        "destinationPath",
+        "targetPath",
+      ]) ?? "",
+    );
 
     if (!newPath) {
       return null;
@@ -775,27 +987,7 @@ const parseFileOperation = (
 const parseFileOperationPlan = (
   value: unknown,
 ): ConversationFileOperation[] => {
-  const record = toRecord(value);
-  if (!record) {
-    return [];
-  }
-
-  const rawOperations = Array.isArray(record.operations)
-    ? record.operations
-    : Array.isArray(record.steps)
-      ? record.steps.map((step) => {
-          const stepRecord = toRecord(step);
-          if (!stepRecord) {
-            return step;
-          }
-
-          if ("operation" in stepRecord && stepRecord.operation !== undefined) {
-            return stepRecord.operation;
-          }
-
-          return stepRecord;
-        })
-      : [];
+  const rawOperations = collectOperationCandidates(value);
 
   const operations = rawOperations
     .map((operation) => parseFileOperation(operation))
@@ -834,6 +1026,25 @@ const validateFileOperationPlan = (operations: ConversationFileOperation[]) => {
       if (!operation.command.trim()) {
         issues.push("run_command has an empty command.");
       }
+
+      const commandParts = [
+        operation.command,
+        ...(operation.commandArgs ?? []),
+      ];
+      if (
+        commandParts.some((part) =>
+          COMMAND_CHAINING_TOKEN_PATTERN.test(part.trim()),
+        )
+      ) {
+        issues.push(
+          "run_command must not include shell chaining tokens (&&, ||, ;, |). Use separate operations.",
+        );
+      }
+
+      if (DISALLOWED_COMMAND_SEQUENCE_PATTERN.test(commandParts.join(" "))) {
+        issues.push("run_command contains a disallowed destructive command.");
+      }
+
       continue;
     }
 
@@ -843,6 +1054,27 @@ const validateFileOperationPlan = (operations: ConversationFileOperation[]) => {
           `start_background_command (${operation.key}) has an empty command.`,
         );
       }
+
+      const commandParts = [
+        operation.command,
+        ...(operation.commandArgs ?? []),
+      ];
+      if (
+        commandParts.some((part) =>
+          COMMAND_CHAINING_TOKEN_PATTERN.test(part.trim()),
+        )
+      ) {
+        issues.push(
+          `start_background_command (${operation.key}) must not include shell chaining tokens.`,
+        );
+      }
+
+      if (DISALLOWED_COMMAND_SEQUENCE_PATTERN.test(commandParts.join(" "))) {
+        issues.push(
+          `start_background_command (${operation.key}) contains a disallowed destructive command.`,
+        );
+      }
+
       continue;
     }
 
@@ -881,36 +1113,36 @@ const buildProjectFileInventory = (files: ConversationProjectFile[] = []) => {
 
 const buildFileOperationPlannerPrompt = (
   input: ConversationOrchestrationInput,
-) =>
-  [
-    "User request:",
+) => {
+  const fileInventory = buildProjectFileInventory(input.projectFiles);
+  const hasPackageJson = input.projectFiles?.some(
+    (f) => f.path === "package.json" || f.path.endsWith("/package.json"),
+  );
+
+  return [
+    "USER REQUEST:",
     input.message,
     "",
-    input.history ? `Conversation history:\n${input.history}` : "",
+    input.history ? `HISTORY:\n${input.history.slice(0, 1500)}` : "",
     "",
-    "Known project files:",
-    buildProjectFileInventory(input.projectFiles),
+    "PROJECT FILES:",
+    fileInventory,
     "",
-    "Project context:",
-    input.projectContext,
-    input.webContext
-      ? ["", "Scraped web context:", input.webContext].join("\n")
-      : "",
+    hasPackageJson
+      ? "Package.json exists - can run npm install."
+      : "No package.json - new project setup.",
     "",
-    "Requirements:",
-    "- For create_file and update_file operations, include complete runnable file content.",
-    "- Do not use TODO, TBD, or placeholder text.",
-    "- For shell actions, prefer run_command/start_background_command operations with explicit commandArgs.",
-    "- Commands must be non-interactive and should complete or start reliably in CI-like environments.",
-    "- Do not depend on shell commands to create or edit source files; represent source edits with create_file/update_file operations.",
-    "- If creating a new project/app, include all required folders/files for a runnable setup.",
-    "- If user requested changes, touch only relevant files.",
+    "CONTEXT:",
+    input.projectContext?.slice(0, 10000) || "(no context)",
+    input.webContext ? `\nWEB: ${input.webContext.slice(0, 2000)}` : "",
     "",
-    "Return JSON only with this shape:",
-    '{"operations":[{"type":"update_file","path":"src/example.ts","content":"..."}]}',
+    "TASK: Create complete implementation with all needed files.",
+    'For dependencies: include run_command {command:"npm",commandArgs:["install","package-name"]}',
+    'Return JSON: {"operations":[{"type":"update_file","path":"src/page.ts","content":"full code here"}]}',
   ]
     .filter(Boolean)
     .join("\n");
+};
 
 const buildFileOperationPlannerRetryPrompt = (
   input: ConversationOrchestrationInput,
@@ -1079,23 +1311,17 @@ const executePlannedFileOperations = async (
   const results: ConversationFileOperationResult[] = [];
 
   for (const operation of operations) {
-    if (
-      operation.type === "run_command" ||
-      operation.type === "start_background_command"
-    ) {
-      results.push({
-        operation,
-        status: "applied",
-        message: "Queued for WebContainer runtime execution.",
-      });
-      continue;
-    }
-
     if (!executeFileOperation) {
+      const isCommandOperation =
+        operation.type === "run_command" ||
+        operation.type === "start_background_command";
+
       results.push({
         operation,
-        status: "skipped",
-        message: "No execution handler is available.",
+        status: isCommandOperation ? "applied" : "skipped",
+        message: isCommandOperation
+          ? "Queued for WebContainer runtime execution."
+          : "No execution handler is available.",
       });
       continue;
     }
@@ -1609,6 +1835,47 @@ const buildSynthesisPrompt = (
 export const runConversationAgentOrchestration = async (
   input: ConversationOrchestrationInput,
 ) => {
+  const intent = inferConversationIntent(input.message);
+  const fileOperationPlan = await planConversationFileOperations(input);
+  const operationResults = await executePlannedFileOperations(
+    fileOperationPlan.operations,
+    input.executeFileOperation,
+  );
+  const changedFiles = collectStructuredChangedFiles(operationResults);
+  const folderEntries = collectStructuredFolderEntries(operationResults);
+
+  let postOperationProjectFiles = input.projectFiles ?? [];
+  if (
+    operationResults.some((result) => result.status === "applied") &&
+    input.loadProjectFilesAfterOperations
+  ) {
+    try {
+      postOperationProjectFiles = await input.loadProjectFilesAfterOperations();
+    } catch {
+      postOperationProjectFiles = input.projectFiles ?? [];
+    }
+  }
+
+  if (
+    shouldUseStructuredCodeResponse({ intent, changedFiles, folderEntries })
+  ) {
+    return {
+      content: buildStructuredCodeResponse({
+        intent,
+        changedFiles,
+        folderEntries,
+        projectFiles: postOperationProjectFiles,
+        operationResults,
+      }),
+      assignments: [] as AgentAssignment[],
+      reports: [] as SpecialistReport[],
+      supervisorPlan: "supervisor-skipped-direct-file-ops-mode",
+      operations: fileOperationPlan.operations,
+      operationResults,
+      fileOperationPlannerOutput: fileOperationPlan.plannerOutput,
+    };
+  }
+
   const useReducedAgentPlan = [
     SUPERVISOR_MODEL,
     SPECIALIST_MODEL,
@@ -1706,41 +1973,9 @@ export const runConversationAgentOrchestration = async (
     },
   );
 
-  const fileOperationPlan = await planConversationFileOperations(input);
-  const operationResults = await executePlannedFileOperations(
-    fileOperationPlan.operations,
-    input.executeFileOperation,
-  );
-
-  const intent = inferConversationIntent(input.message);
-  const changedFiles = collectStructuredChangedFiles(operationResults);
-  const folderEntries = collectStructuredFolderEntries(operationResults);
-
-  let postOperationProjectFiles = input.projectFiles ?? [];
-  if (
-    operationResults.some((result) => result.status === "applied") &&
-    input.loadProjectFilesAfterOperations
-  ) {
-    try {
-      postOperationProjectFiles = await input.loadProjectFilesAfterOperations();
-    } catch {
-      postOperationProjectFiles = input.projectFiles ?? [];
-    }
-  }
-
   let content = "";
 
-  if (
-    shouldUseStructuredCodeResponse({ intent, changedFiles, folderEntries })
-  ) {
-    content = buildStructuredCodeResponse({
-      intent,
-      changedFiles,
-      folderEntries,
-      projectFiles: postOperationProjectFiles,
-      operationResults,
-    });
-  } else if (useReducedAgentPlan && reports.length === 1) {
+  if (useReducedAgentPlan && reports.length === 1) {
     const reducedContent = reports[0]?.content.trim() || "";
     content =
       operationResults.length > 0

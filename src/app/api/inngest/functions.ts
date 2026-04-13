@@ -26,10 +26,32 @@ import type { Id } from "../../../../convex/_generated/dataModel";
 
 const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
 const MAX_FILE_CONTEXT_CHARS = 60_000;
+const MAX_FILE_CONTEXT_CHARS_PER_FILE = 12_000;
+const MAX_CONTEXT_FILES = 24;
 const MAX_HISTORY_MESSAGES = 40;
 const ENABLE_CONVERSATION_AI_TITLE = /^(1|true)$/i.test(
   process.env.CONVERSATION_ENABLE_AI_TITLE?.trim() ?? "",
 );
+const FILE_CONTEXT_STOP_WORDS = new Set([
+  "about",
+  "after",
+  "before",
+  "build",
+  "change",
+  "create",
+  "file",
+  "files",
+  "folder",
+  "folders",
+  "from",
+  "into",
+  "make",
+  "next",
+  "project",
+  "route",
+  "using",
+  "with",
+]);
 
 type ProjectFileTreeNode = {
   name: string;
@@ -123,6 +145,98 @@ const buildConversationProjectFiles = (
       content: file.type === "file" ? (file.content ?? "") : undefined,
     }))
     .sort((left, right) => left.path.localeCompare(right.path));
+};
+
+const tokenizeContextQuery = (value: string) => {
+  const tokens = value
+    .toLowerCase()
+    .split(/[^a-z0-9_./-]+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3)
+    .filter((token) => !FILE_CONTEXT_STOP_WORDS.has(token));
+
+  return Array.from(new Set(tokens)).slice(0, 64);
+};
+
+const truncateFileContextContent = (content: string) => {
+  if (content.length <= MAX_FILE_CONTEXT_CHARS_PER_FILE) {
+    return content;
+  }
+
+  return `${content.slice(0, MAX_FILE_CONTEXT_CHARS_PER_FILE)}\n/* ...truncated for context... */`;
+};
+
+const scoreProjectFileForContext = (
+  file: ConversationProjectFile,
+  queryTokens: string[],
+) => {
+  if (file.type !== "file" || !file.content) {
+    return -1;
+  }
+
+  const lowerPath = file.path.toLowerCase();
+  const fileName = lowerPath.split("/").at(-1) ?? lowerPath;
+
+  let score = 0;
+  for (const token of queryTokens) {
+    if (lowerPath.includes(token)) {
+      score += 8;
+    }
+
+    if (fileName.includes(token)) {
+      score += 3;
+    }
+  }
+
+  return score;
+};
+
+const buildRelevantProjectFileContext = (args: {
+  files: ConversationProjectFile[];
+  query: string;
+}) => {
+  const queryTokens = tokenizeContextQuery(args.query);
+  const rankedFiles = args.files
+    .filter(
+      (
+        file,
+      ): file is ConversationProjectFile & { type: "file"; content: string } =>
+        file.type === "file" && typeof file.content === "string",
+    )
+    .map((file) => ({
+      file,
+      score: scoreProjectFileForContext(file, queryTokens),
+    }))
+    .sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      return left.file.path.localeCompare(right.file.path);
+    });
+
+  const selectedBlocks: string[] = [];
+  let totalChars = 0;
+
+  for (const candidate of rankedFiles) {
+    if (selectedBlocks.length >= MAX_CONTEXT_FILES) {
+      break;
+    }
+
+    const content = truncateFileContextContent(candidate.file.content);
+    if (!content.trim()) {
+      continue;
+    }
+
+    if (totalChars + content.length > MAX_FILE_CONTEXT_CHARS) {
+      continue;
+    }
+
+    selectedBlocks.push(`--- ${candidate.file.path} ---\n${content}`);
+    totalChars += content.length;
+  }
+
+  return selectedBlocks;
 };
 
 const executeConversationFileOperation = async (args: {
@@ -556,26 +670,24 @@ export const conversationMessageRequested = inngest.createFunction(
         )
         .join("\n");
 
+      const contextQuery = [
+        message,
+        ...existingMessages
+          .filter((historyMessage) => historyMessage._id !== assistantMessageId)
+          .map((historyMessage) => historyMessage.content.trim())
+          .filter(Boolean)
+          .slice(-MAX_HISTORY_MESSAGES),
+      ].join("\n");
+
       const projectContext = await step.run(
         "build-project-context",
         async () => {
           const fileTree = buildFileTree(projectFileNodes);
 
-          let fileContextChars = 0;
-          const fileContents: string[] = [];
-
-          for (const file of conversationProjectFiles) {
-            if (file.type !== "file" || !file.content) continue;
-            if (
-              fileContextChars + file.content.length >
-              MAX_FILE_CONTEXT_CHARS
-            ) {
-              break;
-            }
-
-            fileContents.push(`--- ${file.path} ---\n${file.content}`);
-            fileContextChars += file.content.length;
-          }
+          const fileContents = buildRelevantProjectFileContext({
+            files: conversationProjectFiles,
+            query: contextQuery,
+          });
 
           return { fileTree, fileContents };
         },
