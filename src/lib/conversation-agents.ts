@@ -24,13 +24,15 @@ const FILE_OPS_MODEL =
   process.env.CONVERSATION_FILE_OPS_MODEL?.trim() || SPECIALIST_MODEL;
 
 const FILE_OPERATION_INTENT_PATTERN =
-  /\b(create|add|delete|remove|rename|move|update|edit|modify|write|rewrite|refactor|fix|implement|make|generate|scaffold|setup|build)\b/i;
+  /\b(create|add|delete|remove|rename|move|update|edit|modify|write|rewrite|refactor|fix|implement|make|generate|scaffold|setup|build|install|uninstall|upgrade|downgrade|run|execute|command|terminal|dependency|dependencies)\b/i;
 const FILE_OPERATION_PATH_HINT_PATTERN =
   /(?:\b(?:src|app|components|lib|convex|public)\/)|(?:\b[a-z0-9_-]+\.[a-z0-9]{1,8}\b)/i;
 const CODE_GENERATION_INTENT_PATTERN =
-  /\b(create|build|generate|scaffold|setup|implement|develop|write|add|new|from scratch|boilerplate|starter|component|page|route|endpoint|api|project|app)\b/i;
+  /\b(create|build|generate|scaffold|setup|implement|develop|write|add|new|from scratch|boilerplate|starter|component|page|route|endpoint|api|project|app|install|dependency|dependencies|run|execute)\b/i;
 const CODE_UPDATE_INTENT_PATTERN =
-  /\b(fix|update|modify|edit|refactor|improve|optimize|rename|move|delete|remove|patch|change|cleanup)\b/i;
+  /\b(fix|update|modify|edit|refactor|improve|optimize|rename|move|delete|remove|patch|change|cleanup|install|uninstall|upgrade|downgrade|dependency|dependencies|run|execute|command|terminal)\b/i;
+const COMMAND_OPERATION_INTENT_PATTERN =
+  /\b(run|execute|install|uninstall|upgrade|downgrade|command|commands|terminal|script|scripts|dependency|dependencies|package\.json|npm|pnpm|yarn|bun)\b/i;
 const PLACEHOLDER_CONTENT_PATTERN =
   /\b(?:TODO|TBD)\b|<code here>|your code here/i;
 const MAX_FILE_OPERATIONS_PER_RUN = Number.parseInt(
@@ -40,7 +42,7 @@ const MAX_FILE_OPERATIONS_PER_RUN = Number.parseInt(
 const MAX_PROJECT_FILE_INVENTORY = 220;
 const MAX_STRUCTURED_TREE_ENTRIES = 220;
 const STEPWISE_TASK_INTENT_PATTERN =
-  /\b(step|steps|task|tasks|crud|create|read|update|delete|rename|move|folder|file)\b/i;
+  /\b(step|steps|task|tasks|crud|create|read|update|delete|rename|move|folder|file|install|dependency|dependencies|run|execute|command|terminal)\b/i;
 const COMMAND_CHAINING_TOKEN_PATTERN = /^(?:&&|\|\||[|;])$/;
 const DISALLOWED_COMMAND_SEQUENCE_PATTERN =
   /\b(?:git\s+reset\s+--hard|git\s+checkout\s+--|rm\s+-rf|rmdir\s+\/s|del\s+\/(?:s|q|f)|mkfs|format|shutdown|reboot)\b/i;
@@ -204,17 +206,17 @@ const SYNTHESIS_SYSTEM_PROMPT = [
 const TITLE_SYSTEM_PROMPT = "Create 3-6 word conversation title.";
 
 const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
-  "Plan file operations as JSON. You are Orbit AI in a real code editor.",
-  "For implementation requests, you MUST create working code with proper imports/exports.",
-  "CRUD mapping: create_folder/create_file, update_file, delete_path, rename_path.",
-  "Allowed ops: create_file, create_folder, update_file, delete_path, rename_path, run_command, start_background_command.",
-  "Command rules: command is single token (npm/pnpm/yarn), args in commandArgs. No shell chaining (&&, ||, ;).",
-  "For framework requests (auth/API/full-stack/Next.js/React):",
-  "- Include ALL needed files: routes, components, API routes, configs, types",
-  "- Update package.json dependencies with run_command for npm install",
-  "- Include necessary env, config, and setup files",
-  "- Full working code only - no TODOs or placeholders",
-  'Return JSON: {"operations":[{"type":"update_file","path":"src/page.ts","content":"..."}]}',
+  "Plan file operations as JSON. You are Orbit AI - a real code editor assistant.",
+  "For implementation tasks, create COMPLETE working code.",
+  "CRUD ops: create_file, create_folder, update_file, delete_path, rename_path.",
+  "Command ops: run_command, start_background_command.",
+  "Command rules: npm/pnpm in command, args in commandArgs. No shell chaining.",
+  "IMPORTANT - For dependencies:",
+  "- Add to package.json using update_file operation",
+  "- Include run_command {command:\"npm\",commandArgs:[\"install\"]} after file changes",
+  "- Include start_background_command {key:\"dev\",command:\"npm\",commandArgs:[\"run\",\"dev\"]} to start dev server",
+  "For Next.js/React/auth/API: create ALL files - routes, components, configs, types.",
+  "Return: {\"operations\":[{\"type\":\"update_file\",\"path\":\"src/page.ts\",\"content\":\"...\"}]}",
 ].join("\n");
 
 const SPECIALIST_SYSTEM_PROMPTS: Record<SpecialistKey, string> = {
@@ -828,6 +830,90 @@ const ensureFolderOperationsForWrites = (
   return normalized;
 };
 
+const detectPackageManagerForInstall = (
+  operations: ConversationFileOperation[],
+  projectFiles: ConversationProjectFile[] = [],
+) => {
+  const hasPath = (path: string) =>
+    operations.some(
+      (operation) =>
+        (operation.type === "create_file" ||
+          operation.type === "update_file") &&
+        operation.path === path,
+    ) || projectFiles.some((file) => file.path === path);
+
+  if (hasPath("pnpm-lock.yaml")) {
+    return "pnpm" as const;
+  }
+
+  if (hasPath("yarn.lock")) {
+    return "yarn" as const;
+  }
+
+  if (hasPath("bun.lock") || hasPath("bun.lockb")) {
+    return "bun" as const;
+  }
+
+  return "npm" as const;
+};
+
+const hasPackageJsonMutation = (operations: ConversationFileOperation[]) =>
+  operations.some(
+    (operation) =>
+      (operation.type === "create_file" || operation.type === "update_file") &&
+      operation.path === "package.json",
+  );
+
+const hasDependencyInstallCommand = (
+  operations: ConversationFileOperation[],
+) => {
+  return operations.some((operation) => {
+    if (operation.type !== "run_command") {
+      return false;
+    }
+
+    const command = operation.command.trim().toLowerCase();
+    const firstArg = operation.commandArgs?.[0]?.trim().toLowerCase();
+    if (!firstArg) {
+      return false;
+    }
+
+    if (command === "npm") {
+      return firstArg === "install" || firstArg === "i" || firstArg === "ci";
+    }
+
+    if (command === "pnpm" || command === "yarn" || command === "bun") {
+      return firstArg === "install";
+    }
+
+    return false;
+  });
+};
+
+const ensureDependencyInstallOperation = (
+  operations: ConversationFileOperation[],
+  projectFiles: ConversationProjectFile[] = [],
+) => {
+  if (!hasPackageJsonMutation(operations)) {
+    return operations;
+  }
+
+  if (hasDependencyInstallCommand(operations)) {
+    return operations;
+  }
+
+  const command = detectPackageManagerForInstall(operations, projectFiles);
+
+  return [
+    ...operations,
+    {
+      type: "run_command",
+      command,
+      commandArgs: ["install"],
+    } satisfies ConversationFileOperation,
+  ];
+};
+
 const parseFileOperation = (
   value: unknown,
 ): ConversationFileOperation | null => {
@@ -1015,6 +1101,10 @@ const inferConversationIntent = (message: string): ConversationIntent => {
     return "code_update";
   }
 
+  if (COMMAND_OPERATION_INTENT_PATTERN.test(message)) {
+    return "code_update";
+  }
+
   return "analysis";
 };
 
@@ -1118,9 +1208,9 @@ const buildFileOperationPlannerPrompt = (
   const hasPackageJson = input.projectFiles?.some(
     (f) => f.path === "package.json" || f.path.endsWith("/package.json"),
   );
-
+  
   return [
-    "USER REQUEST:",
+    "TASK:",
     input.message,
     "",
     input.history ? `HISTORY:\n${input.history.slice(0, 1500)}` : "",
@@ -1128,20 +1218,21 @@ const buildFileOperationPlannerPrompt = (
     "PROJECT FILES:",
     fileInventory,
     "",
-    hasPackageJson
-      ? "Package.json exists - can run npm install."
-      : "No package.json - new project setup.",
+    hasPackageJson 
+      ? "package.json EXISTS - use update_file to add dependencies, run_command for npm install"
+      : "NO package.json - create one with dependencies",
     "",
     "CONTEXT:",
-    input.projectContext?.slice(0, 10000) || "(no context)",
-    input.webContext ? `\nWEB: ${input.webContext.slice(0, 2000)}` : "",
+    input.projectContext?.slice(0, 8000) || "(none)",
     "",
-    "TASK: Create complete implementation with all needed files.",
-    'For dependencies: include run_command {command:"npm",commandArgs:["install","package-name"]}',
-    'Return JSON: {"operations":[{"type":"update_file","path":"src/page.ts","content":"full code here"}]}',
-  ]
-    .filter(Boolean)
-    .join("\n");
+    "REQUIRED ACTIONS:",
+    "1. Create ALL files needed (routes, components, configs)",
+    "2. Update package.json with new dependencies",
+    "3. Run npm install: {command:\"npm\",commandArgs:[\"install\"]}",
+    "4. Start dev server: {key:\"dev\",command:\"npm\",commandArgs:[\"run\",\"dev\"]}",
+    "",
+    "Return JSON: {\"operations\":[{\"type\":\"update_file\",\"path\":\"src/page.ts\",\"content\":\"full code\"}]}",
+  ].filter(Boolean).join("\n");
 };
 
 const buildFileOperationPlannerRetryPrompt = (
@@ -1170,6 +1261,10 @@ const buildFileOperationPlannerRetryPrompt = (
     .join("\n");
 
 const shouldPlanFileOperations = (input: ConversationOrchestrationInput) => {
+  if (COMMAND_OPERATION_INTENT_PATTERN.test(input.message)) {
+    return true;
+  }
+
   const intent = inferConversationIntent(input.message);
   if (intent !== "analysis") {
     return true;
@@ -1247,8 +1342,11 @@ const planConversationFileOperations = async (
       model: FILE_OPS_MODEL,
       label: "file-ops-planner",
     });
-    const operations = ensureFolderOperationsForWrites(
-      extractOperations(plannerOutput),
+    const operations = ensureDependencyInstallOperation(
+      ensureFolderOperationsForWrites(
+        extractOperations(plannerOutput),
+        input.projectFiles,
+      ),
       input.projectFiles,
     ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
     const issues = validateFileOperationPlan(operations);
@@ -1274,8 +1372,11 @@ const planConversationFileOperations = async (
       model: FILE_OPS_MODEL,
       label: "file-ops-planner-retry",
     });
-    const retryOperations = ensureFolderOperationsForWrites(
-      extractOperations(retryOutput),
+    const retryOperations = ensureDependencyInstallOperation(
+      ensureFolderOperationsForWrites(
+        extractOperations(retryOutput),
+        input.projectFiles,
+      ),
       input.projectFiles,
     ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
     const retryValidationIssues = validateFileOperationPlan(retryOperations);
@@ -1645,6 +1746,16 @@ const buildStructuredCodeResponse = (args: {
     formatFileCodeBlock(file.path, file.content),
   );
 
+  // Check for command operations
+  const npmInstallOp = args.operationResults.find(
+    (r) => r.status === "applied" && r.operation.type === "run_command" && 
+    r.operation.command === "npm" && r.operation.commandArgs?.includes("install")
+  );
+  const devServerOp = args.operationResults.find(
+    (r) => r.status === "applied" && r.operation.type === "start_background_command" &&
+    r.operation.key === "dev"
+  );
+
   const nonFileOperations = args.operationResults
     .filter(
       (result) =>
@@ -1657,17 +1768,28 @@ const buildStructuredCodeResponse = (args: {
         `- ${describeFileOperation(result.operation)} (${result.message})`,
     );
 
-  return [
+  const sections = [
     "Project Structure:",
     ...structureLines,
     "",
     args.intent === "code_update" ? "Updated Files:" : "Files:",
     "",
     ...fileBlocks,
-    ...(nonFileOperations.length > 0
-      ? ["", "Applied Non-File Operations:", ...nonFileOperations]
-      : []),
-  ].join("\n");
+  ];
+
+  // Add helpful next steps
+  if (npmInstallOp || devServerOp || nonFileOperations.length > 0) {
+    sections.push("", "Next Steps:");
+    if (npmInstallOp) {
+      sections.push("1. Run `npm install` to install dependencies");
+    }
+    if (devServerOp) {
+      sections.push("2. Run `npm run dev` to start the dev server");
+    }
+    sections.push("", "Operations Applied:", ...nonFileOperations);
+  }
+
+  return sections.join("\n");
 };
 
 const normalizeAssignments = (
