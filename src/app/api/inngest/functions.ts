@@ -27,6 +27,9 @@ import type { Id } from "../../../../convex/_generated/dataModel";
 const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
 const MAX_FILE_CONTEXT_CHARS = 60_000;
 const MAX_HISTORY_MESSAGES = 40;
+const ENABLE_CONVERSATION_AI_TITLE = /^(1|true)$/i.test(
+  process.env.CONVERSATION_ENABLE_AI_TITLE?.trim() ?? "",
+);
 
 type ProjectFileTreeNode = {
   name: string;
@@ -607,6 +610,7 @@ export const conversationMessageRequested = inngest.createFunction(
         assistantMessageId,
       );
       const shouldTitleConversation =
+        ENABLE_CONVERSATION_AI_TITLE &&
         shouldGenerateConversationTitle(conversation.title) &&
         existingMessages.filter(
           (historyMessage) => historyMessage.role === "user",
@@ -693,6 +697,22 @@ export const conversationMessageRequested = inngest.createFunction(
         })(),
       ]);
 
+      console.info("conversation.orchestration.summary", {
+        assistantMessageId,
+        conversationId,
+        assignments: orchestration.assignments.length,
+        operationsPlanned: orchestration.operations.length,
+        operationsApplied: orchestration.operationResults.filter(
+          (result) => result.status === "applied",
+        ).length,
+        operationsFailed: orchestration.operationResults.filter(
+          (result) => result.status === "failed",
+        ).length,
+        plannerOutputPreview: orchestration.fileOperationPlannerOutput
+          .slice(0, 300)
+          .trim(),
+      });
+
       if (generatedTitle) {
         await step.run("save-conversation-title", async () => {
           await convex.mutation(api.system.updateConversationTitle, {
@@ -729,6 +749,13 @@ export const conversationMessageRequested = inngest.createFunction(
             executionTrace,
           },
         });
+      });
+
+      console.info("conversation.orchestration.persisted", {
+        assistantMessageId,
+        conversationId,
+        saved,
+        operationsPlanned: orchestration.operations.length,
       });
 
       return {
