@@ -83,6 +83,93 @@ describe("suggestion route", () => {
     expect(sendMock).not.toHaveBeenCalled();
   });
 
+  it("deduplicates concurrent autocomplete requests with the same fingerprint", async () => {
+    const { POST } = await import("@/app/api/suggestion/route");
+
+    const generationDeferred = (() => {
+      let resolve!: (value: {
+        suggestion: string;
+        modelName: string;
+        attempts: number;
+        latencyMs: number;
+      }) => void;
+
+      const promise = new Promise<{
+        suggestion: string;
+        modelName: string;
+        attempts: number;
+        latencyMs: number;
+      }>((resolvePromise) => {
+        resolve = resolvePromise;
+      });
+
+      return {
+        promise,
+        resolve,
+      };
+    })();
+
+    generateSuggestionMock.mockImplementationOnce(
+      () => generationDeferred.promise,
+    );
+
+    const buildRequest = () =>
+      new NextRequest("http://localhost/api/suggestion", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "vitest",
+          "X-Forwarded-For": "127.0.0.1",
+        },
+        body: JSON.stringify({
+          mode: "autocomplete",
+          fileName: "src/example.ts",
+          language: "TypeScript",
+          code: "const value = 1;",
+          currentLine: "const value = ",
+          textBeforeCursor: "const value = ",
+          textAfterCursor: "1;",
+          cursorOffset: 14,
+        }),
+      });
+
+    const firstResponsePromise = POST(buildRequest());
+    const secondResponsePromise = POST(buildRequest());
+
+    await vi.waitFor(() => {
+      expect(generateSuggestionMock).toHaveBeenCalledTimes(1);
+    });
+
+    generationDeferred.resolve({
+      suggestion: "1_000;",
+      modelName: "google/gemma-3-4b-it:free",
+      attempts: 1,
+      latencyMs: 25,
+    });
+
+    const [firstResponse, secondResponse] = await Promise.all([
+      firstResponsePromise,
+      secondResponsePromise,
+    ]);
+
+    const firstPayload = (await firstResponse.json()) as {
+      execution: string;
+      suggestion: string;
+    };
+    const secondPayload = (await secondResponse.json()) as {
+      execution: string;
+      suggestion: string;
+    };
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(firstPayload.suggestion).toBe("1_000;");
+    expect(secondPayload.suggestion).toBe("1_000;");
+    expect([firstPayload.execution, secondPayload.execution]).toEqual(
+      expect.arrayContaining(["sync", "cache"]),
+    );
+  });
+
   it("returns a queued async handle for transform requests", async () => {
     const { POST } = await import("@/app/api/suggestion/route");
 
