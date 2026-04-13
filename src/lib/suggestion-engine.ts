@@ -40,6 +40,9 @@ const GENERATION_BASE_BACKOFF_MS = Number.parseInt(
   process.env.SUGGESTION_GENERATION_BACKOFF_MS ?? "500",
   10,
 );
+const AUTOCOMPLETE_WEB_CONTEXT_ENABLED = /^(1|true)$/i.test(
+  process.env.SUGGESTION_AUTOCOMPLETE_WEB_CONTEXT_ENABLED?.trim() ?? "",
+);
 
 const projectContextSchema = z.object({
   activeFilePath: z.string().trim().min(1).optional(),
@@ -668,16 +671,20 @@ export async function generateSuggestion(
     }) => void;
   },
 ): Promise<SuggestionGenerationResult> {
-  const webContext = await buildWebContextFromText(
-    buildSuggestionWebContextSeed(mode, input),
-    {
-      maxUrls: mode === "transform" ? 3 : 2,
-      maxContextChars:
-        mode === "transform"
-          ? MAX_TRANSFORM_WEB_CONTEXT_CHARS
-          : MAX_AUTOCOMPLETE_WEB_CONTEXT_CHARS,
-    },
-  );
+  const shouldLoadWebContext =
+    mode === "transform" || AUTOCOMPLETE_WEB_CONTEXT_ENABLED;
+  const webContext = shouldLoadWebContext
+    ? await buildWebContextFromText(
+        buildSuggestionWebContextSeed(mode, input),
+        {
+          maxUrls: mode === "transform" ? 3 : 2,
+          maxContextChars:
+            mode === "transform"
+              ? MAX_TRANSFORM_WEB_CONTEXT_CHARS
+              : MAX_AUTOCOMPLETE_WEB_CONTEXT_CHARS,
+        },
+      )
+    : { urls: [], markdown: "" };
   const execution = buildSuggestionExecutionInput({
     mode,
     input,
