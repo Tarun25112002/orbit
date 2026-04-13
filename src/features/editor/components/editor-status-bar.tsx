@@ -61,7 +61,7 @@ export const EditorStatusBar = ({
   fileSize,
   isDirty,
   lineEnding = "LF",
-  inlineSuggestionsEnabled = true,
+  inlineSuggestionsEnabled = false,
   onToggleInlineSuggestions,
 }: EditorStatusBarProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
