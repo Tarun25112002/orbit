@@ -46,6 +46,9 @@ const STEPWISE_TASK_INTENT_PATTERN =
 const COMMAND_CHAINING_TOKEN_PATTERN = /^(?:&&|\|\||[|;])$/;
 const DISALLOWED_COMMAND_SEQUENCE_PATTERN =
   /\b(?:git\s+reset\s+--hard|git\s+checkout\s+--|rm\s+-rf|rmdir\s+\/s|del\s+\/(?:s|q|f)|mkfs|format|shutdown|reboot)\b/i;
+const ENABLE_FILE_OPS_PLANNER = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_ENABLE_FILE_OPS_PLANNER?.trim() ?? "",
+);
 
 const createGeminiModel = (
   model: string,
@@ -198,25 +201,41 @@ const WEB_CONTEXT_SYSTEM_PROMPT = [
 ].join("\n");
 
 const SYNTHESIS_SYSTEM_PROMPT = [
-  "Combine findings into final response.",
-  "For file ops: show structure + full file contents.",
-  "Be concise and actionable.",
+  "You are the final response synthesizer for Orbit AI — an agentic coding assistant.",
+  "Your job is to write the user-facing response AFTER operations have already been applied.",
+  "",
+  "CRITICAL RULES:",
+  "- If file operations were applied, speak in PAST TENSE: 'I created…', 'I updated…', 'I installed…'",
+  "- Do NOT dump full file contents. The files are already in the user's project.",
+  "- Instead, briefly describe WHAT was done, WHY, and how to use it.",
+  "- List the key files created/modified with one-line descriptions.",
+  "- If commands were queued (npm install, dev server), confirm they are running.",
+  "- If NO operations were applied, provide a helpful coding answer with code examples.",
+  "- Be concise and actionable.",
 ].join("\n");
 
 const TITLE_SYSTEM_PROMPT = "Create 3-6 word conversation title.";
 
 const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
-  "Plan file operations as JSON. You are Orbit AI - a real code editor assistant.",
-  "For implementation tasks, create COMPLETE working code.",
-  "CRUD ops: create_file, create_folder, update_file, delete_path, rename_path.",
-  "Command ops: run_command, start_background_command.",
-  "Command rules: npm/pnpm in command, args in commandArgs. No shell chaining.",
-  "IMPORTANT - For dependencies:",
-  "- Add to package.json using update_file operation",
-  "- Include run_command {command:\"npm\",commandArgs:[\"install\"]} after file changes",
-  "- Include start_background_command {key:\"dev\",command:\"npm\",commandArgs:[\"run\",\"dev\"]} to start dev server",
-  "For Next.js/React/auth/API: create ALL files - routes, components, configs, types.",
-  "Return: {\"operations\":[{\"type\":\"update_file\",\"path\":\"src/page.ts\",\"content\":\"...\"}]}",
+  "You are Orbit AI's file operations planner. You are a REAL AGENT — your output DIRECTLY creates files,",
+  "runs commands, and modifies the user's project. This is NOT a suggestion — it is executed immediately.",
+  "",
+  "OPERATION TYPES:",
+  "  File ops: create_file, create_folder, update_file, delete_path, rename_path",
+  "  Command ops: run_command, start_background_command",
+  "",
+  "RULES:",
+  "1. Every create_file/update_file MUST include COMPLETE, RUNNABLE code in the content field.",
+  "   No placeholders, no TODOs, no '// your code here'. Every file must work as-is.",
+  "2. For new projects or dependencies: include a complete package.json with ALL needed dependencies.",
+  "3. After modifying package.json, include: {\"type\":\"run_command\",\"command\":\"npm\",\"commandArgs\":[\"install\"]}",
+  "4. To start a dev server, include: {\"type\":\"start_background_command\",\"key\":\"dev-server\",\"command\":\"npm\",\"commandArgs\":[\"run\",\"dev\"]}",
+  "5. For commands: put the binary in 'command' and arguments in 'commandArgs' array. No shell chaining (&&, ||, ;, |).",
+  "6. Create ALL files needed — routes, components, configs, types, styles. Do not leave gaps.",
+  "7. When updating existing files, include the FULL new content, not just the changed parts.",
+  "",
+  "OUTPUT FORMAT — return ONLY valid JSON, no markdown fences:",
+  '{"operations":[{"type":"create_file","path":"src/app/page.tsx","content":"full code here"}]}',
 ].join("\n");
 
 const SPECIALIST_SYSTEM_PROMPTS: Record<SpecialistKey, string> = {
@@ -262,7 +281,7 @@ const implementationAgent = createAgent({
   description: "Turns requests into concrete implementation guidance.",
   model: createGeminiModel(SPECIALIST_MODEL, {
     temperature: 0.25,
-    maxOutputTokens: 2200,
+    maxOutputTokens: 8_000,
   }),
   system: IMPLEMENTATION_SYSTEM_PROMPT,
 });
@@ -303,7 +322,7 @@ const fileOperationsPlannerAgent = createAgent({
     "Plans concrete file operations for explicit code-edit requests.",
   model: createGeminiModel(FILE_OPS_MODEL, {
     temperature: 0.1,
-    maxOutputTokens: 6_000,
+    maxOutputTokens: 32_000,
   }),
   system: FILE_OPS_PLANNER_SYSTEM_PROMPT,
 });
@@ -1178,9 +1197,15 @@ const validateFileOperationPlan = (operations: ConversationFileOperation[]) => {
       );
     }
 
-    if (PLACEHOLDER_CONTENT_PATTERN.test(operation.content)) {
+    // Only reject truly empty placeholder files (< 50 chars and only TODO/TBD)
+    // Do NOT reject real code files that happen to contain TODO comments
+    const trimmedContent = operation.content.trim();
+    if (
+      trimmedContent.length < 50 &&
+      /^(?:\/\/\s*)?(?:TODO|TBD)(?:\s|:|\.|$)/i.test(trimmedContent)
+    ) {
       issues.push(
-        `${operation.type} ${operation.path} contains placeholder text (TODO/TBD/code here).`,
+        `${operation.type} ${operation.path} appears to be placeholder-only content.`,
       );
     }
   }
@@ -1201,37 +1226,82 @@ const buildProjectFileInventory = (files: ConversationProjectFile[] = []) => {
     .join("\n");
 };
 
+const PLANNER_KEY_FILE_PATTERNS = [
+  "package.json",
+  "tsconfig.json",
+  "next.config.ts",
+  "next.config.js",
+  "next.config.mjs",
+  "vite.config.ts",
+  "vite.config.js",
+  "tailwind.config.ts",
+  "tailwind.config.js",
+  "postcss.config.mjs",
+  "postcss.config.js",
+] as const;
+
+const MAX_PLANNER_KEY_FILE_CHARS = 3_000;
+
+const buildPlannerKeyFileContext = (
+  files: ConversationProjectFile[] = [],
+) => {
+  const blocks: string[] = [];
+
+  for (const pattern of PLANNER_KEY_FILE_PATTERNS) {
+    const file = files.find(
+      (f) => f.type === "file" && (f.path === pattern || f.path.endsWith(`/${pattern}`)),
+    );
+
+    if (!file?.content) {
+      continue;
+    }
+
+    const content =
+      file.content.length > MAX_PLANNER_KEY_FILE_CHARS
+        ? `${file.content.slice(0, MAX_PLANNER_KEY_FILE_CHARS)}\n/* ...truncated... */`
+        : file.content;
+
+    blocks.push(`--- ${file.path} ---\n${content}`);
+  }
+
+  return blocks;
+};
+
 const buildFileOperationPlannerPrompt = (
   input: ConversationOrchestrationInput,
 ) => {
   const fileInventory = buildProjectFileInventory(input.projectFiles);
+  const keyFileBlocks = buildPlannerKeyFileContext(input.projectFiles);
   const hasPackageJson = input.projectFiles?.some(
     (f) => f.path === "package.json" || f.path.endsWith("/package.json"),
   );
-  
+
   return [
-    "TASK:",
+    "TASK (will be executed immediately — your output creates real files and runs real commands):",
     input.message,
     "",
-    input.history ? `HISTORY:\n${input.history.slice(0, 1500)}` : "",
+    input.history ? `CONVERSATION HISTORY:\n${input.history.slice(0, 1500)}` : "",
     "",
-    "PROJECT FILES:",
+    "EXISTING PROJECT FILES:",
     fileInventory,
     "",
-    hasPackageJson 
-      ? "package.json EXISTS - use update_file to add dependencies, run_command for npm install"
-      : "NO package.json - create one with dependencies",
+    ...(keyFileBlocks.length > 0
+      ? ["EXISTING KEY FILE CONTENTS:", ...keyFileBlocks, ""]
+      : []),
+    hasPackageJson
+      ? "package.json EXISTS — use update_file with the FULL updated content to add dependencies"
+      : "NO package.json — create one with create_file including all needed dependencies",
     "",
-    "CONTEXT:",
-    input.projectContext?.slice(0, 8000) || "(none)",
+    "PROJECT CONTEXT:",
+    input.projectContext?.slice(0, 6000) || "(empty project)",
     "",
-    "REQUIRED ACTIONS:",
-    "1. Create ALL files needed (routes, components, configs)",
-    "2. Update package.json with new dependencies",
-    "3. Run npm install: {command:\"npm\",commandArgs:[\"install\"]}",
-    "4. Start dev server: {key:\"dev\",command:\"npm\",commandArgs:[\"run\",\"dev\"]}",
+    "REMINDERS:",
+    "- Your output is EXECUTED, not displayed. Include COMPLETE file contents.",
+    "- After changing package.json: {\"type\":\"run_command\",\"command\":\"npm\",\"commandArgs\":[\"install\"]}",
+    "- To start dev server: {\"type\":\"start_background_command\",\"key\":\"dev-server\",\"command\":\"npm\",\"commandArgs\":[\"run\",\"dev\"]}",
+    "- Create ALL files needed for the task. Do not leave gaps or TODOs.",
     "",
-    "Return JSON: {\"operations\":[{\"type\":\"update_file\",\"path\":\"src/page.ts\",\"content\":\"full code\"}]}",
+    "Return ONLY valid JSON: {\"operations\":[...]}",
   ].filter(Boolean).join("\n");
 };
 
@@ -1261,6 +1331,10 @@ const buildFileOperationPlannerRetryPrompt = (
     .join("\n");
 
 const shouldPlanFileOperations = (input: ConversationOrchestrationInput) => {
+  if (!ENABLE_FILE_OPS_PLANNER) {
+    return false;
+  }
+
   if (COMMAND_OPERATION_INTENT_PATTERN.test(input.message)) {
     return true;
   }
@@ -1303,10 +1377,37 @@ const describeFileOperation = (operation: ConversationFileOperation) => {
   return `${operation.type} ${operation.path}`;
 };
 
+const runFileOpsPlannerDirect = async (
+  prompt: string,
+  label: string,
+): Promise<string> => {
+  console.info(`conversation.planner.${label}.call`, {
+    promptLength: prompt.length,
+  });
+
+  const result = await generateGeminiCompletion({
+    model: FILE_OPS_MODEL,
+    messages: [
+      { role: "user", content: `${FILE_OPS_PLANNER_SYSTEM_PROMPT}\n\n${prompt}` },
+    ],
+    maxTokens: 32_000,
+    temperature: 0.1,
+  });
+
+  console.info(`conversation.planner.${label}.response`, {
+    model: result.model,
+    outputLength: result.content.length,
+    outputPreview: result.content.slice(0, 500),
+  });
+
+  return result.content;
+};
+
 const planConversationFileOperations = async (
   input: ConversationOrchestrationInput,
 ) => {
   if (!input.executeFileOperation) {
+    console.info("conversation.planner.skip", { reason: "no-execute-handler" });
     return {
       operations: [] as ConversationFileOperation[],
       plannerOutput: "",
@@ -1314,6 +1415,10 @@ const planConversationFileOperations = async (
   }
 
   if (!shouldPlanFileOperations(input)) {
+    console.info("conversation.planner.skip", {
+      reason: "intent-skip",
+      message: input.message.slice(0, 100),
+    });
     return {
       operations: [] as ConversationFileOperation[],
       plannerOutput: "intent-skip",
@@ -1321,27 +1426,50 @@ const planConversationFileOperations = async (
   }
 
   const extractOperations = (output: string): ConversationFileOperation[] => {
-    const plannerJson = extractJsonObject(output);
+    // Strip markdown code fences that the model sometimes wraps JSON in
+    const cleaned = output
+      .replace(/^```(?:json)?\s*\n?/i, "")
+      .replace(/\n?```\s*$/i, "")
+      .trim();
+
+    const plannerJson = extractJsonObject(cleaned);
     if (!plannerJson) {
+      console.warn("conversation.planner.json-extract-failed", {
+        outputLength: output.length,
+        outputPreview: output.slice(0, 500),
+        cleanedPreview: cleaned.slice(0, 500),
+      });
       return [];
     }
 
     try {
       const parsed = JSON.parse(plannerJson) as unknown;
-      return parseFileOperationPlan(parsed);
-    } catch {
+      const ops = parseFileOperationPlan(parsed);
+      console.info("conversation.planner.parsed", {
+        jsonLength: plannerJson.length,
+        operationCount: ops.length,
+        types: ops.map((o) => o.type),
+      });
+      return ops;
+    } catch (parseError) {
+      console.warn("conversation.planner.json-parse-failed", {
+        jsonLength: plannerJson.length,
+        jsonPreview: plannerJson.slice(0, 300),
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+      });
       return [];
     }
   };
 
   try {
-    const plannerOutput = await runAgentTextWithFallback({
-      agent: fileOperationsPlannerAgent,
-      prompt: buildFileOperationPlannerPrompt(input),
-      systemPrompt: FILE_OPS_PLANNER_SYSTEM_PROMPT,
-      model: FILE_OPS_MODEL,
-      label: "file-ops-planner",
+    console.info("conversation.planner.start", {
+      message: input.message.slice(0, 100),
+      projectFileCount: input.projectFiles?.length ?? 0,
     });
+
+    const plannerPrompt = buildFileOperationPlannerPrompt(input);
+    const plannerOutput = await runFileOpsPlannerDirect(plannerPrompt, "primary");
+
     const operations = ensureDependencyInstallOperation(
       ensureFolderOperationsForWrites(
         extractOperations(plannerOutput),
@@ -1350,6 +1478,13 @@ const planConversationFileOperations = async (
       input.projectFiles,
     ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
     const issues = validateFileOperationPlan(operations);
+
+    console.info("conversation.planner.result", {
+      operationCount: operations.length,
+      issueCount: issues.length,
+      issues: issues.slice(0, 5),
+      types: operations.map((o) => o.type),
+    });
 
     if (operations.length > 0 && issues.length === 0) {
       return {
@@ -1361,17 +1496,15 @@ const planConversationFileOperations = async (
     const retryIssues =
       operations.length === 0 ? ["No valid operations were returned."] : issues;
 
-    const retryOutput = await runAgentTextWithFallback({
-      agent: fileOperationsPlannerAgent,
-      prompt: buildFileOperationPlannerRetryPrompt(
-        input,
-        plannerOutput,
-        retryIssues,
-      ),
-      systemPrompt: FILE_OPS_PLANNER_SYSTEM_PROMPT,
-      model: FILE_OPS_MODEL,
-      label: "file-ops-planner-retry",
-    });
+    console.info("conversation.planner.retry", { retryIssues });
+
+    const retryPrompt = buildFileOperationPlannerRetryPrompt(
+      input,
+      plannerOutput,
+      retryIssues,
+    );
+    const retryOutput = await runFileOpsPlannerDirect(retryPrompt, "retry");
+
     const retryOperations = ensureDependencyInstallOperation(
       ensureFolderOperationsForWrites(
         extractOperations(retryOutput),
@@ -1380,6 +1513,12 @@ const planConversationFileOperations = async (
       input.projectFiles,
     ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
     const retryValidationIssues = validateFileOperationPlan(retryOperations);
+
+    console.info("conversation.planner.retry-result", {
+      operationCount: retryOperations.length,
+      issueCount: retryValidationIssues.length,
+      issues: retryValidationIssues.slice(0, 5),
+    });
 
     return {
       operations: retryValidationIssues.length === 0 ? retryOperations : [],
@@ -1394,6 +1533,10 @@ const planConversationFileOperations = async (
             ].join("\n"),
     };
   } catch (error) {
+    console.error("conversation.planner.error", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack?.slice(0, 500) : undefined,
+    });
     return {
       operations: [] as ConversationFileOperation[],
       plannerOutput: error instanceof Error ? error.message : "planner-error",
@@ -1742,51 +1885,113 @@ const buildStructuredCodeResponse = (args: {
     }),
   );
 
-  const fileBlocks = args.changedFiles.map((file) =>
-    formatFileCodeBlock(file.path, file.content),
+  const appliedCount = args.operationResults.filter(
+    (r) => r.status === "applied",
+  ).length;
+  const failedCount = args.operationResults.filter(
+    (r) => r.status === "failed",
+  ).length;
+
+  const hasInstallCommand = args.operationResults.some(
+    (r) =>
+      r.status === "applied" &&
+      r.operation.type === "run_command" &&
+      (r.operation.command === "npm" ||
+        r.operation.command === "pnpm" ||
+        r.operation.command === "yarn" ||
+        r.operation.command === "bun") &&
+      r.operation.commandArgs?.some(
+        (arg) => arg === "install" || arg === "i" || arg === "ci",
+      ),
   );
 
-  // Check for command operations
-  const npmInstallOp = args.operationResults.find(
-    (r) => r.status === "applied" && r.operation.type === "run_command" && 
-    r.operation.command === "npm" && r.operation.commandArgs?.includes("install")
-  );
-  const devServerOp = args.operationResults.find(
-    (r) => r.status === "applied" && r.operation.type === "start_background_command" &&
-    r.operation.key === "dev"
+  const hasDevServer = args.operationResults.some(
+    (r) =>
+      r.status === "applied" &&
+      r.operation.type === "start_background_command",
   );
 
-  const nonFileOperations = args.operationResults
-    .filter(
-      (result) =>
-        result.status === "applied" &&
-        result.operation.type !== "create_file" &&
-        result.operation.type !== "update_file",
-    )
-    .map(
-      (result) =>
-        `- ${describeFileOperation(result.operation)} (${result.message})`,
+  // Build summary header
+  const summaryParts: string[] = [];
+  if (args.changedFiles.length > 0) {
+    const verb = args.intent === "code_update" ? "Updated" : "Created";
+    summaryParts.push(
+      `${verb} ${args.changedFiles.length} file${args.changedFiles.length === 1 ? "" : "s"}`,
     );
+  }
+  if (args.folderEntries.length > 0) {
+    summaryParts.push(
+      `${args.folderEntries.length} folder${args.folderEntries.length === 1 ? "" : "s"}`,
+    );
+  }
+  if (hasInstallCommand) {
+    summaryParts.push("installed dependencies");
+  }
+  if (hasDevServer) {
+    summaryParts.push("started dev server");
+  }
 
-  const sections = [
-    "Project Structure:",
-    ...structureLines,
-    "",
-    args.intent === "code_update" ? "Updated Files:" : "Files:",
-    "",
-    ...fileBlocks,
-  ];
+  const sections: string[] = [];
 
-  // Add helpful next steps
-  if (npmInstallOp || devServerOp || nonFileOperations.length > 0) {
-    sections.push("", "Next Steps:");
-    if (npmInstallOp) {
-      sections.push("1. Run `npm install` to install dependencies");
+  // Header confirming actions
+  if (summaryParts.length > 0) {
+    sections.push(`\u2705 **Done** \u2014 ${summaryParts.join(", ")}.`);
+    sections.push("");
+  }
+
+  // Project structure
+  sections.push("**Project Structure:**", ...structureLines, "");
+
+  // File list with brief descriptions (no full code dumps)
+  if (args.changedFiles.length > 0) {
+    const label =
+      args.intent === "code_update"
+        ? "**Files Modified:**"
+        : "**Files Created:**";
+    sections.push(label);
+    for (const file of args.changedFiles) {
+      sections.push(`- \`${file.path}\``);
     }
-    if (devServerOp) {
-      sections.push("2. Run `npm run dev` to start the dev server");
+    sections.push("");
+  }
+
+  // Command operations
+  const commandOps = args.operationResults.filter(
+    (result) =>
+      result.status === "applied" &&
+      (result.operation.type === "run_command" ||
+        result.operation.type === "start_background_command"),
+  );
+
+  if (commandOps.length > 0) {
+    sections.push("**Commands Executed:**");
+    for (const result of commandOps) {
+      sections.push(
+        `- \u2705 ${describeFileOperation(result.operation)}`,
+      );
     }
-    sections.push("", "Operations Applied:", ...nonFileOperations);
+    sections.push("");
+  }
+
+  // Failures
+  if (failedCount > 0) {
+    const failedOps = args.operationResults.filter(
+      (r) => r.status === "failed",
+    );
+    sections.push("**\u26a0\ufe0f Issues:**");
+    for (const result of failedOps) {
+      sections.push(
+        `- \u274c ${describeFileOperation(result.operation)}: ${result.message}`,
+      );
+    }
+    sections.push("");
+  }
+
+  // Summary stats
+  if (appliedCount > 0) {
+    sections.push(
+      `*${appliedCount} operation${appliedCount === 1 ? "" : "s"} applied successfully${failedCount > 0 ? `, ${failedCount} failed` : ""}.*`,
+    );
   }
 
   return sections.join("\n");
@@ -1923,8 +2128,28 @@ const buildSynthesisPrompt = (
   input: ConversationOrchestrationInput,
   reports: SpecialistReport[],
   operationResults: ConversationFileOperationResult[],
-) =>
-  [
+) => {
+  const hasAppliedOperations = operationResults.some(
+    (result) => result.status === "applied",
+  );
+
+  const operationInstructions = hasAppliedOperations
+    ? [
+        "",
+        "IMPORTANT: File operations were ALREADY APPLIED to the user's project.",
+        "- Speak in PAST TENSE: 'I created...', 'I updated...', 'I installed...'",
+        "- Do NOT dump full file contents \u2014 the files already exist in the project.",
+        "- Briefly describe WHAT was done and HOW the user can use it.",
+        "- List key files with one-line descriptions.",
+        "- If commands were queued (npm install, dev server), confirm they are running.",
+      ]
+    : [
+        "",
+        "No file operations were applied. Write a helpful coding answer.",
+        "Include code examples where relevant. Use markdown formatting.",
+      ];
+
+  return [
     "User request:",
     input.message,
     "",
@@ -1946,13 +2171,13 @@ const buildSynthesisPrompt = (
     "",
     "Pipeline operation results:",
     buildFileOperationSummary(operationResults),
+    ...operationInstructions,
     "",
     "Write the final answer for the user now.",
-    "If operations were applied, clearly list the changed paths and what changed.",
-    "For code implementation responses, start with Project Structure, then Files/Updated Files with full file contents.",
   ]
     .filter(Boolean)
     .join("\n");
+};
 
 export const runConversationAgentOrchestration = async (
   input: ConversationOrchestrationInput,

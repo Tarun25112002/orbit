@@ -1460,8 +1460,16 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const runAiExecutionTrace = useCallback(
     async (detail: OrbitAiExecutionTraceEventDetail) => {
       if (runtimeExecutedMessagesRef.current.has(detail.assistantMessageId)) {
+        console.info("[orbit:runtime] Already executed trace for", detail.assistantMessageId);
         return;
       }
+
+      console.info("[orbit:runtime] Starting execution trace", {
+        messageId: detail.assistantMessageId,
+        operationCount: detail.trace.operations.length,
+        resultCount: detail.trace.operationResults.length,
+        types: detail.trace.operations.map((op) => op.type),
+      });
 
       runtimeExecutedMessagesRef.current.add(detail.assistantMessageId);
       setActiveView("runtime");
@@ -1471,8 +1479,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       );
 
       try {
+        console.info("[orbit:runtime] Booting WebContainer...");
         await projectWebcontainerRuntime.ensureBooted(appendRuntimeLog);
+        console.info("[orbit:runtime] Waiting for file sync...");
         await waitForRuntimeFileSync(detail.trace);
+        console.info("[orbit:runtime] Syncing project snapshot...");
         await syncProjectSnapshotToRuntime();
 
         if (detail.trace.operations.length === 0) {

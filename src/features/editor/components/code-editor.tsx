@@ -1123,9 +1123,9 @@ export const CodeEditor = ({
     };
 
     const diagnosticsOptions = {
-      noSemanticValidation: false,
+      noSemanticValidation: true,
       noSyntaxValidation: false,
-      noSuggestionDiagnostics: false,
+      noSuggestionDiagnostics: true,
     };
 
     monacoApi.languages.typescript.typescriptDefaults.setEagerModelSync(true);

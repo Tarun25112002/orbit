@@ -361,8 +361,16 @@ const ChatView = ({
 
       const trace = extractExecutionTrace(message.reasoning_details);
       if (!trace) {
+        console.warn("[orbit:trace] No trace found in message", message._id, message.reasoning_details);
         continue;
       }
+
+      console.info("[orbit:trace] Dispatching execution trace", {
+        messageId: message._id,
+        operationCount: trace.operations.length,
+        resultCount: trace.operationResults.length,
+        types: trace.operations.map((op) => op.type),
+      });
 
       const detail: OrbitAiExecutionTraceEventDetail = {
         assistantMessageId: message._id,
