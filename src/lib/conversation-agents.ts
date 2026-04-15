@@ -92,6 +92,18 @@ const MAX_PLANNER_KEY_FILE_CHARS = parsePositiveInt(
 const NEXTJS_FRAMEWORK_PATTERN = /\bnext(?:\.js|js)?\b/i;
 const NEXTJS_SCAFFOLD_INTENT_PATTERN =
   /\b(create|scaffold|setup|generate|starter|boilerplate|from scratch|new)\b/i;
+const STRICT_EXECUTION_ACTION_PATTERN =
+  /\b(do it|apply(?:\s+it)?|apply changes|make changes|edit files|update files|create files|scaffold|set\s*up|setup|run commands?|execute commands?|install dependencies|wire up|hook up)\b/i;
+const PROJECT_SCOPED_EXECUTION_PATTERN =
+  /\b(in (?:my|the|this) (?:project|workspace|repo|repository|codebase)|on this codebase|in your codebase|for this project)\b/i;
+const EXECUTION_FRUSTRATION_PATTERN =
+  /\b(not\s+execut(?:e|ing)|just\s+giv(?:e|ing)\s+code|only\s+giv(?:e|ing)\s+code|not\s+just\s+code|dont\s+just\s+give\s+code|don't\s+just\s+give\s+code)\b/i;
+const STRICT_FILE_OPS_GATE_ENABLED = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_STRICT_FILE_OPS_GATE?.trim() ?? "true",
+);
+const REQUIRE_EXECUTABLE_FOR_CODE_INTENT = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_REQUIRE_EXECUTABLE_FOR_CODE_INTENT?.trim() ?? "true",
+);
 const NEXTJS_REQUIRED_SCAFFOLD_FILE_PATHS = [
   "package.json",
   "next.config.ts",
@@ -1907,6 +1919,46 @@ const buildStrictFileOperationPlannerPrompt = (
     .filter(Boolean)
     .join("\n");
 
+const buildEmergencyFileOperationPlannerPrompt = (
+  input: ConversationOrchestrationInput,
+  previousOutput: string,
+  issues: string[] = [],
+) =>
+  [
+    "Return ONLY valid JSON object with this exact shape:",
+    '{"operations":[{"type":"create_file|update_file|create_folder|delete_path|rename_path|run_command|start_background_command", "...": "..."}]}',
+    "",
+    "Rules:",
+    "- operations MUST NOT be empty.",
+    "- For create_file/update_file include FULL file content.",
+    "- Use forward-slash relative paths only.",
+    "- Do not include markdown fences or prose.",
+    "",
+    "Task:",
+    input.message,
+    "",
+    input.history
+      ? `Conversation history:\n${input.history.slice(0, MAX_PLANNER_HISTORY_CHARS)}`
+      : "",
+    "",
+    "Project context:",
+    input.projectContext?.slice(
+      0,
+      Math.min(4_500, MAX_PLANNER_PROJECT_CONTEXT_CHARS),
+    ) || "(empty project)",
+    "",
+    "Previous planner output:",
+    previousOutput || "(empty)",
+    "",
+    issues.length > 0
+      ? ["Issues to fix:", ...issues.map((issue) => `- ${issue}`), ""].join(
+          "\n",
+        )
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
 const shouldPlanFileOperations = (input: ConversationOrchestrationInput) => {
   if (!ENABLE_FILE_OPS_PLANNER) {
     return false;
@@ -1933,22 +1985,75 @@ const shouldPlanFileOperations = (input: ConversationOrchestrationInput) => {
     return true;
   }
 
+  if (shouldRequireExecutableFileOperations(input)) {
+    return true;
+  }
+
   return false;
 };
 
 const shouldRequireExecutableFileOperations = (
   input: ConversationOrchestrationInput,
 ) => {
-  const intent = inferConversationIntent(input.message);
-  if (intent === "code_generation" || intent === "code_update") {
+  if (!STRICT_FILE_OPS_GATE_ENABLED) {
+    return false;
+  }
+
+  const message = input.message;
+  const intent = inferConversationIntent(message);
+  const hasExecutionFrustrationSignal =
+    EXECUTION_FRUSTRATION_PATTERN.test(message);
+  const hasExplicitExecutionDirective =
+    hasExecutionFrustrationSignal ||
+    STRICT_EXECUTION_ACTION_PATTERN.test(message) ||
+    /\b(do(?:\s+the)?\s+(?:change|changes|work|implementation)|make(?:\s+the)?\s+changes|apply(?:\s+the)?\s+changes?)\b/i.test(
+      message,
+    );
+  const hasProjectScopedDirective =
+    PROJECT_SCOPED_EXECUTION_PATTERN.test(message);
+  const hasFileOrCommandAction =
+    COMMAND_OPERATION_INTENT_PATTERN.test(message) ||
+    /\b(create|update|edit|modify|delete|rename|move|fix|implement|patch|install|uninstall|upgrade|downgrade|run|execute|scaffold|setup)\b/i.test(
+      message,
+    );
+  const looksLikeQuestionOnly =
+    /\b(how\s+do\s+i|how\s+to|what\s+is|why\s+is|can\s+you\s+explain|explain|describe|walk\s+me\s+through|show\s+me\s+how)\b/i.test(
+      message,
+    ) && !hasExplicitExecutionDirective;
+
+  if (
+    looksLikeQuestionOnly &&
+    !hasProjectScopedDirective &&
+    !hasExecutionFrustrationSignal
+  ) {
+    return false;
+  }
+
+  if (!hasFileOrCommandAction) {
+    return false;
+  }
+
+  if (hasExplicitExecutionDirective) {
     return true;
   }
 
-  return (
-    COMMAND_OPERATION_INTENT_PATTERN.test(input.message) ||
-    FILE_OPERATION_INTENT_PATTERN.test(input.message) ||
-    FILE_OPERATION_PATH_HINT_PATTERN.test(input.message)
-  );
+  if (
+    REQUIRE_EXECUTABLE_FOR_CODE_INTENT &&
+    intent !== "analysis" &&
+    !looksLikeQuestionOnly
+  ) {
+    return true;
+  }
+
+  if (
+    hasProjectScopedDirective &&
+    (FILE_OPERATION_INTENT_PATTERN.test(message) ||
+      FILE_OPERATION_PATH_HINT_PATTERN.test(message))
+  ) {
+    return true;
+  }
+
+  return false;
 };
 
 const describeFileOperation = (operation: ConversationFileOperation) => {
@@ -1987,6 +2092,7 @@ const runFileOpsPlannerDirect = async (
     ],
     maxTokens: FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS,
     temperature: 0.1,
+    responseMimeType: "application/json",
   });
 
   console.info(`conversation.planner.${label}.response`, {
@@ -2185,8 +2291,13 @@ const planConversationFileOperations = async (
           : ["No valid operations were returned."],
       );
 
-      const strictOutput = await runFileOpsPlannerDirect(strictPrompt, "strict");
-      const strictOperations = normalizeOperations(extractOperations(strictOutput));
+      const strictOutput = await runFileOpsPlannerDirect(
+        strictPrompt,
+        "strict",
+      );
+      const strictOperations = normalizeOperations(
+        extractOperations(strictOutput),
+      );
       const strictIssues = collectPlanIssues(strictOperations);
 
       console.info("conversation.planner.strict-result", {
@@ -2198,6 +2309,39 @@ const planConversationFileOperations = async (
       selectedOutput = strictOutput || selectedOutput;
       selectedOperations = strictOperations;
       selectedIssues = strictIssues;
+
+      if (selectedOperations.length > 0 && selectedIssues.length === 0) {
+        return {
+          operations: selectedOperations,
+          plannerOutput: selectedOutput,
+        };
+      }
+
+      const emergencyPrompt = buildEmergencyFileOperationPlannerPrompt(
+        input,
+        selectedOutput,
+        selectedIssues.length > 0
+          ? selectedIssues
+          : ["No valid operations were returned."],
+      );
+      const emergencyOutput = await runFileOpsPlannerDirect(
+        emergencyPrompt,
+        "emergency",
+      );
+      const emergencyOperations = normalizeOperations(
+        extractOperations(emergencyOutput),
+      );
+      const emergencyIssues = collectPlanIssues(emergencyOperations);
+
+      console.info("conversation.planner.emergency-result", {
+        operationCount: emergencyOperations.length,
+        issueCount: emergencyIssues.length,
+        issues: emergencyIssues.slice(0, 5),
+      });
+
+      selectedOutput = emergencyOutput || selectedOutput;
+      selectedOperations = emergencyOperations;
+      selectedIssues = emergencyIssues;
 
       if (selectedOperations.length > 0 && selectedIssues.length === 0) {
         return {
@@ -2891,7 +3035,8 @@ export const runConversationAgentOrchestration = async (
     };
   }
 
-  const requiresExecutableFileOps = shouldRequireExecutableFileOperations(input);
+  const requiresExecutableFileOps =
+    shouldRequireExecutableFileOperations(input);
 
   if (requiresExecutableFileOps && fileOperationPlan.operations.length === 0) {
     const strictFailureContent = [

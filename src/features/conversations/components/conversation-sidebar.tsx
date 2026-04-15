@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangleIcon,
   BotIcon,
@@ -50,6 +50,9 @@ import {
   useUpdateConversationTitle,
   useSendMessage,
 } from "../hooks/use-conversations";
+import { useEditor } from "../../editor/hooks/use-editor";
+import { useProjectFiles } from "../../projects/hooks/use-files";
+import { buildProjectFilePathMap } from "@/features/editor/utils/codebase-context";
 
 const STARTER_SUGGESTIONS = [
   "Explain this codebase architecture",
@@ -280,9 +283,11 @@ const ChatMessage = ({
 
 const ChatView = ({
   conversationId,
+  projectId,
   onBack,
 }: {
   conversationId: Id<"conversations">;
+  projectId: Id<"projects">;
   onBack: () => void;
 }) => {
   const conversation = useConversation(conversationId);
@@ -296,6 +301,34 @@ const ChatView = ({
   const [error, setError] = useState<ClassifiedError | null>(null);
   const dispatchedExecutionTraceRef = useRef<Set<Id<"messages">>>(new Set());
   const hasHydratedTraceDispatchRef = useRef(false);
+  const { activeTabId } = useEditor(projectId);
+  const projectFiles = useProjectFiles({ projectId });
+
+  const filePathById = useMemo(
+    () => buildProjectFilePathMap(projectFiles ?? []),
+    [projectFiles],
+  );
+
+  const activeFilePath = useMemo(() => {
+    if (!activeTabId) {
+      return undefined;
+    }
+
+    return filePathById.get(activeTabId);
+  }, [activeTabId, filePathById]);
+
+  const activeFolderPath = useMemo(() => {
+    if (!activeFilePath) {
+      return undefined;
+    }
+
+    const separatorIndex = activeFilePath.lastIndexOf("/");
+    if (separatorIndex <= 0) {
+      return undefined;
+    }
+
+    return activeFilePath.slice(0, separatorIndex);
+  }, [activeFilePath]);
 
   useEffect(() => {
     dispatchedExecutionTraceRef.current.clear();
@@ -361,7 +394,11 @@ const ChatView = ({
 
       const trace = extractExecutionTrace(message.reasoning_details);
       if (!trace) {
-        console.warn("[orbit:trace] No trace found in message", message._id, message.reasoning_details);
+        console.warn(
+          "[orbit:trace] No trace found in message",
+          message._id,
+          message.reasoning_details,
+        );
         continue;
       }
 
@@ -415,6 +452,8 @@ const ChatView = ({
             userMessageId: result.userMessageId,
             assistantMessageId: result.assistantMessageId,
             message: content.trim(),
+            activeFilePath,
+            activeFolderPath,
           }),
         });
 
@@ -448,7 +487,7 @@ const ChatView = ({
         setIsSending(false);
       }
     },
-    [conversationId, isSending, sendMessage],
+    [activeFilePath, activeFolderPath, conversationId, isSending, sendMessage],
   );
 
   const handleSuggestionClick = useCallback(
@@ -650,7 +689,7 @@ const ChatView = ({
                   ? "bg-[#3e3e42] hover:bg-[#4a4a50] w-auto px-2.5 text-[10px]"
                   : "bg-[#007acc] hover:bg-[#0065a9] w-7",
               )}
-              >
+            >
               {activeAssistantMessageId ? undefined : undefined}
             </PromptInputSubmit>
           </PromptInputFooter>
@@ -717,6 +756,7 @@ export const ConversationSidebar = ({
     return (
       <ChatView
         conversationId={activeConversationId}
+        projectId={projectId}
         onBack={() => setActiveConversationId(null)}
       />
     );

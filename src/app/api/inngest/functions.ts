@@ -403,6 +403,8 @@ type ConversationMessageRequestedEvent = {
   userMessageId: string;
   assistantMessageId: string;
   message: string;
+  activeFilePath?: string;
+  activeFolderPath?: string;
   userId: string;
 };
 
@@ -546,6 +548,46 @@ const shouldSkipAiTitleForMessage = (message: string) => {
   return TITLE_SKIP_HEAVY_REQUEST_PATTERN.test(trimmed);
 };
 
+const normalizeEditorContextPath = (value: string | undefined) => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .replace(/\/+$/, "");
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  if (
+    normalized
+      .split("/")
+      .some((segment) => segment === ".." || segment === "." || !segment)
+  ) {
+    return undefined;
+  }
+
+  return normalized.slice(0, 512);
+};
+
+const getParentFolderPath = (path: string | undefined) => {
+  if (!path) {
+    return undefined;
+  }
+
+  const separatorIndex = path.lastIndexOf("/");
+  if (separatorIndex <= 0) {
+    return undefined;
+  }
+
+  return path.slice(0, separatorIndex);
+};
+
 const buildConversationHistoryBlock = (
   messages: Array<{
     role: "user" | "assistant";
@@ -623,8 +665,36 @@ export const conversationMessageRequested = inngest.createFunction(
   },
   async ({ event, step }) => {
     const payload = event.data as ConversationMessageRequestedEvent;
-    const { conversationId, userMessageId, assistantMessageId, message } =
-      payload;
+    const {
+      conversationId,
+      userMessageId,
+      assistantMessageId,
+      message,
+      activeFilePath,
+      activeFolderPath,
+    } = payload;
+
+    const normalizedActiveFilePath = normalizeEditorContextPath(activeFilePath);
+    const normalizedActiveFolderPath =
+      normalizeEditorContextPath(activeFolderPath) ??
+      getParentFolderPath(normalizedActiveFilePath);
+    const executionTargetContextLines = [
+      normalizedActiveFilePath
+        ? `- Active editor file: ${normalizedActiveFilePath}`
+        : "",
+      normalizedActiveFolderPath
+        ? `- Active editor folder: ${normalizedActiveFolderPath}`
+        : "",
+    ].filter(Boolean);
+    const plannerMessage =
+      executionTargetContextLines.length > 0
+        ? [
+            message,
+            "",
+            "Execution target hints from editor context:",
+            ...executionTargetContextLines,
+          ].join("\n")
+        : message;
 
     try {
       const conversation = await step.run("load-conversation", async () => {
@@ -686,7 +756,7 @@ export const conversationMessageRequested = inngest.createFunction(
         .join("\n");
 
       const contextQuery = [
-        message,
+        plannerMessage,
         ...existingMessages
           .filter((historyMessage) => historyMessage._id !== assistantMessageId)
           .map((historyMessage) => historyMessage.content.trim())
@@ -720,6 +790,9 @@ export const conversationMessageRequested = inngest.createFunction(
         "You help developers write, debug, refactor, and understand code.",
         "Be concise, accurate, and helpful. Provide code examples when relevant.",
         "Use markdown formatting for code blocks, lists, and emphasis.",
+        ...(executionTargetContextLines.length > 0
+          ? ["", "Active editor context:", ...executionTargetContextLines]
+          : []),
         "",
         "Project path index:",
         projectPathIndex || "(empty project)",
@@ -753,7 +826,7 @@ export const conversationMessageRequested = inngest.createFunction(
         (async () => {
           try {
             return await runConversationAgentOrchestration({
-              message,
+              message: plannerMessage,
               projectContext: systemContext,
               history: conversationHistory,
               webContext: webContext.markdown,

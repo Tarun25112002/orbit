@@ -12,6 +12,8 @@ const requestSchema = z.object({
   userMessageId: z.string().min(1),
   assistantMessageId: z.string().min(1),
   message: z.string().min(1),
+  activeFilePath: z.string().trim().min(1).max(512).optional(),
+  activeFolderPath: z.string().trim().min(1).max(512).optional(),
 });
 
 export async function POST(request: Request) {
@@ -38,8 +40,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const { conversationId, userMessageId, assistantMessageId, message } =
-    parsed.data;
+  const {
+    conversationId,
+    userMessageId,
+    assistantMessageId,
+    message,
+    activeFilePath,
+    activeFolderPath,
+  } = parsed.data;
 
   try {
     const convexToken = await getToken({ template: "convex" });
@@ -109,6 +117,8 @@ export async function POST(request: Request) {
         userMessageId,
         assistantMessageId,
         message: userMessage.content.trim() || message,
+        activeFilePath,
+        activeFolderPath,
         userId,
       },
     });

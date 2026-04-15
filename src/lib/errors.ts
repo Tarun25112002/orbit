@@ -91,9 +91,19 @@ const AI_UNAVAILABLE_PATTERNS = [
   /bad.?gateway/i,
   /overloaded/i,
   /capacity/i,
-  /server.*error/i,
-  /internal.*error/i,
-  /500/,
+];
+
+const AI_PROVIDER_CONTEXT_PATTERNS = [
+  /\bgemini\b/i,
+  /\bmodel\b/i,
+  /generatecontent/i,
+  /provider\s+returned\s+error/i,
+  /\bopenai\b/i,
+  /\banthropic\b/i,
+  /\bvertex\b/i,
+  /\bllm\b/i,
+  /\binference\b/i,
+  /\bai\s+service\b/i,
 ];
 
 // ─── User-friendly messages per category ──────────────────────────────────────
@@ -319,6 +329,9 @@ export const classifyError = (error: unknown): ClassifiedError => {
 
   const text = rawMessage.replace(/\s+/g, " ").trim();
   const statusCode = extractStatusCode(error);
+  const hasAiProviderContext = AI_PROVIDER_CONTEXT_PATTERNS.some((pattern) =>
+    pattern.test(text),
+  );
 
   if (statusCode === 429) {
     return {
@@ -346,9 +359,25 @@ export const classifyError = (error: unknown): ClassifiedError => {
   }
 
   if (statusCode === 503 || statusCode === 502) {
+    if (!hasAiProviderContext) {
+      return {
+        message: USER_MESSAGES.server,
+        category: "server",
+        retryable: true,
+      };
+    }
+
     return {
       message: USER_MESSAGES.ai_unavailable,
       category: "ai_unavailable",
+      retryable: true,
+    };
+  }
+
+  if (statusCode === 500) {
+    return {
+      message: USER_MESSAGES.server,
+      category: "server",
       retryable: true,
     };
   }
@@ -426,6 +455,14 @@ export const classifyError = (error: unknown): ClassifiedError => {
 
   // AI service issues (5xx, model not found, etc.)
   if (AI_UNAVAILABLE_PATTERNS.some((p) => p.test(text))) {
+    if (!hasAiProviderContext) {
+      return {
+        message: USER_MESSAGES.server,
+        category: "server",
+        retryable: true,
+      };
+    }
+
     return {
       message: USER_MESSAGES.ai_unavailable,
       category: "ai_unavailable",

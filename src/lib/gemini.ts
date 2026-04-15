@@ -439,6 +439,7 @@ export const generateGeminiCompletion = async (args: {
   messages: GeminiChatMessage[];
   maxTokens?: number;
   temperature?: number;
+  responseMimeType?: string;
 }): Promise<GeminiCompletionResult> => {
   const attemptBudget = getRequestAttemptBudget();
   const modelName = (args.model ?? GEMINI_MODEL_DEFAULT).trim();
@@ -450,6 +451,7 @@ export const generateGeminiCompletion = async (args: {
 
   let ai: GoogleGenAI | null = null;
   let lastRateLimitError: GeminiRequestError | null = null;
+  let lastServiceUnavailableError: GeminiRequestError | null = null;
   let lastModelCompatibilityError: GeminiRequestError | null = null;
 
   const contents = args.messages.map((msg) => ({
@@ -473,13 +475,23 @@ export const generateGeminiCompletion = async (args: {
 
     try {
       ai ??= getClient();
+      const config: {
+        maxOutputTokens?: number;
+        temperature?: number;
+        responseMimeType?: string;
+      } = {
+        maxOutputTokens: args.maxTokens,
+        temperature: args.temperature,
+      };
+
+      if (args.responseMimeType) {
+        config.responseMimeType = args.responseMimeType;
+      }
+
       const response = await ai.models.generateContent({
         model: candidateModel,
         contents,
-        config: {
-          maxOutputTokens: args.maxTokens,
-          temperature: args.temperature,
-        },
+        config,
       });
 
       const text = response.text?.trim() ?? "";
@@ -539,6 +551,26 @@ export const generateGeminiCompletion = async (args: {
         continue;
       }
 
+      const isServiceUnavailableError =
+        structuredStatusCode === 500 ||
+        structuredStatusCode === 502 ||
+        structuredStatusCode === 503 ||
+        /service\.?unavailable/i.test(rawMessage) ||
+        /bad\.?gateway/i.test(rawMessage) ||
+        /internal\.?error/i.test(rawMessage) ||
+        /overloaded|capacity/i.test(rawMessage);
+
+      if (isServiceUnavailableError) {
+        // Cool down this model briefly so bursty multi-agent calls skip it.
+        setModelCooldown(candidateModel, 8, activeGeminiApiKey);
+
+        lastServiceUnavailableError = new GeminiRequestError({
+          message: `AI model ${candidateModel} is temporarily unavailable.`,
+          status: structuredStatusCode ?? 503,
+        });
+        continue;
+      }
+
       if (
         /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
           rawMessage,
@@ -577,6 +609,10 @@ export const generateGeminiCompletion = async (args: {
 
   if (lastRateLimitError) {
     throw lastRateLimitError;
+  }
+
+  if (lastServiceUnavailableError) {
+    throw lastServiceUnavailableError;
   }
 
   if (lastModelCompatibilityError) {
