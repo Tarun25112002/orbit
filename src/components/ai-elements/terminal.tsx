@@ -38,7 +38,7 @@ export const TerminalHeader = ({
   <div
     className={cn(
       "flex items-center justify-between border-zinc-800 border-b px-4 py-2",
-      className
+      className,
     )}
     {...props}
   >
@@ -112,7 +112,7 @@ export const TerminalCopyButton = ({
   ...props
 }: TerminalCopyButtonProps) => {
   const [isCopied, setIsCopied] = useState(false);
-  const timeoutRef = useRef<number>(0);
+  const timeoutRef = useRef<number | null>(null);
   const { output } = useContext(TerminalContext);
 
   const copyToClipboard = useCallback(async () => {
@@ -125,6 +125,9 @@ export const TerminalCopyButton = ({
       await navigator.clipboard.writeText(output);
       setIsCopied(true);
       onCopy?.();
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+      }
       timeoutRef.current = window.setTimeout(() => setIsCopied(false), timeout);
     } catch (error) {
       onError?.(error as Error);
@@ -133,9 +136,11 @@ export const TerminalCopyButton = ({
 
   useEffect(
     () => () => {
-      window.clearTimeout(timeoutRef.current);
+      if (timeoutRef.current !== null) {
+        window.clearTimeout(timeoutRef.current);
+      }
     },
-    []
+    [],
   );
 
   const Icon = isCopied ? CheckIcon : CopyIcon;
@@ -144,7 +149,7 @@ export const TerminalCopyButton = ({
     <Button
       className={cn(
         "size-7 shrink-0 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
-        className
+        className,
       )}
       onClick={copyToClipboard}
       size="icon"
@@ -173,7 +178,7 @@ export const TerminalClearButton = ({
     <Button
       className={cn(
         "size-7 shrink-0 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
-        className
+        className,
       )}
       onClick={onClear}
       size="icon"
@@ -204,14 +209,14 @@ export const TerminalContent = ({
   return (
     <div
       className={cn(
-        "max-h-96 overflow-auto p-4 font-mono text-sm leading-relaxed",
-        className
+        "min-h-0 overflow-auto p-4 font-mono text-sm leading-relaxed",
+        className,
       )}
       ref={containerRef}
       {...props}
     >
       {children ?? (
-        <pre className="whitespace-pre-wrap break-words">
+        <pre className="whitespace-pre-wrap wrap-break-word">
           <Ansi>{output}</Ansi>
           {isStreaming && (
             <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-zinc-100" />
@@ -240,7 +245,7 @@ export const Terminal = ({
 }: TerminalProps) => {
   const contextValue = useMemo(
     () => ({ autoScroll, isStreaming, onClear, output }),
-    [autoScroll, isStreaming, onClear, output]
+    [autoScroll, isStreaming, onClear, output],
   );
 
   return (
@@ -248,7 +253,7 @@ export const Terminal = ({
       <div
         className={cn(
           "flex flex-col overflow-hidden rounded-lg border bg-zinc-950 text-zinc-100",
-          className
+          className,
         )}
         {...props}
       >

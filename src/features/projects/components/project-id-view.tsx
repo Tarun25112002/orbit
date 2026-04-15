@@ -49,6 +49,12 @@ const AUTO_SAVE_RETRY_DELAY_MS = 3000;
 const RUNTIME_LOG_LIMIT = 700;
 const RUNTIME_DEV_SERVER_KEY = "dev-server";
 const RUNTIME_DEV_SERVER_PORT = 4173;
+const PREVIEW_SERVER_READY_TIMEOUT_MS = 20_000;
+const RUNTIME_DEV_SERVER_EARLY_EXIT_TIMEOUT_MS = 4_000;
+const RUNTIME_DEV_SERVER_FAILURE_WINDOW_MS = 120_000;
+const RUNTIME_DEV_SERVER_MAX_FAILURES = 3;
+const RUNTIME_INSTALL_TIMEOUT_MS = 240_000;
+const RUNTIME_INSTALL_MAX_ATTEMPTS = 2;
 const RUNTIME_FILE_SYNC_TIMEOUT_MS = 6000;
 const RUNTIME_COMMAND_SYNC_MAX_PATHS = 600;
 const RUNTIME_COMMAND_SYNC_PATH_CANDIDATES = [
@@ -68,6 +74,11 @@ const RUNTIME_COMMAND_SYNC_PATH_CANDIDATES = [
 ] as const;
 
 type RuntimePackageManager = "npm" | "pnpm" | "yarn" | "bun";
+
+type RuntimeDevServerFailureState = {
+  windowStartedAt: number;
+  count: number;
+};
 
 const isFilesystemOperation = (operation: AiPipelineOperation) =>
   operation.type === "create_file" ||
@@ -131,18 +142,88 @@ const buildInstallCommand = (packageManager: RuntimePackageManager) => {
 
   return {
     command: "npm",
-    commandArgs: ["install"],
+    commandArgs: ["install", "--no-progress"],
     label: "npm install",
   };
 };
 
-const buildDevServerCommand = (packageManager: RuntimePackageManager) => {
+const buildDevServerCommand = (
+  packageManager: RuntimePackageManager,
+  options?: {
+    useHostnameFlag?: boolean;
+    preferDirectNextCommand?: boolean;
+  },
+) => {
+  if (options?.preferDirectNextCommand) {
+    if (packageManager === "yarn") {
+      return {
+        command: "yarn",
+        commandArgs: [
+          "next",
+          "dev",
+          "--hostname",
+          "0.0.0.0",
+          "--port",
+          String(RUNTIME_DEV_SERVER_PORT),
+        ],
+        label: "yarn next dev",
+      };
+    }
+
+    if (packageManager === "pnpm") {
+      return {
+        command: "pnpm",
+        commandArgs: [
+          "exec",
+          "next",
+          "dev",
+          "--hostname",
+          "0.0.0.0",
+          "--port",
+          String(RUNTIME_DEV_SERVER_PORT),
+        ],
+        label: "pnpm exec next dev",
+      };
+    }
+
+    if (packageManager === "bun") {
+      return {
+        command: "bun",
+        commandArgs: [
+          "x",
+          "next",
+          "dev",
+          "--hostname",
+          "0.0.0.0",
+          "--port",
+          String(RUNTIME_DEV_SERVER_PORT),
+        ],
+        label: "bun x next dev",
+      };
+    }
+
+    return {
+      command: "npx",
+      commandArgs: [
+        "next",
+        "dev",
+        "--hostname",
+        "0.0.0.0",
+        "--port",
+        String(RUNTIME_DEV_SERVER_PORT),
+      ],
+      label: "npx next dev",
+    };
+  }
+
+  const hostFlag = options?.useHostnameFlag ? "--hostname" : "--host";
+
   if (packageManager === "yarn") {
     return {
       command: "yarn",
       commandArgs: [
         "dev",
-        "--host",
+        hostFlag,
         "0.0.0.0",
         "--port",
         String(RUNTIME_DEV_SERVER_PORT),
@@ -158,7 +239,7 @@ const buildDevServerCommand = (packageManager: RuntimePackageManager) => {
         "run",
         "dev",
         "--",
-        "--host",
+        hostFlag,
         "0.0.0.0",
         "--port",
         String(RUNTIME_DEV_SERVER_PORT),
@@ -174,7 +255,7 @@ const buildDevServerCommand = (packageManager: RuntimePackageManager) => {
         "run",
         "dev",
         "--",
-        "--host",
+        hostFlag,
         "0.0.0.0",
         "--port",
         String(RUNTIME_DEV_SERVER_PORT),
@@ -189,7 +270,7 @@ const buildDevServerCommand = (packageManager: RuntimePackageManager) => {
       "run",
       "dev",
       "--",
-      "--host",
+      hostFlag,
       "0.0.0.0",
       "--port",
       String(RUNTIME_DEV_SERVER_PORT),
@@ -231,6 +312,31 @@ const describeRuntimeOperation = (operation: AiPipelineOperation) => {
 
   return `${operation.type} ${operation.path}`;
 };
+
+const getPipelineOperationIdentity = (operation: AiPipelineOperation) => {
+  if (operation.type === "run_command") {
+    return `${operation.type}:${operation.command}:${JSON.stringify(
+      operation.commandArgs ?? [],
+    )}`;
+  }
+
+  if (operation.type === "start_background_command") {
+    return `${operation.type}:${operation.key}:${operation.command}:${JSON.stringify(
+      operation.commandArgs ?? [],
+    )}`;
+  }
+
+  if (operation.type === "rename_path") {
+    return `${operation.type}:${operation.path}:${operation.newPath}`;
+  }
+
+  return `${operation.type}:${operation.path}`;
+};
+
+const arePipelineOperationsEquivalent = (
+  left: AiPipelineOperation,
+  right: AiPipelineOperation,
+) => getPipelineOperationIdentity(left) === getPipelineOperationIdentity(right);
 
 const EmptyState = ({ label }: { label: string }) => {
   return (
@@ -726,8 +832,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const runtimeExecutedMessagesRef = useRef(new Set<string>());
   const runtimeDependenciesFingerprintRef = useRef<string | null>(null);
   const runtimeDevServerStartedRef = useRef(false);
+  const runtimeDevServerFailureStateRef = useRef<RuntimeDevServerFailureState>({
+    windowStartedAt: 0,
+    count: 0,
+  });
   const projectFileContentByPathRef = useRef(new Map<string, string>());
   const previewAutoLaunchTriedRef = useRef(false);
+  const previewBootInFlightRef = useRef(false);
+  const runtimeTraceQueueRef = useRef<OrbitAiExecutionTraceEventDetail[]>([]);
+  const runtimeTraceWorkerRunningRef = useRef(false);
   const selectedEditableFileIdRef = useRef<Id<"files"> | null>(null);
   const persistFileContentRef = useRef<
     (fileId: Id<"files">, content: string) => Promise<void>
@@ -756,7 +869,14 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       runtimeExecutedMessages.clear();
       runtimeDependenciesFingerprintRef.current = null;
       runtimeDevServerStartedRef.current = false;
+      runtimeDevServerFailureStateRef.current = {
+        windowStartedAt: 0,
+        count: 0,
+      };
       previewAutoLaunchTriedRef.current = false;
+      previewBootInFlightRef.current = false;
+      runtimeTraceQueueRef.current = [];
+      runtimeTraceWorkerRunningRef.current = false;
     };
   }, []);
 
@@ -839,6 +959,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     projectFileContentByPathRef.current = projectFileContentByPath;
   }, [projectFileContentByPath]);
 
+  const previewAutoLaunchFingerprint = useMemo(
+    () => buildRuntimeDependencyFingerprint(projectFileContentByPath),
+    [projectFileContentByPath],
+  );
+
+  useEffect(() => {
+    previewAutoLaunchTriedRef.current = false;
+  }, [previewAutoLaunchFingerprint]);
+
   const appendRuntimeLog = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     const line = `[${timestamp}] ${message}`;
@@ -852,6 +981,54 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       return next;
     });
   }, []);
+
+  const resetRuntimeDevServerFailures = useCallback(() => {
+    runtimeDevServerFailureStateRef.current = {
+      windowStartedAt: 0,
+      count: 0,
+    };
+  }, []);
+
+  const isRuntimeDevServerCircuitOpen = useCallback(() => {
+    const now = Date.now();
+    const state = runtimeDevServerFailureStateRef.current;
+
+    if (!state.windowStartedAt) {
+      return false;
+    }
+
+    if (now - state.windowStartedAt > RUNTIME_DEV_SERVER_FAILURE_WINDOW_MS) {
+      resetRuntimeDevServerFailures();
+      return false;
+    }
+
+    return state.count >= RUNTIME_DEV_SERVER_MAX_FAILURES;
+  }, [resetRuntimeDevServerFailures]);
+
+  const recordRuntimeDevServerFailure = useCallback(
+    (reason: string) => {
+      const now = Date.now();
+      const state = runtimeDevServerFailureStateRef.current;
+
+      if (
+        !state.windowStartedAt ||
+        now - state.windowStartedAt > RUNTIME_DEV_SERVER_FAILURE_WINDOW_MS
+      ) {
+        state.windowStartedAt = now;
+        state.count = 0;
+      }
+
+      state.count += 1;
+      appendRuntimeLog(reason);
+
+      if (state.count >= RUNTIME_DEV_SERVER_MAX_FAILURES) {
+        appendRuntimeLog(
+          `Preview startup paused after ${state.count} failures in ${Math.round(RUNTIME_DEV_SERVER_FAILURE_WINDOW_MS / 1000)}s. Fix the startup error, then click Restart Preview or wait for the cooldown window.`,
+        );
+      }
+    },
+    [appendRuntimeLog],
+  );
 
   const selectedFilePath = useMemo(() => {
     if (!selectedFileId) {
@@ -1169,6 +1346,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         setIsPreviewBooting(false);
         appendRuntimeLog(`Preview server ready on port ${port}: ${url}`);
       },
+      { emitCurrent: true },
     );
 
     return () => {
@@ -1288,7 +1466,72 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [appendRuntimeLog, convex, projectId],
   );
 
+  const syncRuntimeCommandChangesToProjectSafely = useCallback(
+    async (contextLabel: string) => {
+      try {
+        await syncRuntimeCommandChangesToProject(contextLabel);
+      } catch (error) {
+        appendRuntimeLog(
+          `${contextLabel}: failed to sync runtime file changes (${getErrorMessage(error)}).`,
+        );
+      }
+    },
+    [appendRuntimeLog, syncRuntimeCommandChangesToProject],
+  );
+
+  const installRuntimeDependenciesWithRetry = useCallback(
+    async (install: ReturnType<typeof buildInstallCommand>) => {
+      for (
+        let attempt = 1;
+        attempt <= RUNTIME_INSTALL_MAX_ATTEMPTS;
+        attempt += 1
+      ) {
+        appendRuntimeLog(
+          `Installing dependencies with ${install.label} (attempt ${attempt}/${RUNTIME_INSTALL_MAX_ATTEMPTS})...`,
+        );
+
+        try {
+          const installExitCode = await projectWebcontainerRuntime.runCommand({
+            command: install.command,
+            commandArgs: install.commandArgs,
+            timeoutMs: RUNTIME_INSTALL_TIMEOUT_MS,
+            log: appendRuntimeLog,
+          });
+
+          if (installExitCode === 0) {
+            return true;
+          }
+
+          appendRuntimeLog(
+            `Dependency install failed with exit code ${installExitCode}.`,
+          );
+        } catch (error) {
+          appendRuntimeLog(
+            `Dependency install failed: ${getErrorMessage(error)}`,
+          );
+        }
+
+        if (attempt < RUNTIME_INSTALL_MAX_ATTEMPTS) {
+          appendRuntimeLog(
+            "Retrying dependency install after refreshing runtime snapshot...",
+          );
+          await syncProjectSnapshotToRuntime();
+        }
+      }
+
+      return false;
+    },
+    [appendRuntimeLog, syncProjectSnapshotToRuntime],
+  );
+
   const maybeStartRuntimeDevServer = useCallback(async () => {
+    if (isRuntimeDevServerCircuitOpen()) {
+      appendRuntimeLog(
+        "Preview startup is temporarily paused after repeated failures. Fix the runtime error and retry.",
+      );
+      return false;
+    }
+
     if (
       runtimeDevServerStartedRef.current &&
       !projectWebcontainerRuntime.isBackgroundCommandRunning(
@@ -1296,6 +1539,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       )
     ) {
       runtimeDevServerStartedRef.current = false;
+      projectWebcontainerRuntime.clearServerReadyState();
       setRuntimePreviewUrl("");
       appendRuntimeLog(
         "Detected stopped dev server process; attempting restart.",
@@ -1316,11 +1560,25 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     }
 
     let hasDevScript = false;
+    let useHostnameFlag = false;
+    let preferDirectNextCommand = false;
     try {
       const parsed = JSON.parse(packageJson) as {
         scripts?: Record<string, string>;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
       };
-      hasDevScript = typeof parsed.scripts?.dev === "string";
+      const devScript = parsed.scripts?.dev;
+      hasDevScript = typeof devScript === "string";
+
+      const devScriptLower = (devScript ?? "").toLowerCase();
+      const isNextDevScript = devScriptLower.includes("next dev");
+      const hasNextDependency =
+        typeof parsed.dependencies?.next === "string" ||
+        typeof parsed.devDependencies?.next === "string";
+      useHostnameFlag = isNextDevScript || hasNextDependency;
+      preferDirectNextCommand =
+        isNextDevScript && devScriptLower.includes("--host");
     } catch {
       appendRuntimeLog(
         "Skipping preview server start: package.json is invalid JSON.",
@@ -1333,32 +1591,37 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       return false;
     }
 
+    if (preferDirectNextCommand) {
+      appendRuntimeLog(
+        "Detected incompatible Next.js dev script flag (--host). Starting Next directly with --hostname.",
+      );
+    }
+
     const packageManager = detectPackageManager(filesByPath);
     const dependenciesFingerprint =
       buildRuntimeDependencyFingerprint(filesByPath);
 
     if (runtimeDependenciesFingerprintRef.current !== dependenciesFingerprint) {
       const install = buildInstallCommand(packageManager);
-      appendRuntimeLog(`Installing dependencies with ${install.label}...`);
-      const installExitCode = await projectWebcontainerRuntime.runCommand({
-        command: install.command,
-        commandArgs: install.commandArgs,
-        log: appendRuntimeLog,
-      });
+      const installSucceeded =
+        await installRuntimeDependenciesWithRetry(install);
 
-      if (installExitCode !== 0) {
-        appendRuntimeLog(
-          `Dependency install failed with exit code ${installExitCode}.`,
+      if (!installSucceeded) {
+        recordRuntimeDevServerFailure(
+          "Dependency install failed after retry attempts.",
         );
         return false;
       }
 
       runtimeDependenciesFingerprintRef.current = dependenciesFingerprint;
       appendRuntimeLog("Dependencies installed successfully.");
-      await syncRuntimeCommandChangesToProject("Dependency install");
+      await syncRuntimeCommandChangesToProjectSafely("Dependency install");
     }
 
-    const devCommand = buildDevServerCommand(packageManager);
+    const devCommand = buildDevServerCommand(packageManager, {
+      useHostnameFlag,
+      preferDirectNextCommand,
+    });
 
     appendRuntimeLog(
       `Starting ${devCommand.label} on port ${RUNTIME_DEV_SERVER_PORT}...`,
@@ -1372,14 +1635,84 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     });
 
     runtimeDevServerStartedRef.current = true;
+
+    const earlyExit =
+      await projectWebcontainerRuntime.waitForBackgroundCommandExit({
+        key: RUNTIME_DEV_SERVER_KEY,
+        timeoutMs: RUNTIME_DEV_SERVER_EARLY_EXIT_TIMEOUT_MS,
+      });
+
+    if (earlyExit) {
+      runtimeDevServerStartedRef.current = false;
+      projectWebcontainerRuntime.clearServerReadyState();
+      setRuntimePreviewUrl("");
+
+      const exitDetails = earlyExit.errorMessage
+        ? earlyExit.errorMessage
+        : `exit code ${earlyExit.code}`;
+      recordRuntimeDevServerFailure(
+        `Preview dev server exited before startup completed (${exitDetails}).`,
+      );
+      return false;
+    }
+
+    try {
+      const ready = await projectWebcontainerRuntime.waitForServerReady({
+        timeoutMs: PREVIEW_SERVER_READY_TIMEOUT_MS,
+        expectedPort: RUNTIME_DEV_SERVER_PORT,
+      });
+      setRuntimePreviewUrl(ready.url);
+      setPreviewError(null);
+      resetRuntimeDevServerFailures();
+    } catch (error) {
+      runtimeDevServerStartedRef.current = false;
+      projectWebcontainerRuntime.clearServerReadyState();
+      setRuntimePreviewUrl("");
+
+      const latestExit =
+        projectWebcontainerRuntime.getBackgroundCommandLastExit(
+          RUNTIME_DEV_SERVER_KEY,
+        );
+      if (
+        latestExit &&
+        !projectWebcontainerRuntime.isBackgroundCommandRunning(
+          RUNTIME_DEV_SERVER_KEY,
+        )
+      ) {
+        const exitDetails = latestExit.errorMessage
+          ? latestExit.errorMessage
+          : `exit code ${latestExit.code}`;
+        recordRuntimeDevServerFailure(
+          `Preview dev server exited during startup (${exitDetails}).`,
+        );
+        return false;
+      }
+
+      const message =
+        error instanceof Error ? error.message : String(error ?? "unknown");
+      recordRuntimeDevServerFailure(
+        `Preview server did not become ready: ${message}`,
+      );
+      return false;
+    }
+
     return true;
-  }, [appendRuntimeLog, syncRuntimeCommandChangesToProject]);
+  }, [
+    appendRuntimeLog,
+    installRuntimeDependenciesWithRetry,
+    isRuntimeDevServerCircuitOpen,
+    recordRuntimeDevServerFailure,
+    resetRuntimeDevServerFailures,
+    syncRuntimeCommandChangesToProjectSafely,
+  ]);
 
   const ensurePreviewReady = useCallback(
     async (options?: { switchToPreview?: boolean; forceRestart?: boolean }) => {
-      if (isPreviewBooting) {
+      if (previewBootInFlightRef.current) {
         return;
       }
+
+      previewBootInFlightRef.current = true;
 
       if (options?.switchToPreview ?? true) {
         setActiveView("preview");
@@ -1390,6 +1723,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           key: RUNTIME_DEV_SERVER_KEY,
           log: appendRuntimeLog,
         });
+        projectWebcontainerRuntime.clearServerReadyState();
         runtimeDevServerStartedRef.current = false;
         setRuntimePreviewUrl("");
       }
@@ -1413,12 +1747,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         setPreviewError(message);
         appendRuntimeLog(`Preview pipeline failed: ${message}`);
       } finally {
+        previewBootInFlightRef.current = false;
         setIsPreviewBooting(false);
       }
     },
     [
       appendRuntimeLog,
-      isPreviewBooting,
       maybeStartRuntimeDevServer,
       syncProjectSnapshotToRuntime,
     ],
@@ -1460,7 +1794,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const runAiExecutionTrace = useCallback(
     async (detail: OrbitAiExecutionTraceEventDetail) => {
       if (runtimeExecutedMessagesRef.current.has(detail.assistantMessageId)) {
-        console.info("[orbit:runtime] Already executed trace for", detail.assistantMessageId);
+        console.info(
+          "[orbit:runtime] Already executed trace for",
+          detail.assistantMessageId,
+        );
         return;
       }
 
@@ -1506,7 +1843,19 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             `Step ${index + 1}/${detail.trace.operations.length}: ${describeRuntimeOperation(operation)}`,
           );
 
-          const result = detail.trace.operationResults[index];
+          const indexedResult = detail.trace.operationResults[index];
+          const result =
+            indexedResult &&
+            arePipelineOperationsEquivalent(indexedResult.operation, operation)
+              ? indexedResult
+              : null;
+
+          if (indexedResult && !result) {
+            appendRuntimeLog(
+              `Execution result mismatch at step ${index + 1}; running planned operation directly.`,
+            );
+          }
+
           if (result) {
             const statusLabel = result.status.toUpperCase();
             const message = result.message.trim();
@@ -1548,7 +1897,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               log: appendRuntimeLog,
             });
             appendRuntimeLog(`Command exited with code ${exitCode}.`);
-            await syncRuntimeCommandChangesToProject(
+            await syncRuntimeCommandChangesToProjectSafely(
               `Operation command ${operation.command}`,
             );
             continue;
@@ -1606,10 +1955,41 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [
       appendRuntimeLog,
       maybeStartRuntimeDevServer,
-      syncRuntimeCommandChangesToProject,
+      syncRuntimeCommandChangesToProjectSafely,
       syncProjectSnapshotToRuntime,
       waitForRuntimeFileSync,
     ],
+  );
+
+  const enqueueAiExecutionTrace = useCallback(
+    (detail: OrbitAiExecutionTraceEventDetail) => {
+      runtimeTraceQueueRef.current.push(detail);
+
+      if (runtimeTraceWorkerRunningRef.current) {
+        appendRuntimeLog(
+          `Queued AI execution for ${detail.assistantMessageId}.`,
+        );
+        return;
+      }
+
+      runtimeTraceWorkerRunningRef.current = true;
+
+      void (async () => {
+        try {
+          while (runtimeTraceQueueRef.current.length > 0) {
+            const next = runtimeTraceQueueRef.current.shift();
+            if (!next) {
+              continue;
+            }
+
+            await runAiExecutionTrace(next);
+          }
+        } finally {
+          runtimeTraceWorkerRunningRef.current = false;
+        }
+      })();
+    },
+    [appendRuntimeLog, runAiExecutionTrace],
   );
 
   useEffect(() => {
@@ -1620,7 +2000,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         return;
       }
 
-      void runAiExecutionTrace(customEvent.detail);
+      enqueueAiExecutionTrace(customEvent.detail);
     };
 
     window.addEventListener(
@@ -1634,11 +2014,16 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         onExecutionTrace as EventListener,
       );
     };
-  }, [runAiExecutionTrace]);
+  }, [enqueueAiExecutionTrace]);
 
   const handleRunRuntimeCommand = useCallback(async () => {
     const rawCommand = runtimeCommand.trim();
-    if (!rawCommand || isRuntimeCommandRunning || isRuntimeBusy) {
+    if (
+      !rawCommand ||
+      isRuntimeCommandRunning ||
+      isRuntimeBusy ||
+      runtimeTraceWorkerRunningRef.current
+    ) {
       return;
     }
 
@@ -1662,7 +2047,9 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       });
 
       appendRuntimeLog(`Command exited with code ${exitCode}.`);
-      await syncRuntimeCommandChangesToProject(`Manual command ${command}`);
+      await syncRuntimeCommandChangesToProjectSafely(
+        `Manual command ${command}`,
+      );
     } catch (error) {
       appendRuntimeLog(
         `Command failed: ${
@@ -1677,7 +2064,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     isRuntimeBusy,
     isRuntimeCommandRunning,
     runtimeCommand,
-    syncRuntimeCommandChangesToProject,
+    syncRuntimeCommandChangesToProjectSafely,
     syncProjectSnapshotToRuntime,
   ]);
 

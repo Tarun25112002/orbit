@@ -54,6 +54,13 @@ export type OrbitAiExecutionTraceEventDetail = {
   trace: AiExecutionTrace;
 };
 
+const MAX_TRACE_OPERATIONS = 200;
+const MAX_TRACE_RESULTS = 200;
+const MAX_PATH_LENGTH = 512;
+const MAX_COMMAND_LENGTH = 128;
+const MAX_COMMAND_ARGS = 40;
+const MAX_COMMAND_ARG_LENGTH = 256;
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
@@ -77,6 +84,10 @@ const normalizePath = (value: unknown) => {
     return null;
   }
 
+  if (normalized.length > MAX_PATH_LENGTH) {
+    return null;
+  }
+
   const segments = normalized.split("/");
   if (
     segments.some((segment) => !segment || segment === "." || segment === "..")
@@ -87,6 +98,24 @@ const normalizePath = (value: unknown) => {
   return segments.join("/");
 };
 
+const tokenizeCommandLine = (value: string) => {
+  const matches = value.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  return matches.map((token) => token.replace(/^("|')|("|')$/g, ""));
+};
+
+const sanitizeCommandToken = (value: string, maxLength: number) => {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLength) {
+    return null;
+  }
+
+  if (/[\r\n\u0000]/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+};
+
 const parseCommandArgs = (value: unknown) => {
   if (!Array.isArray(value)) {
     return undefined;
@@ -94,11 +123,42 @@ const parseCommandArgs = (value: unknown) => {
 
   const args = value
     .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter((item) => item.length > 0)
-    .slice(0, 40);
+    .map((item) => sanitizeCommandToken(item, MAX_COMMAND_ARG_LENGTH))
+    .filter((item): item is string => item !== null)
+    .slice(0, MAX_COMMAND_ARGS);
 
   return args.length > 0 ? args : undefined;
+};
+
+const normalizeCommandWithArgs = (
+  rawCommand: unknown,
+  rawCommandArgs: unknown,
+) => {
+  if (typeof rawCommand !== "string") {
+    return null;
+  }
+
+  const commandParts = tokenizeCommandLine(rawCommand.trim());
+  if (commandParts.length === 0) {
+    return null;
+  }
+
+  const [commandPart, ...commandArgsFromCommand] = commandParts;
+  const command = sanitizeCommandToken(commandPart, MAX_COMMAND_LENGTH);
+  if (!command) {
+    return null;
+  }
+
+  const parsedCommandArgs = parseCommandArgs(rawCommandArgs) ?? [];
+  const mergedArgs = [...commandArgsFromCommand, ...parsedCommandArgs]
+    .map((item) => sanitizeCommandToken(item, MAX_COMMAND_ARG_LENGTH))
+    .filter((item): item is string => item !== null)
+    .slice(0, MAX_COMMAND_ARGS);
+
+  return {
+    command,
+    commandArgs: mergedArgs.length > 0 ? mergedArgs : undefined,
+  };
 };
 
 const normalizeCommandKey = (value: unknown) => {
@@ -126,34 +186,38 @@ const parseOperation = (value: unknown): AiPipelineOperation | null => {
   const type = value.type.trim().toLowerCase();
 
   if (type === "run_command") {
-    const command =
-      typeof value.command === "string" ? value.command.trim() : "";
+    const normalizedCommand = normalizeCommandWithArgs(
+      value.command,
+      value.commandArgs,
+    );
 
-    if (!command) {
+    if (!normalizedCommand) {
       return null;
     }
 
     return {
       type: "run_command",
-      command,
-      commandArgs: parseCommandArgs(value.commandArgs),
+      command: normalizedCommand.command,
+      commandArgs: normalizedCommand.commandArgs,
     };
   }
 
   if (type === "start_background_command") {
-    const command =
-      typeof value.command === "string" ? value.command.trim() : "";
+    const normalizedCommand = normalizeCommandWithArgs(
+      value.command,
+      value.commandArgs,
+    );
     const key = normalizeCommandKey(value.key);
 
-    if (!command || !key) {
+    if (!normalizedCommand || !key) {
       return null;
     }
 
     return {
       type: "start_background_command",
       key,
-      command,
-      commandArgs: parseCommandArgs(value.commandArgs),
+      command: normalizedCommand.command,
+      commandArgs: normalizedCommand.commandArgs,
     };
   }
 
@@ -244,6 +308,7 @@ export const parseAiExecutionTrace = (
 
   const operations = Array.isArray(value.operations)
     ? value.operations
+        .slice(0, MAX_TRACE_OPERATIONS)
         .map((operation) => parseOperation(operation))
         .filter(
           (operation): operation is AiPipelineOperation => operation !== null,
@@ -252,6 +317,7 @@ export const parseAiExecutionTrace = (
 
   const operationResults = Array.isArray(value.operationResults)
     ? value.operationResults
+        .slice(0, MAX_TRACE_RESULTS)
         .map((result) => parseOperationResult(result))
         .filter(
           (result): result is AiPipelineOperationResult => result !== null,

@@ -11,6 +11,16 @@ type RuntimeLogWriter = (line: string) => void;
 
 type ServerReadyHandler = (args: { port: number; url: string }) => void;
 
+type ServerReadyState = { port: number; url: string };
+
+type BackgroundCommandExit = {
+  code: number | null;
+  errorMessage: string | null;
+  at: number;
+};
+
+const WEBCONTAINER_RUNTIME_VERSION = 2;
+
 const normalizePath = (rawPath: string) =>
   rawPath
     .trim()
@@ -36,6 +46,23 @@ const getParentPath = (path: string) => {
 const normalizeOutputChunk = (chunk: string) =>
   chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
 
+const stripAnsiControlSequences = (value: string) =>
+  value
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+
+const isSpinnerFrame = (value: string) => /^[-\\|/]$/.test(value.trim());
+
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error ?? "unknown");
+
+const isCrossOriginIsolationError = (message: string) =>
+  message.includes("SharedArrayBuffer") ||
+  message.includes("crossOriginIsolated");
+
+const isWebcontainerInstanceLimitError = (message: string) =>
+  message.includes("Unable to create more instances");
+
 class ProjectWebcontainerRuntime {
   private instance: WebContainer | null = null;
 
@@ -45,16 +72,115 @@ class ProjectWebcontainerRuntime {
 
   private serverReadyUnsubscribe: Unsubscribe | null = null;
 
+  private lastServerReady: ServerReadyState | null = null;
+
   private backgroundProcesses = new Map<string, WebContainerProcess>();
+
+  private backgroundProcessExitPromises = new Map<
+    string,
+    Promise<BackgroundCommandExit>
+  >();
+
+  private backgroundProcessLastExits = new Map<string, BackgroundCommandExit>();
 
   private syncedProjectFilePaths = new Set<string>();
 
-  public onServerReady(handler: ServerReadyHandler) {
+  private registerBootedInstance(
+    instance: WebContainer,
+    log?: RuntimeLogWriter,
+  ) {
+    this.instance = instance;
+    this.serverReadyUnsubscribe?.();
+    this.serverReadyUnsubscribe = instance.on("server-ready", (port, url) => {
+      this.lastServerReady = { port, url };
+      for (const handler of this.serverReadyHandlers) {
+        handler({ port, url });
+      }
+    });
+
+    log?.("WebContainer booted.");
+    return instance;
+  }
+
+  public onServerReady(
+    handler: ServerReadyHandler,
+    options?: { emitCurrent?: boolean },
+  ) {
     this.serverReadyHandlers.add(handler);
+
+    if (options?.emitCurrent && this.lastServerReady) {
+      handler(this.lastServerReady);
+    }
 
     return () => {
       this.serverReadyHandlers.delete(handler);
     };
+  }
+
+  public clearServerReadyState() {
+    this.lastServerReady = null;
+  }
+
+  public getLastServerReady() {
+    return this.lastServerReady;
+  }
+
+  public async waitForServerReady(args?: {
+    timeoutMs?: number;
+    expectedPort?: number;
+  }) {
+    const timeoutMs = args?.timeoutMs ?? 20_000;
+    const expectedPort = args?.expectedPort;
+
+    const cached = this.lastServerReady;
+    if (
+      cached &&
+      (expectedPort === undefined || cached.port === expectedPort)
+    ) {
+      return cached;
+    }
+
+    await this.ensureBooted();
+
+    const nextCached = this.lastServerReady;
+    if (
+      nextCached &&
+      (expectedPort === undefined || nextCached.port === expectedPort)
+    ) {
+      return nextCached;
+    }
+
+    return await new Promise<ServerReadyState>((resolve, reject) => {
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        unsubscribe();
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      };
+
+      const unsubscribe = this.onServerReady((ready) => {
+        if (expectedPort !== undefined && ready.port !== expectedPort) {
+          return;
+        }
+
+        cleanup();
+        resolve(ready);
+      });
+
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(
+          new Error(
+            `Timed out waiting for preview server${
+              expectedPort === undefined ? "" : ` on port ${expectedPort}`
+            }.`,
+          ),
+        );
+      }, timeoutMs);
+    });
   }
 
   public async ensureBooted(log?: RuntimeLogWriter) {
@@ -62,25 +188,49 @@ class ProjectWebcontainerRuntime {
       return this.instance;
     }
 
+    if (typeof window !== "undefined" && !window.crossOriginIsolated) {
+      throw new Error(
+        "WebContainer requires cross-origin isolation (SharedArrayBuffer). Open this project in a top-level tab and ensure COOP/COEP headers are not stripped by your browser, proxy, or extensions.",
+      );
+    }
+
     if (!this.bootPromise) {
       this.bootPromise = WebContainer.boot({
         coep: "credentialless",
       })
         .then((instance) => {
-          this.instance = instance;
-          this.serverReadyUnsubscribe = instance.on(
-            "server-ready",
-            (port, url) => {
-              for (const handler of this.serverReadyHandlers) {
-                handler({ port, url });
-              }
-            },
-          );
-
-          log?.("WebContainer booted.");
-          return instance;
+          return this.registerBootedInstance(instance, log);
         })
-        .catch((error) => {
+        .catch(async (error) => {
+          const message = getErrorMessage(error);
+
+          if (isCrossOriginIsolationError(message)) {
+            this.bootPromise = null;
+            throw new Error(
+              "WebContainer requires cross-origin isolation (SharedArrayBuffer). Open this project in a top-level tab and ensure COOP/COEP headers are not stripped by your browser, proxy, or extensions.",
+            );
+          }
+
+          if (isWebcontainerInstanceLimitError(message)) {
+            log?.(
+              "WebContainer instance limit reached. Resetting runtime and retrying once...",
+            );
+            this.teardown();
+
+            try {
+              const recoveredInstance = await WebContainer.boot({
+                coep: "credentialless",
+              });
+              return this.registerBootedInstance(recoveredInstance, log);
+            } catch (retryError) {
+              const retryMessage = getErrorMessage(retryError);
+              this.bootPromise = null;
+              throw new Error(
+                `${retryMessage}. Try reloading the page and closing other Orbit tabs that have Runtime/Preview open.`,
+              );
+            }
+          }
+
           this.bootPromise = null;
           throw error;
         });
@@ -203,15 +353,59 @@ class ProjectWebcontainerRuntime {
     command: string;
     commandArgs?: string[];
     log?: RuntimeLogWriter;
+    timeoutMs?: number;
   }) {
     const instance = await this.ensureBooted(args.log);
     const process = await instance.spawn(args.command, args.commandArgs ?? []);
 
     const outputDone = this.pipeProcessOutput(process, args.log);
-    const exitCode = await process.exit;
-    await outputDone;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let runError: unknown = null;
+    let exitCode: number | null = null;
 
-    return exitCode;
+    try {
+      if (args.timeoutMs && args.timeoutMs > 0) {
+        const timeoutMs = args.timeoutMs;
+        const timedExitCode = await Promise.race([
+          process.exit,
+          new Promise<number>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              try {
+                process.kill();
+              } catch {
+                // Best-effort termination when timeout fires.
+              }
+
+              reject(new Error(`Command timed out after ${timeoutMs}ms.`));
+            }, timeoutMs);
+          }),
+        ]);
+
+        exitCode = timedExitCode;
+      } else {
+        exitCode = await process.exit;
+      }
+    } catch (error) {
+      runError = error;
+    } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    try {
+      await outputDone;
+    } catch (error) {
+      if (!runError) {
+        runError = error;
+      }
+    }
+
+    if (runError) {
+      throw runError;
+    }
+
+    return exitCode ?? 1;
   }
 
   public async readFileIfExists(path: string) {
@@ -225,8 +419,7 @@ class ProjectWebcontainerRuntime {
 
       return new TextDecoder().decode(content);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error ?? "unknown");
+      const message = getErrorMessage(error);
 
       if (message.includes("ENOENT") || message.includes("EISDIR")) {
         return null;
@@ -250,26 +443,39 @@ class ProjectWebcontainerRuntime {
     const instance = await this.ensureBooted(args.log);
     const process = await instance.spawn(args.command, args.commandArgs ?? []);
     this.backgroundProcesses.set(args.key, process);
+    this.backgroundProcessLastExits.delete(args.key);
+
+    const exitPromise: Promise<BackgroundCommandExit> = process.exit
+      .then((code) => ({ code, errorMessage: null, at: Date.now() }))
+      .catch((error) => ({
+        code: null,
+        errorMessage: getErrorMessage(error),
+        at: Date.now(),
+      }));
+
+    this.backgroundProcessExitPromises.set(args.key, exitPromise);
 
     void this.pipeProcessOutput(process, args.log).catch((error) => {
-      const message =
-        error instanceof Error ? error.message : String(error ?? "unknown");
+      const message = getErrorMessage(error);
       args.log?.(`Background output error: ${message}`);
     });
 
-    void process.exit
-      .then((code) => {
-        this.backgroundProcesses.delete(args.key);
+    void exitPromise.then((exit) => {
+      this.backgroundProcesses.delete(args.key);
+      this.backgroundProcessExitPromises.delete(args.key);
+      this.backgroundProcessLastExits.set(args.key, exit);
+
+      if (exit.errorMessage) {
         args.log?.(
-          `Background command (${args.key}) exited with code ${code}.`,
+          `Background command (${args.key}) failed: ${exit.errorMessage}`,
         );
-      })
-      .catch((error) => {
-        this.backgroundProcesses.delete(args.key);
-        const message =
-          error instanceof Error ? error.message : String(error ?? "unknown");
-        args.log?.(`Background command (${args.key}) failed: ${message}`);
-      });
+        return;
+      }
+
+      args.log?.(
+        `Background command (${args.key}) exited with code ${exit.code}.`,
+      );
+    });
   }
 
   public stopBackgroundCommand(args: { key: string; log?: RuntimeLogWriter }) {
@@ -281,8 +487,7 @@ class ProjectWebcontainerRuntime {
     try {
       process.kill();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error ?? "unknown");
+      const message = getErrorMessage(error);
       args.log?.(`Failed to stop background command (${args.key}): ${message}`);
     }
 
@@ -293,6 +498,43 @@ class ProjectWebcontainerRuntime {
 
   public isBackgroundCommandRunning(key: string) {
     return this.backgroundProcesses.has(key);
+  }
+
+  public getBackgroundCommandLastExit(key: string) {
+    return this.backgroundProcessLastExits.get(key) ?? null;
+  }
+
+  public async waitForBackgroundCommandExit(args: {
+    key: string;
+    timeoutMs?: number;
+  }) {
+    const runningExitPromise = this.backgroundProcessExitPromises.get(args.key);
+    if (!runningExitPromise) {
+      return this.backgroundProcessLastExits.get(args.key) ?? null;
+    }
+
+    const timeoutMs = args.timeoutMs ?? 0;
+    if (timeoutMs <= 0) {
+      return await runningExitPromise;
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const timeoutPromise = new Promise<BackgroundCommandExit | null>(
+      (resolve) => {
+        timeoutId = setTimeout(() => {
+          resolve(null);
+        }, timeoutMs);
+      },
+    );
+
+    const result = await Promise.race([runningExitPromise, timeoutPromise]);
+
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    return result;
   }
 
   private async pipeProcessOutput(
@@ -308,9 +550,12 @@ class ProjectWebcontainerRuntime {
           }
 
           for (const line of text.split("\n")) {
-            if (line.trim()) {
-              log?.(line);
+            const sanitizedLine = stripAnsiControlSequences(line).trim();
+            if (!sanitizedLine || isSpinnerFrame(sanitizedLine)) {
+              continue;
             }
+
+            log?.(sanitizedLine);
           }
         },
       }),
@@ -320,6 +565,7 @@ class ProjectWebcontainerRuntime {
   public teardown() {
     this.serverReadyUnsubscribe?.();
     this.serverReadyUnsubscribe = null;
+    this.lastServerReady = null;
 
     for (const process of this.backgroundProcesses.values()) {
       try {
@@ -329,6 +575,8 @@ class ProjectWebcontainerRuntime {
       }
     }
     this.backgroundProcesses.clear();
+    this.backgroundProcessExitPromises.clear();
+    this.backgroundProcessLastExits.clear();
 
     if (this.instance) {
       this.instance.teardown();
@@ -340,4 +588,54 @@ class ProjectWebcontainerRuntime {
   }
 }
 
-export const projectWebcontainerRuntime = new ProjectWebcontainerRuntime();
+const isRuntimeCompatible = (
+  value: unknown,
+): value is ProjectWebcontainerRuntime => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.ensureBooted === "function" &&
+    typeof record.applyOperation === "function" &&
+    typeof record.syncProjectFiles === "function" &&
+    typeof record.runCommand === "function" &&
+    typeof record.startBackgroundCommand === "function" &&
+    typeof record.waitForBackgroundCommandExit === "function" &&
+    typeof record.getBackgroundCommandLastExit === "function" &&
+    typeof record.stopBackgroundCommand === "function" &&
+    typeof record.teardown === "function"
+  );
+};
+
+declare global {
+  var __orbitProjectWebcontainerRuntime__:
+    | { version: number; runtime: unknown }
+    | undefined;
+}
+
+const resolveProjectWebcontainerRuntime = () => {
+  const existing = globalThis.__orbitProjectWebcontainerRuntime__;
+
+  if (
+    existing?.version === WEBCONTAINER_RUNTIME_VERSION &&
+    isRuntimeCompatible(existing.runtime)
+  ) {
+    return existing.runtime;
+  }
+
+  if (isRuntimeCompatible(existing?.runtime)) {
+    existing.runtime.teardown();
+  }
+
+  const runtime = new ProjectWebcontainerRuntime();
+  globalThis.__orbitProjectWebcontainerRuntime__ = {
+    version: WEBCONTAINER_RUNTIME_VERSION,
+    runtime,
+  };
+
+  return runtime;
+};
+
+export const projectWebcontainerRuntime = resolveProjectWebcontainerRuntime();
