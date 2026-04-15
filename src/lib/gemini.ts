@@ -152,6 +152,149 @@ const parseRetryAfterSeconds = (value: string) => {
   return null;
 };
 
+const toRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+
+const collectErrorRecords = (error: unknown) => {
+  const queue: Array<{ value: unknown; depth: number }> = [
+    { value: error, depth: 0 },
+  ];
+  const visited = new Set<unknown>();
+  const records: Record<string, unknown>[] = [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || current.depth > 5) {
+      continue;
+    }
+
+    const record = toRecord(current.value);
+    if (!record || visited.has(record)) {
+      continue;
+    }
+
+    visited.add(record);
+    records.push(record);
+
+    for (const key of ["error", "response", "data", "cause"]) {
+      if (key in record) {
+        queue.push({ value: record[key], depth: current.depth + 1 });
+      }
+    }
+
+    const details = record.details;
+    if (Array.isArray(details)) {
+      for (const detail of details) {
+        queue.push({ value: detail, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return records;
+};
+
+const toStatusCode = (value: unknown) => {
+  const numericCandidate =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value, 10)
+        : Number.NaN;
+
+  if (!Number.isFinite(numericCandidate)) {
+    return null;
+  }
+
+  const normalized = Math.trunc(numericCandidate);
+  if (normalized >= 100 && normalized <= 599) {
+    return normalized;
+  }
+
+  return null;
+};
+
+const toRetryAfterSeconds = (value: unknown) => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.ceil(value);
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const asNumber = Number.parseFloat(trimmed);
+  if (Number.isFinite(asNumber) && asNumber > 0) {
+    return Math.ceil(asNumber);
+  }
+
+  const secondsMatch = trimmed.match(/([\d.]+)\s*s/i);
+  if (secondsMatch?.[1]) {
+    const seconds = Number.parseFloat(secondsMatch[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.ceil(seconds);
+    }
+  }
+
+  return null;
+};
+
+const extractStructuredStatusCode = (error: unknown) => {
+  for (const record of collectErrorRecords(error)) {
+    const status =
+      toStatusCode(record.status) ??
+      toStatusCode(record.statusCode) ??
+      toStatusCode(record.code);
+
+    if (typeof status === "number") {
+      return status;
+    }
+  }
+
+  return null;
+};
+
+const extractStructuredRetryAfterSeconds = (error: unknown) => {
+  for (const record of collectErrorRecords(error)) {
+    const retryAfter =
+      toRetryAfterSeconds(record.retryAfterSeconds) ??
+      toRetryAfterSeconds(record.retryAfter) ??
+      toRetryAfterSeconds(record.retryDelay);
+
+    if (typeof retryAfter === "number") {
+      return retryAfter;
+    }
+
+    const headers = toRecord(record.headers);
+    const headerRetryAfter =
+      headers?.["retry-after"] ?? headers?.["Retry-After"];
+    const parsedHeaderRetryAfter = toRetryAfterSeconds(headerRetryAfter);
+
+    if (typeof parsedHeaderRetryAfter === "number") {
+      return parsedHeaderRetryAfter;
+    }
+  }
+
+  return null;
+};
+
+const isRateLimitedGeminiError = (args: {
+  statusCode: number | null;
+  message: string;
+}) =>
+  args.statusCode === 429 ||
+  args.message.includes("429") ||
+  /rate.?limit/i.test(args.message) ||
+  /quota/i.test(args.message) ||
+  /resource.?exhausted/i.test(args.message) ||
+  /too many requests/i.test(args.message);
+
 const extractRawErrorMessage = (error: unknown): string => {
   if (error instanceof Error && error.message) {
     return error.message;
@@ -194,6 +337,25 @@ const extractRawErrorMessage = (error: unknown): string => {
   }
 };
 
+export const getGeminiRateLimitMetadata = (error: unknown) => {
+  const rawMessage = extractRawErrorMessage(error);
+  const statusCode = extractStructuredStatusCode(error);
+  const retryAfterSeconds =
+    parseRetryAfterSeconds(rawMessage) ??
+    extractStructuredRetryAfterSeconds(error) ??
+    10;
+
+  if (!isRateLimitedGeminiError({ statusCode, message: rawMessage })) {
+    return null;
+  }
+
+  return {
+    retryAfterSeconds,
+    statusCode,
+    message: rawMessage,
+  };
+};
+
 const getModelCooldownSeconds = (model: string, apiKey?: string) => {
   const resolvedApiKey = apiKey ?? getGeminiApiKey();
   const until = geminiModelCooldownUntilMs.get(
@@ -226,6 +388,13 @@ export const isGeminiModelCoolingDown = (model: string) =>
 
 export const getGeminiModelCooldownSeconds = (model: string) =>
   getModelCooldownSeconds(model);
+
+export const markGeminiModelRateLimited = (
+  model: string,
+  retryAfterSeconds?: number | null,
+) => {
+  setModelCooldown(model, retryAfterSeconds ?? null);
+};
 
 /** Default model used across the app — configurable via GEMINI_MODEL env var */
 export const GEMINI_MODEL_DEFAULT =
@@ -331,16 +500,18 @@ export const generateGeminiCompletion = async (args: {
       }
 
       const rawMessage = extractRawErrorMessage(error);
-      const retryAfterSeconds = parseRetryAfterSeconds(rawMessage);
+      const structuredStatusCode = extractStructuredStatusCode(error);
+      const retryAfterSeconds =
+        parseRetryAfterSeconds(rawMessage) ??
+        extractStructuredRetryAfterSeconds(error);
 
-      const isRateLimited =
-        rawMessage.includes("429") ||
-        /rate.?limit/i.test(rawMessage) ||
-        /quota/i.test(rawMessage) ||
-        /resource.?exhausted/i.test(rawMessage) ||
-        /too many requests/i.test(rawMessage);
+      const isRateLimited = isRateLimitedGeminiError({
+        statusCode: structuredStatusCode,
+        message: rawMessage,
+      });
 
       const isModelCompatibilityIssue =
+        structuredStatusCode === 404 ||
         /model.*not.*found/i.test(rawMessage) ||
         /not supported for generatecontent/i.test(rawMessage) ||
         /invalid model|unknown model/i.test(rawMessage);
@@ -388,10 +559,18 @@ export const generateGeminiCompletion = async (args: {
         });
       }
 
+      if (structuredStatusCode === 401 || structuredStatusCode === 403) {
+        throw new GeminiRequestError({
+          message:
+            "AI API key is invalid or missing. Please check your configuration.",
+          status: 401,
+        });
+      }
+
       throw new GeminiRequestError({
         message:
           rawMessage || "AI service encountered an error. Please try again.",
-        status: 500,
+        status: structuredStatusCode ?? 500,
       });
     }
   }

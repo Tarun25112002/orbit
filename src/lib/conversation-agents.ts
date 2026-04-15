@@ -3,7 +3,9 @@ import {
   GEMINI_MODEL_DEFAULT,
   generateGeminiCompletion,
   getGeminiModelCooldownSeconds,
+  getGeminiRateLimitMetadata,
   isGeminiModelCoolingDown,
+  markGeminiModelRateLimited,
 } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
 
@@ -33,8 +35,6 @@ const CODE_UPDATE_INTENT_PATTERN =
   /\b(fix|update|modify|edit|refactor|improve|optimize|rename|move|delete|remove|patch|change|cleanup|install|uninstall|upgrade|downgrade|dependency|dependencies|run|execute|command|terminal)\b/i;
 const COMMAND_OPERATION_INTENT_PATTERN =
   /\b(run|execute|install|uninstall|upgrade|downgrade|command|commands|terminal|script|scripts|dependency|dependencies|package\.json|npm|pnpm|yarn|bun)\b/i;
-const PLACEHOLDER_CONTENT_PATTERN =
-  /\b(?:TODO|TBD)\b|<code here>|your code here/i;
 const MAX_FILE_OPERATIONS_PER_RUN = Number.parseInt(
   process.env.CONVERSATION_MAX_FILE_OPERATIONS?.trim() || "40",
   10,
@@ -49,6 +49,58 @@ const DISALLOWED_COMMAND_SEQUENCE_PATTERN =
 const ENABLE_FILE_OPS_PLANNER = !/^(0|false)$/i.test(
   process.env.CONVERSATION_ENABLE_FILE_OPS_PLANNER?.trim() ?? "",
 );
+const ENABLE_AGENT_PRIMARY_CALL = /^(1|true)$/i.test(
+  process.env.CONVERSATION_ENABLE_AGENT_PRIMARY?.trim() ?? "",
+);
+const FORCE_CHAINED_MODEL_FALLBACK = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_FORCE_CHAINED_MODEL_FALLBACK?.trim() ?? "true",
+);
+
+const parsePositiveInt = (value: string | undefined, fallback: number) => {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
+};
+
+const FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS = parsePositiveInt(
+  process.env.CONVERSATION_FILE_OPS_MAX_OUTPUT_TOKENS?.trim(),
+  48_000,
+);
+const FILE_OPS_PLANNER_MAX_RETRIES = parsePositiveInt(
+  process.env.CONVERSATION_FILE_OPS_MAX_RETRIES?.trim(),
+  2,
+);
+const MAX_PLANNER_HISTORY_CHARS = parsePositiveInt(
+  process.env.CONVERSATION_FILE_OPS_HISTORY_CHARS?.trim(),
+  2_500,
+);
+const MAX_PLANNER_PROJECT_CONTEXT_CHARS = parsePositiveInt(
+  process.env.CONVERSATION_FILE_OPS_PROJECT_CONTEXT_CHARS?.trim(),
+  12_000,
+);
+const MAX_PLANNER_KEY_FILE_CHARS = parsePositiveInt(
+  process.env.CONVERSATION_FILE_OPS_KEY_FILE_CHARS?.trim(),
+  6_000,
+);
+const NEXTJS_FRAMEWORK_PATTERN = /\bnext(?:\.js|js)?\b/i;
+const NEXTJS_SCAFFOLD_INTENT_PATTERN =
+  /\b(create|scaffold|setup|generate|starter|boilerplate|from scratch|new)\b/i;
+const NEXTJS_REQUIRED_SCAFFOLD_FILE_PATHS = [
+  "package.json",
+  "next.config.ts",
+  "tsconfig.json",
+  "next-env.d.ts",
+  "src/app/layout.tsx",
+  "src/app/page.tsx",
+  "src/app/globals.css",
+] as const;
 
 const createGeminiModel = (
   model: string,
@@ -311,7 +363,7 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "OUTPUT FORMAT",
   "═══════════════════════════════════════════════════",
   "",
-  'Return ONLY valid JSON. No markdown. No explanations. No ```json fences.',
+  "Return ONLY valid JSON. No markdown. No explanations. No ```json fences.",
   '{"operations":[...]}',
 ].join("\n");
 
@@ -393,17 +445,6 @@ const titleAgent = createAgent({
   system: TITLE_SYSTEM_PROMPT,
 });
 
-const fileOperationsPlannerAgent = createAgent({
-  name: "conversation_file_operations_planner",
-  description:
-    "Plans concrete file operations for explicit code-edit requests.",
-  model: createGeminiModel(FILE_OPS_MODEL, {
-    temperature: 0.1,
-    maxOutputTokens: 32_000,
-  }),
-  system: FILE_OPS_PLANNER_SYSTEM_PROMPT,
-});
-
 const specialistAgents = {
   architecture: architectureAgent,
   code_quality: codeQualityAgent,
@@ -453,13 +494,26 @@ const runAgentTextWithFallback = async (args: {
 }) => {
   let primaryError: unknown;
   const targetModel = args.model.trim();
-  const skipPrimary = isGeminiModelCoolingDown(targetModel);
+  const skipPrimary =
+    FORCE_CHAINED_MODEL_FALLBACK ||
+    !ENABLE_AGENT_PRIMARY_CALL ||
+    isGeminiModelCoolingDown(targetModel);
 
   if (skipPrimary) {
-    const retryIn = getGeminiModelCooldownSeconds(targetModel);
-    primaryError = new Error(
-      `Primary agent call skipped for ${targetModel} due to cooldown (${retryIn}s remaining).`,
-    );
+    if (FORCE_CHAINED_MODEL_FALLBACK) {
+      primaryError = new Error(
+        `Primary agent call bypassed for ${targetModel}; using strict chained model fallback.`,
+      );
+    } else if (!ENABLE_AGENT_PRIMARY_CALL) {
+      primaryError = new Error(
+        `Primary agent call disabled for ${targetModel}; using chained Gemini fallback.`,
+      );
+    } else {
+      const retryIn = getGeminiModelCooldownSeconds(targetModel);
+      primaryError = new Error(
+        `Primary agent call skipped for ${targetModel} due to cooldown (${retryIn}s remaining).`,
+      );
+    }
   } else {
     try {
       const primaryResult = await args.agent.run(args.prompt);
@@ -470,6 +524,14 @@ const runAgentTextWithFallback = async (args: {
 
       primaryError = new Error("Primary agent returned empty content.");
     } catch (error) {
+      const rateLimitMetadata = getGeminiRateLimitMetadata(error);
+      if (rateLimitMetadata) {
+        markGeminiModelRateLimited(
+          targetModel,
+          rateLimitMetadata.retryAfterSeconds,
+        );
+      }
+
       primaryError = error;
     }
   }
@@ -960,54 +1022,156 @@ const hasPackageJsonMutation = (operations: ConversationFileOperation[]) =>
       operation.path === "package.json",
   );
 
-const hasDependencyInstallCommand = (
+const isInstallLikeCommand = (operation: ConversationFileOperation) => {
+  if (operation.type !== "run_command") {
+    return false;
+  }
+
+  const command = operation.command.trim().toLowerCase();
+  const args =
+    operation.commandArgs
+      ?.map((arg) => arg.trim().toLowerCase())
+      .filter(Boolean) ?? [];
+
+  if (command === "yarn") {
+    if (args.length === 0) {
+      return true;
+    }
+
+    const firstArg = args[0];
+    return firstArg === "install";
+  }
+
+  if (command === "npm" || command === "pnpm" || command === "bun") {
+    const firstArg = args[0];
+    return firstArg === "install" || firstArg === "i" || firstArg === "ci";
+  }
+
+  return false;
+};
+
+const isPlainDependencyInstallCommand = (
+  operation: ConversationFileOperation,
+) => {
+  if (!isInstallLikeCommand(operation) || operation.type !== "run_command") {
+    return false;
+  }
+
+  const command = operation.command.trim().toLowerCase();
+  const args =
+    operation.commandArgs
+      ?.map((arg) => arg.trim().toLowerCase())
+      .filter(Boolean) ?? [];
+
+  if (command === "yarn") {
+    if (args.length === 0) {
+      return true;
+    }
+
+    return args.slice(1).every((arg) => arg.startsWith("-"));
+  }
+
+  if (args.length === 0) {
+    return false;
+  }
+
+  return args.slice(1).every((arg) => arg.startsWith("-"));
+};
+
+const buildDefaultInstallOperation = (
+  operations: ConversationFileOperation[],
+  projectFiles: ConversationProjectFile[] = [],
+): ConversationFileOperation => {
+  const command = detectPackageManagerForInstall(operations, projectFiles);
+
+  if (command === "npm") {
+    return {
+      type: "run_command",
+      command,
+      commandArgs: ["install", "--no-audit", "--no-fund", "--no-progress"],
+    };
+  }
+
+  return {
+    type: "run_command",
+    command,
+    commandArgs: ["install"],
+  };
+};
+
+const isManagedDevServerStartOperation = (
+  operation: ConversationFileOperation,
+) =>
+  operation.type === "start_background_command" &&
+  operation.key === "dev-server";
+
+const moveManagedDevServerStartToEnd = (
   operations: ConversationFileOperation[],
 ) => {
-  return operations.some((operation) => {
-    if (operation.type !== "run_command") {
-      return false;
-    }
+  const managedStarts = operations.filter((operation) =>
+    isManagedDevServerStartOperation(operation),
+  );
 
-    const command = operation.command.trim().toLowerCase();
-    const firstArg = operation.commandArgs?.[0]?.trim().toLowerCase();
-    if (!firstArg) {
-      return false;
-    }
+  if (managedStarts.length === 0) {
+    return operations;
+  }
 
-    if (command === "npm") {
-      return firstArg === "install" || firstArg === "i" || firstArg === "ci";
-    }
+  const withoutManagedStarts = operations.filter(
+    (operation) => !isManagedDevServerStartOperation(operation),
+  );
 
-    if (command === "pnpm" || command === "yarn" || command === "bun") {
-      return firstArg === "install";
-    }
-
-    return false;
-  });
+  return [...withoutManagedStarts, managedStarts[managedStarts.length - 1]!];
 };
+
+const hasDependencyInstallCommand = (operations: ConversationFileOperation[]) =>
+  operations.some((operation) => isPlainDependencyInstallCommand(operation));
 
 const ensureDependencyInstallOperation = (
   operations: ConversationFileOperation[],
   projectFiles: ConversationProjectFile[] = [],
 ) => {
-  if (!hasPackageJsonMutation(operations)) {
-    return operations;
+  const plainInstallCommands = operations.filter((operation) =>
+    isPlainDependencyInstallCommand(operation),
+  );
+
+  const withoutPlainInstallCommands = operations.filter(
+    (operation) => !isPlainDependencyInstallCommand(operation),
+  );
+
+  const shouldInsertInstall =
+    plainInstallCommands.length > 0 || hasPackageJsonMutation(operations);
+
+  if (!shouldInsertInstall) {
+    return moveManagedDevServerStartToEnd(withoutPlainInstallCommands);
   }
 
-  if (hasDependencyInstallCommand(operations)) {
-    return operations;
-  }
+  const selectedInstallCommand = hasDependencyInstallCommand(operations)
+    ? plainInstallCommands[plainInstallCommands.length - 1]!
+    : buildDefaultInstallOperation(operations, projectFiles);
 
-  const command = detectPackageManagerForInstall(operations, projectFiles);
+  const insertionIndex = (() => {
+    for (
+      let index = withoutPlainInstallCommands.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const operation = withoutPlainInstallCommands[index]!;
+      if (
+        (operation.type === "create_file" ||
+          operation.type === "update_file") &&
+        operation.path === "package.json"
+      ) {
+        return index + 1;
+      }
+    }
 
-  return [
-    ...operations,
-    {
-      type: "run_command",
-      command,
-      commandArgs: ["install"],
-    } satisfies ConversationFileOperation,
-  ];
+    return withoutPlainInstallCommands.length;
+  })();
+
+  const withInstall = [...withoutPlainInstallCommands];
+  withInstall.splice(insertionIndex, 0, selectedInstallCommand);
+
+  return moveManagedDevServerStartToEnd(withInstall);
 };
 
 const parseFileOperation = (
@@ -1181,6 +1345,308 @@ const parseFileOperationPlan = (
   return operations;
 };
 
+const buildNormalizedProjectPathSet = (
+  projectFiles: ConversationProjectFile[] = [],
+) => {
+  const normalizedPaths = new Set<string>();
+
+  for (const file of projectFiles) {
+    const normalizedPath = normalizeOperationPath(file.path);
+    if (!normalizedPath) {
+      continue;
+    }
+
+    normalizedPaths.add(normalizedPath);
+  }
+
+  return normalizedPaths;
+};
+
+const isLikelyEmptyProjectForScaffold = (
+  projectFiles: ConversationProjectFile[] = [],
+) => {
+  if (projectFiles.length === 0) {
+    return true;
+  }
+
+  const normalizedPaths = buildNormalizedProjectPathSet(projectFiles);
+  const hasPackageJson = normalizedPaths.has("package.json");
+  const hasNextConfig = Array.from(normalizedPaths).some((path) =>
+    /^next\.config\./i.test(path),
+  );
+  const hasAppRouterStructure = Array.from(normalizedPaths).some(
+    (path) => path.startsWith("src/app/") || path.startsWith("app/"),
+  );
+
+  return !hasPackageJson && !hasNextConfig && !hasAppRouterStructure;
+};
+
+const isNextJsScaffoldRequest = (input: ConversationOrchestrationInput) => {
+  const message = input.message.trim();
+  if (!NEXTJS_FRAMEWORK_PATTERN.test(message)) {
+    return false;
+  }
+
+  return NEXTJS_SCAFFOLD_INTENT_PATTERN.test(message);
+};
+
+const buildNextJsStarterPackageJson = () =>
+  `${JSON.stringify(
+    {
+      name: "next-app",
+      version: "0.1.0",
+      private: true,
+      scripts: {
+        dev: "next dev",
+        build: "next build",
+        start: "next start",
+        typecheck: "tsc --noEmit",
+      },
+      dependencies: {
+        next: "16.2.0",
+        react: "19.2.4",
+        "react-dom": "19.2.4",
+      },
+      devDependencies: {
+        typescript: "^5",
+        "@types/node": "^20",
+        "@types/react": "^19",
+        "@types/react-dom": "^19",
+      },
+    },
+    null,
+    2,
+  )}\n`;
+
+const upsertPlannerFileOperation = (args: {
+  path: string;
+  content: string;
+  existingPaths: Set<string>;
+}): ConversationFileOperation => {
+  if (args.existingPaths.has(args.path)) {
+    return {
+      type: "update_file",
+      path: args.path,
+      content: args.content,
+      createIfMissing: true,
+    };
+  }
+
+  return {
+    type: "create_file",
+    path: args.path,
+    content: args.content,
+    overwrite: true,
+  };
+};
+
+const buildDeterministicNextJsScaffoldOperations = (
+  projectFiles: ConversationProjectFile[] = [],
+) => {
+  const existingPaths = buildNormalizedProjectPathSet(projectFiles);
+  const operations: ConversationFileOperation[] = [];
+
+  for (const folderPath of ["src", "src/app", "public"]) {
+    if (!existingPaths.has(folderPath)) {
+      operations.push({ type: "create_folder", path: folderPath });
+    }
+  }
+
+  operations.push(
+    upsertPlannerFileOperation({
+      path: "package.json",
+      content: buildNextJsStarterPackageJson(),
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "next.config.ts",
+      content: [
+        'import type { NextConfig } from "next";',
+        "",
+        "const nextConfig: NextConfig = {};",
+        "",
+        "export default nextConfig;",
+        "",
+      ].join("\n"),
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "tsconfig.json",
+      content: `${JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2017",
+            lib: ["dom", "dom.iterable", "esnext"],
+            allowJs: false,
+            skipLibCheck: true,
+            strict: true,
+            noEmit: true,
+            esModuleInterop: true,
+            module: "esnext",
+            moduleResolution: "bundler",
+            resolveJsonModule: true,
+            isolatedModules: true,
+            jsx: "preserve",
+            incremental: true,
+            plugins: [{ name: "next" }],
+            paths: {
+              "@/*": ["./src/*"],
+            },
+          },
+          include: [
+            "next-env.d.ts",
+            "**/*.ts",
+            "**/*.tsx",
+            ".next/types/**/*.ts",
+          ],
+          exclude: ["node_modules"],
+        },
+        null,
+        2,
+      )}\n`,
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "next-env.d.ts",
+      content: [
+        '/// <reference types="next" />',
+        '/// <reference types="next/image-types/global" />',
+        "",
+        "// This file is auto-generated by Next.js.",
+        "",
+      ].join("\n"),
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "src/app/globals.css",
+      content: [
+        ":root {",
+        "  color-scheme: light;",
+        "  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;",
+        "}",
+        "",
+        "* {",
+        "  box-sizing: border-box;",
+        "}",
+        "",
+        "body {",
+        "  margin: 0;",
+        "  min-height: 100vh;",
+        "  background: linear-gradient(135deg, #f5f7fa 0%, #e4ecf7 100%);",
+        "  color: #0f172a;",
+        "}",
+        "",
+      ].join("\n"),
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "src/app/layout.tsx",
+      content: [
+        'import type { Metadata } from "next";',
+        'import "./globals.css";',
+        "",
+        "export const metadata: Metadata = {",
+        '  title: "Orbit Next App",',
+        '  description: "Generated by Orbit AI",',
+        "};",
+        "",
+        "export default function RootLayout({",
+        "  children,",
+        "}: Readonly<{",
+        "  children: React.ReactNode;",
+        "}>) {",
+        "  return (",
+        '    <html lang="en">',
+        "      <body>{children}</body>",
+        "    </html>",
+        "  );",
+        "}",
+        "",
+      ].join("\n"),
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "src/app/page.tsx",
+      content: [
+        "export default function HomePage() {",
+        "  return (",
+        '    <main style={{ padding: "3rem" }}>',
+        '      <h1 style={{ marginBottom: "0.75rem" }}>Next.js Project Ready</h1>',
+        "      <p>",
+        "        Your project scaffold is in place. Start editing",
+        "        <strong> src/app/page.tsx</strong> to build your app.",
+        "      </p>",
+        "    </main>",
+        "  );",
+        "}",
+        "",
+      ].join("\n"),
+      existingPaths,
+    }),
+  );
+
+  operations.push({
+    type: "run_command",
+    command: "npm",
+    commandArgs: ["install", "--no-audit", "--no-fund", "--no-progress"],
+  });
+  operations.push({
+    type: "start_background_command",
+    key: "dev-server",
+    command: "npm",
+    commandArgs: ["run", "dev"],
+  });
+
+  return operations;
+};
+
+const collectPlannedPathSet = (
+  operations: ConversationFileOperation[],
+  projectFiles: ConversationProjectFile[] = [],
+) => {
+  const paths = buildNormalizedProjectPathSet(projectFiles);
+
+  for (const operation of operations) {
+    if (operation.type === "create_file" || operation.type === "update_file") {
+      paths.add(operation.path);
+      continue;
+    }
+
+    if (operation.type === "rename_path") {
+      paths.delete(operation.path);
+      paths.add(operation.newPath);
+    }
+  }
+
+  return paths;
+};
+
+const validateNextJsScaffoldPlan = (args: {
+  input: ConversationOrchestrationInput;
+  operations: ConversationFileOperation[];
+}) => {
+  if (!isNextJsScaffoldRequest(args.input)) {
+    return [] as string[];
+  }
+
+  const plannedPaths = collectPlannedPathSet(
+    args.operations,
+    args.input.projectFiles,
+  );
+
+  const missingPaths = NEXTJS_REQUIRED_SCAFFOLD_FILE_PATHS.filter(
+    (path) => !plannedPaths.has(path),
+  );
+
+  if (missingPaths.length === 0) {
+    return [] as string[];
+  }
+
+  return [
+    `Next.js scaffold is missing required files: ${missingPaths.join(", ")}.`,
+  ];
+};
+
 const inferConversationIntent = (message: string): ConversationIntent => {
   const hasGenerationIntent = CODE_GENERATION_INTENT_PATTERN.test(message);
   const hasUpdateIntent = CODE_UPDATE_INTENT_PATTERN.test(message);
@@ -1317,16 +1783,14 @@ const PLANNER_KEY_FILE_PATTERNS = [
   "postcss.config.js",
 ] as const;
 
-const MAX_PLANNER_KEY_FILE_CHARS = 3_000;
-
-const buildPlannerKeyFileContext = (
-  files: ConversationProjectFile[] = [],
-) => {
+const buildPlannerKeyFileContext = (files: ConversationProjectFile[] = []) => {
   const blocks: string[] = [];
 
   for (const pattern of PLANNER_KEY_FILE_PATTERNS) {
     const file = files.find(
-      (f) => f.type === "file" && (f.path === pattern || f.path.endsWith(`/${pattern}`)),
+      (f) =>
+        f.type === "file" &&
+        (f.path === pattern || f.path.endsWith(`/${pattern}`)),
     );
 
     if (!file?.content) {
@@ -1357,7 +1821,9 @@ const buildFileOperationPlannerPrompt = (
     "TASK (will be executed immediately — your output creates real files and runs real commands):",
     input.message,
     "",
-    input.history ? `CONVERSATION HISTORY:\n${input.history.slice(0, 1500)}` : "",
+    input.history
+      ? `CONVERSATION HISTORY:\n${input.history.slice(0, MAX_PLANNER_HISTORY_CHARS)}`
+      : "",
     "",
     "EXISTING PROJECT FILES:",
     fileInventory,
@@ -1370,16 +1836,20 @@ const buildFileOperationPlannerPrompt = (
       : "NO package.json — create one with create_file including all needed dependencies",
     "",
     "PROJECT CONTEXT:",
-    input.projectContext?.slice(0, 6000) || "(empty project)",
+    input.projectContext?.slice(0, MAX_PLANNER_PROJECT_CONTEXT_CHARS) ||
+      "(empty project)",
     "",
     "REMINDERS:",
     "- Your output is EXECUTED, not displayed. Include COMPLETE file contents.",
-    "- After changing package.json: {\"type\":\"run_command\",\"command\":\"npm\",\"commandArgs\":[\"install\"]}",
-    "- To start dev server: {\"type\":\"start_background_command\",\"key\":\"dev-server\",\"command\":\"npm\",\"commandArgs\":[\"run\",\"dev\"]}",
+    '- After changing package.json: {"type":"run_command","command":"npm","commandArgs":["install"]}',
+    '- To start dev server: {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
+    "- For Next.js scaffolds, include at minimum: package.json, next.config.ts, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css.",
     "- Create ALL files needed for the task. Do not leave gaps or TODOs.",
     "",
-    "Return ONLY valid JSON: {\"operations\":[...]}",
-  ].filter(Boolean).join("\n");
+    'Return ONLY valid JSON: {"operations":[...]}',
+  ]
+    .filter(Boolean)
+    .join("\n");
 };
 
 const buildFileOperationPlannerRetryPrompt = (
@@ -1403,6 +1873,36 @@ const buildFileOperationPlannerRetryPrompt = (
     "Return valid JSON only now.",
     "If the request involves implementation or editing, include at least one operation.",
     "Do not include markdown fences.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+const buildStrictFileOperationPlannerPrompt = (
+  input: ConversationOrchestrationInput,
+  previousOutput: string,
+  issues: string[] = [],
+) =>
+  [
+    buildFileOperationPlannerPrompt(input),
+    "",
+    "STRICT EXECUTION MODE:",
+    "- You MUST return executable JSON operations only.",
+    "- For code_generation/code_update intents, operations MUST NOT be empty.",
+    "- Include create_folder operations for parent directories before create_file/update_file operations.",
+    "- If package.json is changed, include run_command install right after it.",
+    "- Do not return prose, markdown, or code-only response.",
+    "",
+    "Previous planner output:",
+    previousOutput || "(empty)",
+    "",
+    issues.length > 0
+      ? [
+          "Validation issues to fix:",
+          ...issues.map((issue) => `- ${issue}`),
+          "",
+        ].join("\n")
+      : "",
+    "Return ONLY valid JSON object with operations array and at least one operation.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -1436,6 +1936,21 @@ const shouldPlanFileOperations = (input: ConversationOrchestrationInput) => {
   return false;
 };
 
+const shouldRequireExecutableFileOperations = (
+  input: ConversationOrchestrationInput,
+) => {
+  const intent = inferConversationIntent(input.message);
+  if (intent === "code_generation" || intent === "code_update") {
+    return true;
+  }
+
+  return (
+    COMMAND_OPERATION_INTENT_PATTERN.test(input.message) ||
+    FILE_OPERATION_INTENT_PATTERN.test(input.message) ||
+    FILE_OPERATION_PATH_HINT_PATTERN.test(input.message)
+  );
+};
+
 const describeFileOperation = (operation: ConversationFileOperation) => {
   if (operation.type === "rename_path") {
     return `${operation.type} ${operation.path} -> ${operation.newPath}`;
@@ -1465,9 +1980,12 @@ const runFileOpsPlannerDirect = async (
   const result = await generateGeminiCompletion({
     model: FILE_OPS_MODEL,
     messages: [
-      { role: "user", content: `${FILE_OPS_PLANNER_SYSTEM_PROMPT}\n\n${prompt}` },
+      {
+        role: "user",
+        content: `${FILE_OPS_PLANNER_SYSTEM_PROMPT}\n\n${prompt}`,
+      },
     ],
-    maxTokens: 32_000,
+    maxTokens: FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS,
     temperature: 0.1,
   });
 
@@ -1502,6 +2020,25 @@ const planConversationFileOperations = async (
     };
   }
 
+  const shouldUseDeterministicNextJsFallback =
+    isNextJsScaffoldRequest(input) &&
+    isLikelyEmptyProjectForScaffold(input.projectFiles);
+
+  if (shouldUseDeterministicNextJsFallback) {
+    const deterministicOperations = ensureDependencyInstallOperation(
+      ensureFolderOperationsForWrites(
+        buildDeterministicNextJsScaffoldOperations(input.projectFiles),
+        input.projectFiles,
+      ),
+      input.projectFiles,
+    ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
+
+    return {
+      operations: deterministicOperations,
+      plannerOutput: "deterministic-nextjs-scaffold",
+    };
+  }
+
   const extractOperations = (output: string): ConversationFileOperation[] => {
     // Strip markdown code fences that the model sometimes wraps JSON in
     const cleaned = output
@@ -1532,11 +2069,26 @@ const planConversationFileOperations = async (
       console.warn("conversation.planner.json-parse-failed", {
         jsonLength: plannerJson.length,
         jsonPreview: plannerJson.slice(0, 300),
-        error: parseError instanceof Error ? parseError.message : String(parseError),
+        error:
+          parseError instanceof Error ? parseError.message : String(parseError),
       });
       return [];
     }
   };
+
+  const normalizeOperations = (operations: ConversationFileOperation[]) =>
+    ensureDependencyInstallOperation(
+      ensureFolderOperationsForWrites(operations, input.projectFiles),
+      input.projectFiles,
+    ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
+
+  const collectPlanIssues = (operations: ConversationFileOperation[]) =>
+    Array.from(
+      new Set([
+        ...validateFileOperationPlan(operations),
+        ...validateNextJsScaffoldPlan({ input, operations }),
+      ]),
+    );
 
   try {
     console.info("conversation.planner.start", {
@@ -1545,68 +2097,152 @@ const planConversationFileOperations = async (
     });
 
     const plannerPrompt = buildFileOperationPlannerPrompt(input);
-    const plannerOutput = await runFileOpsPlannerDirect(plannerPrompt, "primary");
+    const plannerOutput = await runFileOpsPlannerDirect(
+      plannerPrompt,
+      "primary",
+    );
 
-    const operations = ensureDependencyInstallOperation(
-      ensureFolderOperationsForWrites(
-        extractOperations(plannerOutput),
-        input.projectFiles,
-      ),
-      input.projectFiles,
-    ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
-    const issues = validateFileOperationPlan(operations);
+    let selectedOutput = plannerOutput;
+    let selectedOperations = normalizeOperations(
+      extractOperations(plannerOutput),
+    );
+    let selectedIssues = collectPlanIssues(selectedOperations);
 
     console.info("conversation.planner.result", {
-      operationCount: operations.length,
-      issueCount: issues.length,
-      issues: issues.slice(0, 5),
-      types: operations.map((o) => o.type),
+      operationCount: selectedOperations.length,
+      issueCount: selectedIssues.length,
+      issues: selectedIssues.slice(0, 5),
+      types: selectedOperations.map((operation) => operation.type),
     });
 
-    if (operations.length > 0 && issues.length === 0) {
+    if (selectedOperations.length > 0 && selectedIssues.length === 0) {
       return {
-        operations,
-        plannerOutput,
+        operations: selectedOperations,
+        plannerOutput: selectedOutput,
       };
     }
 
-    const retryIssues =
-      operations.length === 0 ? ["No valid operations were returned."] : issues;
+    const maxRetries = isGeminiModelCoolingDown(FILE_OPS_MODEL.trim())
+      ? 0
+      : FILE_OPS_PLANNER_MAX_RETRIES;
 
-    console.info("conversation.planner.retry", { retryIssues });
+    for (let retryIndex = 1; retryIndex <= maxRetries; retryIndex += 1) {
+      const retryIssues =
+        selectedOperations.length === 0
+          ? ["No valid operations were returned."]
+          : selectedIssues;
 
-    const retryPrompt = buildFileOperationPlannerRetryPrompt(
-      input,
-      plannerOutput,
-      retryIssues,
-    );
-    const retryOutput = await runFileOpsPlannerDirect(retryPrompt, "retry");
+      console.info("conversation.planner.retry", {
+        retryIndex,
+        retryIssues,
+      });
 
-    const retryOperations = ensureDependencyInstallOperation(
-      ensureFolderOperationsForWrites(
+      const retryPrompt = buildFileOperationPlannerRetryPrompt(
+        input,
+        selectedOutput,
+        retryIssues,
+      );
+      const retryOutput = await runFileOpsPlannerDirect(
+        retryPrompt,
+        `retry-${retryIndex}`,
+      );
+
+      const retryOperations = normalizeOperations(
         extractOperations(retryOutput),
-        input.projectFiles,
-      ),
-      input.projectFiles,
-    ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
-    const retryValidationIssues = validateFileOperationPlan(retryOperations);
+      );
+      const retryValidationIssues = collectPlanIssues(retryOperations);
 
-    console.info("conversation.planner.retry-result", {
-      operationCount: retryOperations.length,
-      issueCount: retryValidationIssues.length,
-      issues: retryValidationIssues.slice(0, 5),
-    });
+      console.info("conversation.planner.retry-result", {
+        retryIndex,
+        operationCount: retryOperations.length,
+        issueCount: retryValidationIssues.length,
+        issues: retryValidationIssues.slice(0, 5),
+      });
+
+      selectedOutput = retryOutput || selectedOutput;
+      selectedOperations = retryOperations;
+      selectedIssues = retryValidationIssues;
+
+      if (selectedOperations.length > 0 && selectedIssues.length === 0) {
+        return {
+          operations: selectedOperations,
+          plannerOutput: selectedOutput,
+        };
+      }
+    }
+
+    const requiresExecutablePlan = shouldRequireExecutableFileOperations(input);
+
+    if (
+      requiresExecutablePlan &&
+      (selectedOperations.length === 0 || selectedIssues.length > 0)
+    ) {
+      const strictPrompt = buildStrictFileOperationPlannerPrompt(
+        input,
+        selectedOutput,
+        selectedIssues.length > 0
+          ? selectedIssues
+          : ["No valid operations were returned."],
+      );
+
+      const strictOutput = await runFileOpsPlannerDirect(strictPrompt, "strict");
+      const strictOperations = normalizeOperations(extractOperations(strictOutput));
+      const strictIssues = collectPlanIssues(strictOperations);
+
+      console.info("conversation.planner.strict-result", {
+        operationCount: strictOperations.length,
+        issueCount: strictIssues.length,
+        issues: strictIssues.slice(0, 5),
+      });
+
+      selectedOutput = strictOutput || selectedOutput;
+      selectedOperations = strictOperations;
+      selectedIssues = strictIssues;
+
+      if (selectedOperations.length > 0 && selectedIssues.length === 0) {
+        return {
+          operations: selectedOperations,
+          plannerOutput: selectedOutput,
+        };
+      }
+    }
+
+    if (
+      isNextJsScaffoldRequest(input) &&
+      isLikelyEmptyProjectForScaffold(input.projectFiles)
+    ) {
+      const deterministicOperations = normalizeOperations(
+        buildDeterministicNextJsScaffoldOperations(input.projectFiles),
+      );
+      const deterministicIssues = collectPlanIssues(deterministicOperations);
+
+      if (
+        deterministicOperations.length > 0 &&
+        deterministicIssues.length === 0
+      ) {
+        return {
+          operations: deterministicOperations,
+          plannerOutput: [
+            selectedOutput,
+            "",
+            "fallback: deterministic-nextjs-scaffold",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        };
+      }
+    }
 
     return {
-      operations: retryValidationIssues.length === 0 ? retryOperations : [],
+      operations: selectedIssues.length === 0 ? selectedOperations : [],
       plannerOutput:
-        retryValidationIssues.length === 0
-          ? retryOutput || plannerOutput
+        selectedIssues.length === 0
+          ? selectedOutput
           : [
-              retryOutput || plannerOutput,
+              selectedOutput,
               "",
               "Plan validation failed:",
-              ...retryValidationIssues.map((issue) => `- ${issue}`),
+              ...selectedIssues.map((issue) => `- ${issue}`),
             ].join("\n"),
     };
   } catch (error) {
@@ -1698,48 +2334,6 @@ type StructuredFolderEntry = {
 type StructuredTreeNode = {
   folders: Map<string, StructuredTreeNode>;
   files: Set<string>;
-};
-
-const getCodeBlockLanguage = (path: string) => {
-  const extension = path.split(".").at(-1)?.toLowerCase() ?? "";
-
-  switch (extension) {
-    case "ts":
-      return "ts";
-    case "tsx":
-      return "tsx";
-    case "js":
-      return "js";
-    case "jsx":
-      return "jsx";
-    case "json":
-      return "json";
-    case "css":
-      return "css";
-    case "scss":
-      return "scss";
-    case "html":
-      return "html";
-    case "md":
-      return "md";
-    case "yml":
-    case "yaml":
-      return "yaml";
-    case "sh":
-      return "bash";
-    default:
-      return "text";
-  }
-};
-
-const formatFileCodeBlock = (path: string, content: string) => {
-  const language = getCodeBlockLanguage(path);
-  const normalizedContent = content.replace(/\r\n/g, "\n").trimEnd();
-  const fence = normalizedContent.includes("```") ? "~~~~" : "```";
-
-  return [`// ${path}`, `${fence}${language}`, normalizedContent, fence].join(
-    "\n",
-  );
 };
 
 const isPathRelated = (leftPath: string, rightPath: string) =>
@@ -1984,8 +2578,7 @@ const buildStructuredCodeResponse = (args: {
 
   const hasDevServer = args.operationResults.some(
     (r) =>
-      r.status === "applied" &&
-      r.operation.type === "start_background_command",
+      r.status === "applied" && r.operation.type === "start_background_command",
   );
 
   // Build summary header
@@ -2043,9 +2636,7 @@ const buildStructuredCodeResponse = (args: {
   if (commandOps.length > 0) {
     sections.push("**Commands Executed:**");
     for (const result of commandOps) {
-      sections.push(
-        `- \u2705 ${describeFileOperation(result.operation)}`,
-      );
+      sections.push(`- \u2705 ${describeFileOperation(result.operation)}`);
     }
     sections.push("");
   }
@@ -2294,6 +2885,27 @@ export const runConversationAgentOrchestration = async (
       assignments: [] as AgentAssignment[],
       reports: [] as SpecialistReport[],
       supervisorPlan: "supervisor-skipped-direct-file-ops-mode",
+      operations: fileOperationPlan.operations,
+      operationResults,
+      fileOperationPlannerOutput: fileOperationPlan.plannerOutput,
+    };
+  }
+
+  const requiresExecutableFileOps = shouldRequireExecutableFileOperations(input);
+
+  if (requiresExecutableFileOps && fileOperationPlan.operations.length === 0) {
+    const strictFailureContent = [
+      "I could not generate a safe executable file-operation plan for this request.",
+      "No files were changed.",
+      "",
+      "Try adding explicit target files/folders and required commands so I can execute operations directly.",
+    ].join("\n");
+
+    return {
+      content: strictFailureContent,
+      assignments: [] as AgentAssignment[],
+      reports: [] as SpecialistReport[],
+      supervisorPlan: "strict-file-ops-plan-gate",
       operations: fileOperationPlan.operations,
       operationResults,
       fileOperationPlannerOutput: fileOperationPlan.plannerOutput,

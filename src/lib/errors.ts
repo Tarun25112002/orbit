@@ -126,42 +126,150 @@ const parseRetrySeconds = (text: string): number | undefined => {
       return Math.ceil(seconds);
     }
   }
+
+  const retryDelayMatch = text.match(/"retryDelay"\s*:\s*"([\d.]+)s"/i);
+  if (retryDelayMatch?.[1]) {
+    const seconds = Number.parseFloat(retryDelayMatch[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.ceil(seconds);
+    }
+  }
+
   return undefined;
 };
 
-const extractStatusCode = (error: unknown) => {
-  if (typeof error !== "object" || error === null) {
+const toRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : null;
+
+const collectErrorRecords = (error: unknown) => {
+  const queue: Array<{ value: unknown; depth: number }> = [
+    { value: error, depth: 0 },
+  ];
+  const visited = new Set<unknown>();
+  const records: Record<string, unknown>[] = [];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || current.depth > 5) {
+      continue;
+    }
+
+    const record = toRecord(current.value);
+    if (!record || visited.has(record)) {
+      continue;
+    }
+
+    visited.add(record);
+    records.push(record);
+
+    for (const key of ["error", "response", "data", "cause"]) {
+      if (key in record) {
+        queue.push({ value: record[key], depth: current.depth + 1 });
+      }
+    }
+
+    const details = record.details;
+    if (Array.isArray(details)) {
+      for (const detail of details) {
+        queue.push({ value: detail, depth: current.depth + 1 });
+      }
+    }
+  }
+
+  return records;
+};
+
+const toStatusCode = (value: unknown) => {
+  const numericCandidate =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number.parseInt(value, 10)
+        : Number.NaN;
+
+  if (!Number.isFinite(numericCandidate)) {
     return undefined;
   }
 
-  const record = error as Record<string, unknown>;
-
-  const directStatus =
-    typeof record.status === "number"
-      ? record.status
-      : typeof record.statusCode === "number"
-        ? record.statusCode
-        : undefined;
-
-  if (typeof directStatus === "number" && Number.isFinite(directStatus)) {
-    return directStatus;
+  const normalized = Math.trunc(numericCandidate);
+  if (normalized >= 100 && normalized <= 599) {
+    return normalized;
   }
 
-  if (
-    "response" in record &&
-    typeof record.response === "object" &&
-    record.response !== null
-  ) {
-    const response = record.response as Record<string, unknown>;
-    const responseStatus =
-      typeof response.status === "number"
-        ? response.status
-        : typeof response.statusCode === "number"
-          ? response.statusCode
-          : undefined;
+  return undefined;
+};
 
-    if (typeof responseStatus === "number" && Number.isFinite(responseStatus)) {
-      return responseStatus;
+const toRetryAfterSeconds = (value: unknown) => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.ceil(value);
+  }
+
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const asNumber = Number.parseFloat(trimmed);
+  if (Number.isFinite(asNumber) && asNumber > 0) {
+    return Math.ceil(asNumber);
+  }
+
+  const secondsMatch = trimmed.match(/([\d.]+)\s*s/i);
+  if (secondsMatch?.[1]) {
+    const seconds = Number.parseFloat(secondsMatch[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.ceil(seconds);
+    }
+  }
+
+  return undefined;
+};
+
+const getErrorMessageText = (error: unknown) => {
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  for (const record of collectErrorRecords(error)) {
+    if (typeof record.message === "string" && record.message.trim()) {
+      return record.message;
+    }
+
+    if (typeof record.detail === "string" && record.detail.trim()) {
+      return record.detail;
+    }
+  }
+
+  if (typeof error === "object" && error !== null) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return "";
+    }
+  }
+
+  return "";
+};
+
+const extractStatusCode = (error: unknown) => {
+  for (const record of collectErrorRecords(error)) {
+    const status =
+      toStatusCode(record.status) ??
+      toStatusCode(record.statusCode) ??
+      toStatusCode(record.code);
+
+    if (status !== undefined) {
+      return status;
     }
   }
 
@@ -174,24 +282,24 @@ const extractRetryAfterSeconds = (error: unknown, text: string) => {
     return parsedFromText;
   }
 
-  if (typeof error !== "object" || error === null) {
-    return undefined;
-  }
+  for (const record of collectErrorRecords(error)) {
+    const retryAfter =
+      toRetryAfterSeconds(record.retryAfterSeconds) ??
+      toRetryAfterSeconds(record.retryAfter) ??
+      toRetryAfterSeconds(record.retryDelay);
 
-  const record = error as Record<string, unknown>;
-  const directRetryAfter =
-    typeof record.retryAfterSeconds === "number"
-      ? record.retryAfterSeconds
-      : typeof record.retryAfter === "number"
-        ? record.retryAfter
-        : undefined;
+    if (retryAfter !== undefined) {
+      return retryAfter;
+    }
 
-  if (
-    typeof directRetryAfter === "number" &&
-    Number.isFinite(directRetryAfter) &&
-    directRetryAfter > 0
-  ) {
-    return Math.ceil(directRetryAfter);
+    const headers = toRecord(record.headers);
+    const headerRetryAfter =
+      headers?.["retry-after"] ?? headers?.["Retry-After"];
+    const parsedHeaderRetryAfter = toRetryAfterSeconds(headerRetryAfter);
+
+    if (parsedHeaderRetryAfter !== undefined) {
+      return parsedHeaderRetryAfter;
+    }
   }
 
   return undefined;
@@ -207,12 +315,7 @@ const extractRetryAfterSeconds = (error: unknown, text: string) => {
  * quota/rate-limit problems, and everything in between.
  */
 export const classifyError = (error: unknown): ClassifiedError => {
-  const rawMessage =
-    error instanceof Error
-      ? error.message
-      : typeof error === "string"
-        ? error
-        : "";
+  const rawMessage = getErrorMessageText(error);
 
   const text = rawMessage.replace(/\s+/g, " ").trim();
   const statusCode = extractStatusCode(error);

@@ -19,7 +19,36 @@ type BackgroundCommandExit = {
   at: number;
 };
 
-const WEBCONTAINER_RUNTIME_VERSION = 2;
+const WEBCONTAINER_RUNTIME_VERSION = 3;
+const RUNTIME_FS_SYNC_CONCURRENCY = 12;
+
+const runWithConcurrency = async <T>(
+  items: T[],
+  concurrency: number,
+  handler: (item: T) => Promise<void>,
+) => {
+  if (items.length === 0) {
+    return;
+  }
+
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  let nextIndex = 0;
+
+  const workers = Array.from({ length: limit }, async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+
+      if (currentIndex >= items.length) {
+        return;
+      }
+
+      await handler(items[currentIndex]!);
+    }
+  });
+
+  await Promise.all(workers);
+};
 
 const normalizePath = (rawPath: string) =>
   rawPath
@@ -63,6 +92,38 @@ const isCrossOriginIsolationError = (message: string) =>
 const isWebcontainerInstanceLimitError = (message: string) =>
   message.includes("Unable to create more instances");
 
+const isLikelyChromiumUserAgent = (userAgent: string) =>
+  /\b(?:Chrome|Chromium|Edg|OPR|Opera)\//i.test(userAgent) &&
+  !/\bFirefox\//i.test(userAgent);
+
+const buildCrossOriginIsolationErrorMessage = () => {
+  const baseMessage =
+    "WebContainer requires cross-origin isolation (SharedArrayBuffer).";
+
+  if (typeof window === "undefined") {
+    return baseMessage;
+  }
+
+  const hints: string[] = [];
+
+  if (window.top !== window.self) {
+    hints.push(
+      "Open this project in a top-level browser tab (not an embedded preview/frame).",
+    );
+  }
+
+  const userAgent = window.navigator.userAgent ?? "";
+  if (!isLikelyChromiumUserAgent(userAgent)) {
+    hints.push("Use a Chromium-based browser such as Chrome or Edge.");
+  }
+
+  hints.push(
+    "Ensure COOP/COEP headers are present on the /projects page and not stripped by browser extensions or proxies.",
+  );
+
+  return `${baseMessage} ${hints.join(" ")}`;
+};
+
 class ProjectWebcontainerRuntime {
   private instance: WebContainer | null = null;
 
@@ -84,6 +145,44 @@ class ProjectWebcontainerRuntime {
   private backgroundProcessLastExits = new Map<string, BackgroundCommandExit>();
 
   private syncedProjectFilePaths = new Set<string>();
+
+  private syncedProjectFileContent = new Map<string, string>();
+
+  private ensuredDirectoryPaths = new Set<string>();
+
+  private clearSyncCaches() {
+    this.syncedProjectFilePaths.clear();
+    this.syncedProjectFileContent.clear();
+    this.ensuredDirectoryPaths.clear();
+  }
+
+  private rememberDirectoryPath(rawPath: string) {
+    const normalized = normalizePath(rawPath);
+    if (!normalized) {
+      return;
+    }
+
+    const segments = normalized.split("/");
+    let current = "";
+
+    for (const segment of segments) {
+      current = current ? `${current}/${segment}` : segment;
+      this.ensuredDirectoryPaths.add(current);
+    }
+  }
+
+  private async ensureDirectory(
+    instance: WebContainer,
+    rawPath: string,
+  ): Promise<void> {
+    const normalized = normalizePath(rawPath);
+    if (!normalized || this.ensuredDirectoryPaths.has(normalized)) {
+      return;
+    }
+
+    await instance.fs.mkdir(toFsPath(normalized), { recursive: true });
+    this.rememberDirectoryPath(normalized);
+  }
 
   private registerBootedInstance(
     instance: WebContainer,
@@ -189,9 +288,7 @@ class ProjectWebcontainerRuntime {
     }
 
     if (typeof window !== "undefined" && !window.crossOriginIsolated) {
-      throw new Error(
-        "WebContainer requires cross-origin isolation (SharedArrayBuffer). Open this project in a top-level tab and ensure COOP/COEP headers are not stripped by your browser, proxy, or extensions.",
-      );
+      throw new Error(buildCrossOriginIsolationErrorMessage());
     }
 
     if (!this.bootPromise) {
@@ -206,9 +303,7 @@ class ProjectWebcontainerRuntime {
 
           if (isCrossOriginIsolationError(message)) {
             this.bootPromise = null;
-            throw new Error(
-              "WebContainer requires cross-origin isolation (SharedArrayBuffer). Open this project in a top-level tab and ensure COOP/COEP headers are not stripped by your browser, proxy, or extensions.",
-            );
+            throw new Error(buildCrossOriginIsolationErrorMessage());
           }
 
           if (isWebcontainerInstanceLimitError(message)) {
@@ -247,7 +342,7 @@ class ProjectWebcontainerRuntime {
     const instance = await this.ensureBooted();
 
     if (operation.type === "create_folder") {
-      await instance.fs.mkdir(toFsPath(operation.path), { recursive: true });
+      await this.ensureDirectory(instance, operation.path);
       return;
     }
 
@@ -263,6 +358,9 @@ class ProjectWebcontainerRuntime {
         force: true,
         recursive: true,
       });
+
+      // Runtime deletions can affect multiple cached paths (file or folder trees).
+      this.clearSyncCaches();
       return;
     }
 
@@ -288,6 +386,9 @@ class ProjectWebcontainerRuntime {
         throw error;
       }
 
+      // Rename can invalidate both source/target cache trees.
+      this.clearSyncCaches();
+
       return;
     }
 
@@ -298,10 +399,16 @@ class ProjectWebcontainerRuntime {
 
     const parentPath = getParentPath(operation.path);
     if (parentPath) {
-      await instance.fs.mkdir(toFsPath(parentPath), { recursive: true });
+      await this.ensureDirectory(instance, parentPath);
     }
 
+    const normalizedPath = normalizePath(operation.path);
     await instance.fs.writeFile(toFsPath(operation.path), content);
+
+    if (normalizedPath) {
+      this.syncedProjectFilePaths.add(normalizedPath);
+      this.syncedProjectFileContent.set(normalizedPath, content);
+    }
   }
 
   public async syncProjectFiles(args: {
@@ -309,6 +416,7 @@ class ProjectWebcontainerRuntime {
     log?: RuntimeLogWriter;
   }) {
     const instance = await this.ensureBooted(args.log);
+    const nextEntries: Array<{ path: string; content: string }> = [];
     const nextPaths = new Set<string>();
 
     for (const [rawPath, content] of args.filesByPath.entries()) {
@@ -317,46 +425,72 @@ class ProjectWebcontainerRuntime {
         continue;
       }
 
-      const parentPath = getParentPath(normalizedPath);
-      if (parentPath) {
-        await instance.fs.mkdir(toFsPath(parentPath), { recursive: true });
-      }
-
-      await instance.fs.writeFile(toFsPath(normalizedPath), content);
+      nextEntries.push({ path: normalizedPath, content });
       nextPaths.add(normalizedPath);
     }
 
-    for (const previousPath of this.syncedProjectFilePaths) {
-      if (nextPaths.has(previousPath)) {
-        continue;
+    const pathsToWrite = nextEntries.filter((entry) => {
+      if (!this.syncedProjectFilePaths.has(entry.path)) {
+        return true;
       }
 
-      try {
-        await instance.fs.rm(toFsPath(previousPath), {
-          force: true,
-          recursive: true,
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error ?? "unknown");
+      return this.syncedProjectFileContent.get(entry.path) !== entry.content;
+    });
 
-        if (!message.includes("ENOENT")) {
-          throw error;
+    const pathsToDelete = Array.from(this.syncedProjectFilePaths).filter(
+      (previousPath) => !nextPaths.has(previousPath),
+    );
+
+    await runWithConcurrency(
+      pathsToWrite,
+      RUNTIME_FS_SYNC_CONCURRENCY,
+      async (entry) => {
+        const parentPath = getParentPath(entry.path);
+        if (parentPath) {
+          await this.ensureDirectory(instance, parentPath);
         }
-      }
-    }
+
+        await instance.fs.writeFile(toFsPath(entry.path), entry.content);
+      },
+    );
+
+    await runWithConcurrency(
+      pathsToDelete,
+      RUNTIME_FS_SYNC_CONCURRENCY,
+      async (previousPath) => {
+        try {
+          await instance.fs.rm(toFsPath(previousPath), {
+            force: true,
+            recursive: true,
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error ?? "unknown");
+
+          if (!message.includes("ENOENT")) {
+            throw error;
+          }
+        }
+      },
+    );
 
     this.syncedProjectFilePaths = nextPaths;
+    this.syncedProjectFileContent = new Map(
+      nextEntries.map((entry) => [entry.path, entry.content]),
+    );
   }
 
   public async runCommand(args: {
     command: string;
     commandArgs?: string[];
+    env?: Record<string, string>;
     log?: RuntimeLogWriter;
     timeoutMs?: number;
   }) {
     const instance = await this.ensureBooted(args.log);
-    const process = await instance.spawn(args.command, args.commandArgs ?? []);
+    const process = await instance.spawn(args.command, args.commandArgs ?? [], {
+      env: args.env,
+    });
 
     const outputDone = this.pipeProcessOutput(process, args.log);
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -402,9 +536,11 @@ class ProjectWebcontainerRuntime {
     }
 
     if (runError) {
+      this.clearSyncCaches();
       throw runError;
     }
 
+    this.clearSyncCaches();
     return exitCode ?? 1;
   }
 
@@ -433,6 +569,7 @@ class ProjectWebcontainerRuntime {
     key: string;
     command: string;
     commandArgs?: string[];
+    env?: Record<string, string>;
     log?: RuntimeLogWriter;
   }) {
     if (this.backgroundProcesses.has(args.key)) {
@@ -441,9 +578,14 @@ class ProjectWebcontainerRuntime {
     }
 
     const instance = await this.ensureBooted(args.log);
-    const process = await instance.spawn(args.command, args.commandArgs ?? []);
+    const process = await instance.spawn(args.command, args.commandArgs ?? [], {
+      env: args.env,
+    });
     this.backgroundProcesses.set(args.key, process);
     this.backgroundProcessLastExits.delete(args.key);
+
+    // Background commands can mutate runtime files asynchronously.
+    this.clearSyncCaches();
 
     const exitPromise: Promise<BackgroundCommandExit> = process.exit
       .then((code) => ({ code, errorMessage: null, at: Date.now() }))
@@ -464,6 +606,7 @@ class ProjectWebcontainerRuntime {
       this.backgroundProcesses.delete(args.key);
       this.backgroundProcessExitPromises.delete(args.key);
       this.backgroundProcessLastExits.set(args.key, exit);
+      this.clearSyncCaches();
 
       if (exit.errorMessage) {
         args.log?.(
@@ -492,6 +635,7 @@ class ProjectWebcontainerRuntime {
     }
 
     this.backgroundProcesses.delete(args.key);
+    this.clearSyncCaches();
     args.log?.(`Stopped background command (${args.key}).`);
     return true;
   }
@@ -584,7 +728,7 @@ class ProjectWebcontainerRuntime {
 
     this.instance = null;
     this.bootPromise = null;
-    this.syncedProjectFilePaths.clear();
+    this.clearSyncCaches();
   }
 }
 

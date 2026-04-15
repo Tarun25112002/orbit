@@ -64,9 +64,12 @@ const RUNTIME_DEV_SERVER_FAILURE_WINDOW_MS = 120_000;
 const RUNTIME_DEV_SERVER_MAX_FAILURES = 3;
 const RUNTIME_INSTALL_TIMEOUT_MS = 240_000;
 const RUNTIME_INSTALL_MAX_ATTEMPTS = 2;
+const RUNTIME_AI_COMMAND_TIMEOUT_MS = 300_000;
 const RUNTIME_BACKGROUND_COMMAND_HISTORY_LIMIT = 10;
 const RUNTIME_FILE_SYNC_TIMEOUT_MS = 6000;
 const RUNTIME_COMMAND_SYNC_MAX_PATHS = 600;
+const RUNTIME_COMMAND_SYNC_READ_CONCURRENCY = 12;
+const RUNTIME_COMMAND_SYNC_MUTATION_CONCURRENCY = 6;
 const RUNTIME_COMMAND_SYNC_PATH_CANDIDATES = [
   "package.json",
   "package-lock.json",
@@ -84,6 +87,13 @@ const RUNTIME_COMMAND_SYNC_PATH_CANDIDATES = [
 ] as const;
 
 type RuntimePackageManager = "npm" | "pnpm" | "yarn" | "bun";
+
+type RuntimeInstallCommand = {
+  packageManager: RuntimePackageManager;
+  command: string;
+  commandArgs: string[];
+  label: string;
+};
 
 type RuntimeDevServerFailureState = {
   windowStartedAt: number;
@@ -139,9 +149,12 @@ const buildRuntimeDependencyFingerprint = (filesByPath: Map<string, string>) =>
     .map((path) => `${path}:${filesByPath.get(path) ?? ""}`)
     .join("\n");
 
-const buildInstallCommand = (packageManager: RuntimePackageManager) => {
+const buildInstallCommand = (
+  packageManager: RuntimePackageManager,
+): RuntimeInstallCommand => {
   if (packageManager === "pnpm") {
     return {
+      packageManager,
       command: "pnpm",
       commandArgs: ["install"],
       label: "pnpm install",
@@ -150,6 +163,7 @@ const buildInstallCommand = (packageManager: RuntimePackageManager) => {
 
   if (packageManager === "yarn") {
     return {
+      packageManager,
       command: "yarn",
       commandArgs: ["install"],
       label: "yarn install",
@@ -158,6 +172,7 @@ const buildInstallCommand = (packageManager: RuntimePackageManager) => {
 
   if (packageManager === "bun") {
     return {
+      packageManager,
       command: "bun",
       commandArgs: ["install"],
       label: "bun install",
@@ -165,10 +180,18 @@ const buildInstallCommand = (packageManager: RuntimePackageManager) => {
   }
 
   return {
+    packageManager,
     command: "npm",
-    commandArgs: ["install", "--no-progress"],
+    commandArgs: ["install", "--no-audit", "--no-fund", "--no-progress"],
     label: "npm install",
   };
+};
+
+const buildInstallCommandCandidates = (preferred: RuntimePackageManager) => {
+  const orderedManagers: RuntimePackageManager[] =
+    preferred === "npm" ? ["npm"] : [preferred, "npm"];
+
+  return orderedManagers.map((manager) => buildInstallCommand(manager));
 };
 
 const buildDevServerCommand = (
@@ -325,6 +348,126 @@ const wait = (ms: number) =>
   new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
   });
+
+const runWithConcurrency = async <T,>(
+  items: T[],
+  concurrency: number,
+  handler: (item: T) => Promise<void>,
+) => {
+  if (items.length === 0) {
+    return;
+  }
+
+  const limit = Math.max(1, Math.min(concurrency, items.length));
+  let nextIndex = 0;
+
+  const workers = Array.from({ length: limit }, async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+
+      if (currentIndex >= items.length) {
+        return;
+      }
+
+      await handler(items[currentIndex]!);
+    }
+  });
+
+  await Promise.all(workers);
+};
+
+const mapWithConcurrency = async <T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+) => {
+  const mapped = new Array<R>(items.length);
+
+  await runWithConcurrency(
+    items.map((item, index) => ({ item, index })),
+    concurrency,
+    async ({ item, index }: { item: T; index: number }) => {
+      mapped[index] = await mapper(item);
+    },
+  );
+
+  return mapped;
+};
+
+const RUNTIME_NON_INTERACTIVE_ENV: Record<string, string> = {
+  CI: "1",
+  npm_config_yes: "true",
+};
+
+const isCommandLikelyMissing = (message: string, exitCode?: number | null) => {
+  if (exitCode === 126 || exitCode === 127) {
+    return true;
+  }
+
+  const lower = message.trim().toLowerCase();
+
+  return (
+    lower.includes("enoent") ||
+    lower.includes("command not found") ||
+    lower.includes("not recognized") ||
+    lower.includes("spawn")
+  );
+};
+
+const toRuntimePackageManager = (
+  command: string,
+): RuntimePackageManager | null => {
+  const normalized = command.trim().toLowerCase();
+
+  if (
+    normalized === "npm" ||
+    normalized === "pnpm" ||
+    normalized === "yarn" ||
+    normalized === "bun"
+  ) {
+    return normalized;
+  }
+
+  return null;
+};
+
+const isPlainInstallCommand = (command: string, commandArgs?: string[]) => {
+  const packageManager = toRuntimePackageManager(command);
+  if (!packageManager) {
+    return false;
+  }
+
+  const args =
+    commandArgs?.map((arg) => arg.trim().toLowerCase()).filter(Boolean) ?? [];
+
+  if (packageManager === "yarn") {
+    if (args.length === 0) {
+      return true;
+    }
+
+    if (args[0] !== "install") {
+      return false;
+    }
+
+    return args.slice(1).every((arg) => arg.startsWith("-"));
+  }
+
+  if (args.length === 0) {
+    return false;
+  }
+
+  const [firstArg, ...restArgs] = args;
+  if (firstArg !== "install" && firstArg !== "i" && firstArg !== "ci") {
+    return false;
+  }
+
+  return restArgs.every((arg) => arg.startsWith("-"));
+};
+
+const isPlainInstallOperation = (operation: AiPipelineOperation) =>
+  operation.type === "run_command" &&
+  isPlainInstallCommand(operation.command, operation.commandArgs);
 
 const isInlineHtmlPreviewFile = (pathOrName: string) => {
   const lower = pathOrName.trim().toLowerCase();
@@ -872,6 +1015,9 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const isDirtyRef = useRef(false);
   const runtimeExecutedMessagesRef = useRef(new Set<string>());
   const runtimeDependenciesFingerprintRef = useRef<string | null>(null);
+  const runtimeResolvedPackageManagerRef = useRef<RuntimePackageManager | null>(
+    null,
+  );
   const runtimeDevServerStartedRef = useRef(false);
   const runtimeDevServerFailureStateRef = useRef<RuntimeDevServerFailureState>({
     windowStartedAt: 0,
@@ -909,6 +1055,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       projectWebcontainerRuntime.teardown();
       runtimeExecutedMessages.clear();
       runtimeDependenciesFingerprintRef.current = null;
+      runtimeResolvedPackageManagerRef.current = null;
       runtimeDevServerStartedRef.current = false;
       runtimeDevServerFailureStateRef.current = {
         windowStartedAt: 0,
@@ -1512,7 +1659,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         requiredByResults.length > 0 ? requiredByResults : requiredByOperations;
 
       if (requiredPaths.length === 0) {
-        return;
+        return true;
       }
 
       const deadline = Date.now() + RUNTIME_FILE_SYNC_TIMEOUT_MS;
@@ -1520,7 +1667,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       while (Date.now() < deadline) {
         const filesByPath = projectFileContentByPathRef.current;
         if (requiredPaths.every((path) => filesByPath.has(path))) {
-          return;
+          return true;
         }
 
         await wait(120);
@@ -1529,6 +1676,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       appendRuntimeLog(
         "Timed out waiting for project file sync; proceeding with latest snapshot.",
       );
+
+      return false;
     },
     [appendRuntimeLog],
   );
@@ -1541,8 +1690,17 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   }, [appendRuntimeLog]);
 
   const syncRuntimeCommandChangesToProject = useCallback(
-    async (contextLabel: string) => {
-      const knownPaths = Array.from(projectFileContentByPathRef.current.keys());
+    async (contextLabel: string, options?: { paths?: string[] }) => {
+      const scopedPaths =
+        options?.paths
+          ?.map((path) => path.trim())
+          .filter((path) => path.length > 0) ?? [];
+
+      const knownPaths =
+        scopedPaths.length > 0
+          ? scopedPaths
+          : Array.from(projectFileContentByPathRef.current.keys());
+
       const trackedPaths = Array.from(
         new Set([...knownPaths, ...RUNTIME_COMMAND_SYNC_PATH_CANDIDATES]),
       ).slice(0, RUNTIME_COMMAND_SYNC_MAX_PATHS);
@@ -1551,24 +1709,30 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         return;
       }
 
-      let createdOrUpdated = 0;
-      let deleted = 0;
+      const projectFilesByPathSnapshot = projectFileContentByPathRef.current;
+      const comparedPaths = await mapWithConcurrency(
+        trackedPaths,
+        RUNTIME_COMMAND_SYNC_READ_CONCURRENCY,
+        async (path) => ({
+          path,
+          runtimeContent:
+            await projectWebcontainerRuntime.readFileIfExists(path),
+          projectContent: projectFilesByPathSnapshot.get(path),
+        }),
+      );
 
-      for (const path of trackedPaths) {
-        const runtimeContent =
-          await projectWebcontainerRuntime.readFileIfExists(path);
-        const projectContent = projectFileContentByPathRef.current.get(path);
+      const mutations: Array<
+        | { type: "delete"; path: string }
+        | { type: "upsert"; path: string; content: string }
+      > = [];
 
+      for (const { path, runtimeContent, projectContent } of comparedPaths) {
         if (runtimeContent === null) {
           if (projectContent === undefined) {
             continue;
           }
 
-          await convex.mutation(api.system.agentDeletePath, {
-            projectId,
-            path,
-          });
-          deleted += 1;
+          mutations.push({ type: "delete", path });
           continue;
         }
 
@@ -1576,12 +1740,46 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           continue;
         }
 
-        await convex.mutation(api.system.agentUpdateFileByPath, {
-          projectId,
+        mutations.push({
+          type: "upsert",
           path,
           content: runtimeContent,
-          createIfMissing: true,
         });
+      }
+
+      if (mutations.length === 0) {
+        return;
+      }
+
+      await runWithConcurrency(
+        mutations,
+        RUNTIME_COMMAND_SYNC_MUTATION_CONCURRENCY,
+        async (mutation: (typeof mutations)[number]) => {
+          if (mutation.type === "delete") {
+            await convex.mutation(api.system.agentDeletePath, {
+              projectId,
+              path: mutation.path,
+            });
+            return;
+          }
+
+          await convex.mutation(api.system.agentUpdateFileByPath, {
+            projectId,
+            path: mutation.path,
+            content: mutation.content,
+            createIfMissing: true,
+          });
+        },
+      );
+
+      let createdOrUpdated = 0;
+      let deleted = 0;
+      for (const mutation of mutations) {
+        if (mutation.type === "delete") {
+          deleted += 1;
+          continue;
+        }
+
         createdOrUpdated += 1;
       }
 
@@ -1595,9 +1793,9 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   );
 
   const syncRuntimeCommandChangesToProjectSafely = useCallback(
-    async (contextLabel: string) => {
+    async (contextLabel: string, options?: { paths?: string[] }) => {
       try {
-        await syncRuntimeCommandChangesToProject(contextLabel);
+        await syncRuntimeCommandChangesToProject(contextLabel, options);
       } catch (error) {
         appendRuntimeLog(
           `${contextLabel}: failed to sync runtime file changes (${getErrorMessage(error)}).`,
@@ -1842,46 +2040,66 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   }, [runtimeBackgroundCommands, stopRuntimeBackgroundCommand]);
 
   const installRuntimeDependenciesWithRetry = useCallback(
-    async (install: ReturnType<typeof buildInstallCommand>) => {
-      for (
-        let attempt = 1;
-        attempt <= RUNTIME_INSTALL_MAX_ATTEMPTS;
-        attempt += 1
-      ) {
-        appendRuntimeLog(
-          `Installing dependencies with ${install.label} (attempt ${attempt}/${RUNTIME_INSTALL_MAX_ATTEMPTS})...`,
-        );
+    async (preferredPackageManager: RuntimePackageManager) => {
+      const candidates = buildInstallCommandCandidates(preferredPackageManager);
 
-        try {
-          const installExitCode = await projectWebcontainerRuntime.runCommand({
-            command: install.command,
-            commandArgs: install.commandArgs,
-            timeoutMs: RUNTIME_INSTALL_TIMEOUT_MS,
-            log: appendRuntimeLog,
-          });
+      for (const install of candidates) {
+        for (
+          let attempt = 1;
+          attempt <= RUNTIME_INSTALL_MAX_ATTEMPTS;
+          attempt += 1
+        ) {
+          appendRuntimeLog(
+            `Installing dependencies with ${install.label} (attempt ${attempt}/${RUNTIME_INSTALL_MAX_ATTEMPTS})...`,
+          );
 
-          if (installExitCode === 0) {
-            return true;
+          try {
+            const installExitCode = await projectWebcontainerRuntime.runCommand(
+              {
+                command: install.command,
+                commandArgs: install.commandArgs,
+                timeoutMs: RUNTIME_INSTALL_TIMEOUT_MS,
+                log: appendRuntimeLog,
+                env: RUNTIME_NON_INTERACTIVE_ENV,
+              },
+            );
+
+            if (installExitCode === 0) {
+              return install.packageManager;
+            }
+
+            appendRuntimeLog(
+              `Dependency install failed with exit code ${installExitCode}.`,
+            );
+
+            if (isCommandLikelyMissing("", installExitCode)) {
+              appendRuntimeLog(
+                `${install.label} is unavailable in this runtime. Trying a fallback installer...`,
+              );
+              break;
+            }
+          } catch (error) {
+            const message = getErrorMessage(error);
+            appendRuntimeLog(`Dependency install failed: ${message}`);
+
+            if (isCommandLikelyMissing(message)) {
+              appendRuntimeLog(
+                `${install.label} is unavailable in this runtime. Trying a fallback installer...`,
+              );
+              break;
+            }
           }
 
-          appendRuntimeLog(
-            `Dependency install failed with exit code ${installExitCode}.`,
-          );
-        } catch (error) {
-          appendRuntimeLog(
-            `Dependency install failed: ${getErrorMessage(error)}`,
-          );
-        }
-
-        if (attempt < RUNTIME_INSTALL_MAX_ATTEMPTS) {
-          appendRuntimeLog(
-            "Retrying dependency install after refreshing runtime snapshot...",
-          );
-          await syncProjectSnapshotToRuntime();
+          if (attempt < RUNTIME_INSTALL_MAX_ATTEMPTS) {
+            appendRuntimeLog(
+              "Retrying dependency install after refreshing runtime snapshot...",
+            );
+            await syncProjectSnapshotToRuntime();
+          }
         }
       }
 
-      return false;
+      return null;
     },
     [appendRuntimeLog, syncProjectSnapshotToRuntime],
   );
@@ -1959,25 +2177,32 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       );
     }
 
-    const packageManager = detectPackageManager(filesByPath);
+    const detectedPackageManager = detectPackageManager(filesByPath);
+    let packageManager =
+      runtimeResolvedPackageManagerRef.current ?? detectedPackageManager;
     const dependenciesFingerprint =
       buildRuntimeDependencyFingerprint(filesByPath);
 
     if (runtimeDependenciesFingerprintRef.current !== dependenciesFingerprint) {
-      const install = buildInstallCommand(packageManager);
-      const installSucceeded =
-        await installRuntimeDependenciesWithRetry(install);
+      const installedWithPackageManager =
+        await installRuntimeDependenciesWithRetry(detectedPackageManager);
 
-      if (!installSucceeded) {
+      if (!installedWithPackageManager) {
         recordRuntimeDevServerFailure(
           "Dependency install failed after retry attempts.",
         );
         return false;
       }
 
+      packageManager = installedWithPackageManager;
       runtimeDependenciesFingerprintRef.current = dependenciesFingerprint;
+      runtimeResolvedPackageManagerRef.current = installedWithPackageManager;
       appendRuntimeLog("Dependencies installed successfully.");
-      await syncRuntimeCommandChangesToProjectSafely("Dependency install");
+      await syncRuntimeCommandChangesToProjectSafely("Dependency install", {
+        paths: Array.from(RUNTIME_COMMAND_SYNC_PATH_CANDIDATES),
+      });
+    } else if (runtimeResolvedPackageManagerRef.current) {
+      packageManager = runtimeResolvedPackageManagerRef.current;
     }
 
     const devCommand = buildDevServerCommand(packageManager, {
@@ -2178,10 +2403,13 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       );
 
       try {
-        console.info("[orbit:runtime] Booting WebContainer...");
-        await projectWebcontainerRuntime.ensureBooted(appendRuntimeLog);
-        console.info("[orbit:runtime] Waiting for file sync...");
-        await waitForRuntimeFileSync(detail.trace);
+        console.info(
+          "[orbit:runtime] Booting WebContainer and waiting for file sync...",
+        );
+        const [runtimeFileSyncReady] = await Promise.all([
+          waitForRuntimeFileSync(detail.trace),
+          projectWebcontainerRuntime.ensureBooted(appendRuntimeLog),
+        ]);
         console.info("[orbit:runtime] Syncing project snapshot...");
         await syncProjectSnapshotToRuntime();
 
@@ -2199,6 +2427,21 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             operation.type === "start_background_command" &&
             operation.key === RUNTIME_DEV_SERVER_KEY,
         );
+
+        const firstNonFilesystemOperationIndex =
+          detail.trace.operations.findIndex(
+            (operation) => !isFilesystemOperation(operation),
+          );
+        const hasFilesystemOperationAfterNonFilesystemOperation =
+          firstNonFilesystemOperationIndex >= 0
+            ? detail.trace.operations
+                .slice(firstNonFilesystemOperationIndex + 1)
+                .some((operation) => isFilesystemOperation(operation))
+            : false;
+        const canSkipFilesystemReplay =
+          runtimeFileSyncReady &&
+          !hasFilesystemOperationAfterNonFilesystemOperation;
+        let skippedFilesystemReplayCount = 0;
 
         for (const [index, operation] of detail.trace.operations.entries()) {
           appendRuntimeLog(
@@ -2241,11 +2484,22 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           }
 
           if (isFilesystemOperation(operation)) {
-            await projectWebcontainerRuntime.applyOperation({
-              operation,
-              readFileContentByPath: (path) =>
-                projectFileContentByPathRef.current.get(path),
-            });
+            if (canSkipFilesystemReplay) {
+              skippedFilesystemReplayCount += 1;
+              continue;
+            }
+
+            try {
+              await projectWebcontainerRuntime.applyOperation({
+                operation,
+                readFileContentByPath: (path) =>
+                  projectFileContentByPathRef.current.get(path),
+              });
+            } catch (error) {
+              appendRuntimeLog(
+                `Filesystem operation failed and was skipped: ${describeRuntimeOperation(operation)} (${getErrorMessage(error)}).`,
+              );
+            }
             continue;
           }
 
@@ -2253,12 +2507,56 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             appendRuntimeLog(
               `$ ${operation.command}${operation.commandArgs?.length ? ` ${operation.commandArgs.join(" ")}` : ""}`,
             );
+
+            if (isPlainInstallOperation(operation)) {
+              const preferredPackageManager =
+                toRuntimePackageManager(operation.command) ??
+                detectPackageManager(projectFileContentByPathRef.current);
+              const installedWithPackageManager =
+                await installRuntimeDependenciesWithRetry(
+                  preferredPackageManager,
+                );
+
+              if (!installedWithPackageManager) {
+                appendRuntimeLog(
+                  "Dependency install command failed after retry attempts.",
+                );
+                continue;
+              }
+
+              runtimeResolvedPackageManagerRef.current =
+                installedWithPackageManager;
+              await syncRuntimeCommandChangesToProjectSafely(
+                `Operation command ${operation.command}`,
+                {
+                  paths: Array.from(RUNTIME_COMMAND_SYNC_PATH_CANDIDATES),
+                },
+              );
+              runtimeDependenciesFingerprintRef.current =
+                buildRuntimeDependencyFingerprint(
+                  projectFileContentByPathRef.current,
+                );
+              appendRuntimeLog(
+                `Dependencies installed with ${installedWithPackageManager}.`,
+              );
+              continue;
+            }
+
             const exitCode = await projectWebcontainerRuntime.runCommand({
               command: operation.command,
               commandArgs: operation.commandArgs,
               log: appendRuntimeLog,
+              timeoutMs: RUNTIME_AI_COMMAND_TIMEOUT_MS,
+              env: RUNTIME_NON_INTERACTIVE_ENV,
             });
             appendRuntimeLog(`Command exited with code ${exitCode}.`);
+
+            if (exitCode !== 0) {
+              appendRuntimeLog(
+                "Command reported a non-zero exit code. Continuing with remaining steps.",
+              );
+            }
+
             await syncRuntimeCommandChangesToProjectSafely(
               `Operation command ${operation.command}`,
             );
@@ -2297,6 +2595,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           }
         }
 
+        if (canSkipFilesystemReplay && skippedFilesystemReplayCount > 0) {
+          appendRuntimeLog(
+            `Snapshot sync already applied ${skippedFilesystemReplayCount} filesystem steps; skipped redundant replay.`,
+          );
+        }
+
         if (!hasBackgroundRuntimeOperation || previewRequestedByOperations) {
           const previewStarted = await maybeStartRuntimeDevServer();
           if (previewStarted) {
@@ -2316,6 +2620,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     },
     [
       appendRuntimeLog,
+      installRuntimeDependenciesWithRetry,
       maybeStartRuntimeDevServer,
       syncRuntimeCommandChangesToProjectSafely,
       syncProjectSnapshotToRuntime,

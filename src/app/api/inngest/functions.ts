@@ -32,6 +32,8 @@ const MAX_HISTORY_MESSAGES = 40;
 const ENABLE_CONVERSATION_AI_TITLE = /^(1|true)$/i.test(
   process.env.CONVERSATION_ENABLE_AI_TITLE?.trim() ?? "",
 );
+const TITLE_SKIP_HEAVY_REQUEST_PATTERN =
+  /\b(create|build|generate|scaffold|setup|implement|fix|refactor|rename|move|delete|update|install|dependency|dependencies|next(?:\.js|js)?|project|app|route|api)\b/i;
 const FILE_CONTEXT_STOP_WORDS = new Set([
   "about",
   "after",
@@ -531,6 +533,19 @@ const shouldGenerateConversationTitle = (title: string) =>
   /^chat\s+\d+$/i.test(title.trim()) ||
   /^new conversation$/i.test(title.trim());
 
+const shouldSkipAiTitleForMessage = (message: string) => {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return true;
+  }
+
+  if (trimmed.length > 220) {
+    return true;
+  }
+
+  return TITLE_SKIP_HEAVY_REQUEST_PATTERN.test(trimmed);
+};
+
 const buildConversationHistoryBlock = (
   messages: Array<{
     role: "user" | "assistant";
@@ -724,6 +739,7 @@ export const conversationMessageRequested = inngest.createFunction(
       const shouldTitleConversation =
         ENABLE_CONVERSATION_AI_TITLE &&
         shouldGenerateConversationTitle(conversation.title) &&
+        !shouldSkipAiTitleForMessage(message) &&
         existingMessages.filter(
           (historyMessage) => historyMessage.role === "user",
         ).length <= 1;

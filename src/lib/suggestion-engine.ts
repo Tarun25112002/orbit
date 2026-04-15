@@ -650,10 +650,23 @@ const normalizeGenerationError = (error: unknown) => {
 
   // Use classifyError for non-Gemini errors to produce friendly messages
   const classified = classifyError(error);
+  const classifiedStatusCode =
+    classified.category === "rate_limit" ||
+    classified.category === "quota_exceeded"
+      ? 429
+      : classified.category === "auth"
+        ? 401
+        : classified.category === "validation"
+          ? 400
+          : classified.category === "timeout"
+            ? 504
+            : classified.category === "ai_unavailable"
+              ? 503
+              : 500;
 
   return new SuggestionGenerationError({
     message: classified.message,
-    statusCode: rateLimited ? 429 : 500,
+    statusCode: rateLimited ? 429 : classifiedStatusCode,
     retryAfterSeconds:
       parseRetryAfterSeconds(message) ?? classified.retryAfterSeconds ?? null,
     retryable: classified.retryable,
