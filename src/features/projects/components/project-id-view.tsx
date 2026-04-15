@@ -3,7 +3,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Allotment } from "allotment";
 import { useConvex, useConvexConnectionState } from "convex/react";
-import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "lucide-react";
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  PlayIcon,
+  PlusIcon,
+  SquareIcon,
+  TerminalSquareIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 import type { Doc } from "../../../../convex/_generated/dataModel";
 
 import { cn } from "@/lib/utils";
@@ -21,7 +30,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { Terminal } from "@/components/ai-elements/terminal";
+import { Terminal, TerminalContent } from "@/components/ai-elements/terminal";
 
 import { api } from "../../../../convex/_generated/api";
 import { Id } from "../../../../convex/_generated/dataModel";
@@ -55,6 +64,7 @@ const RUNTIME_DEV_SERVER_FAILURE_WINDOW_MS = 120_000;
 const RUNTIME_DEV_SERVER_MAX_FAILURES = 3;
 const RUNTIME_INSTALL_TIMEOUT_MS = 240_000;
 const RUNTIME_INSTALL_MAX_ATTEMPTS = 2;
+const RUNTIME_BACKGROUND_COMMAND_HISTORY_LIMIT = 10;
 const RUNTIME_FILE_SYNC_TIMEOUT_MS = 6000;
 const RUNTIME_COMMAND_SYNC_MAX_PATHS = 600;
 const RUNTIME_COMMAND_SYNC_PATH_CANDIDATES = [
@@ -79,6 +89,20 @@ type RuntimeDevServerFailureState = {
   windowStartedAt: number;
   count: number;
 };
+
+type RuntimeBackgroundCommandStatus = "idle" | "running" | "exited";
+
+type RuntimeBackgroundCommand = {
+  key: string;
+  commandLine: string;
+  startedAt: number;
+  status: RuntimeBackgroundCommandStatus;
+  exitCode: number | null;
+  errorMessage: string | null;
+  logs: string[];
+};
+
+const MAIN_RUNTIME_TAB_KEY = "__orbit-main-runtime-tab__";
 
 const isFilesystemOperation = (operation: AiPipelineOperation) =>
   operation.type === "create_file" ||
@@ -283,6 +307,18 @@ const tokenizeCommandLine = (value: string) => {
   const matches = value.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
 
   return matches.map((token) => token.replace(/^(["'])|(["'])$/g, ""));
+};
+
+const normalizeRuntimeBackgroundKeySegment = (value: string) => {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "")
+    .slice(0, 24);
+
+  return normalized || "command";
 };
 
 const wait = (ms: number) =>
@@ -772,6 +808,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [runtimeLogs, setRuntimeLogs] = useState<string[]>([]);
   const [runtimePreviewUrl, setRuntimePreviewUrl] = useState("");
   const [runtimeCommand, setRuntimeCommand] = useState("");
+  const [runtimeBackgroundCommands, setRuntimeBackgroundCommands] = useState<
+    RuntimeBackgroundCommand[]
+  >([]);
+  const [activeRuntimeTabKey, setActiveRuntimeTabKey] =
+    useState(MAIN_RUNTIME_TAB_KEY);
   const [isRuntimeBusy, setIsRuntimeBusy] = useState(false);
   const [isRuntimeCommandRunning, setIsRuntimeCommandRunning] = useState(false);
   const [isPreviewBooting, setIsPreviewBooting] = useState(false);
@@ -968,19 +1009,99 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     previewAutoLaunchTriedRef.current = false;
   }, [previewAutoLaunchFingerprint]);
 
-  const appendRuntimeLog = useCallback((message: string) => {
+  const formatRuntimeLogLine = useCallback((message: string) => {
     const timestamp = new Date().toLocaleTimeString();
-    const line = `[${timestamp}] ${message}`;
-
-    setRuntimeLogs((previous) => {
-      const next = [...previous, line];
-      if (next.length > RUNTIME_LOG_LIMIT) {
-        return next.slice(next.length - RUNTIME_LOG_LIMIT);
-      }
-
-      return next;
-    });
+    return `[${timestamp}] ${message}`;
   }, []);
+
+  const appendRuntimeLog = useCallback(
+    (message: string) => {
+      const line = formatRuntimeLogLine(message);
+
+      setRuntimeLogs((previous) => {
+        const next = [...previous, line];
+        if (next.length > RUNTIME_LOG_LIMIT) {
+          return next.slice(next.length - RUNTIME_LOG_LIMIT);
+        }
+
+        return next;
+      });
+    },
+    [formatRuntimeLogLine],
+  );
+
+  const appendRuntimeTabLog = useCallback(
+    (key: string, message: string) => {
+      const globalLine = formatRuntimeLogLine(`[${key}] ${message}`);
+      const tabLine = formatRuntimeLogLine(message);
+
+      setRuntimeLogs((previous) => {
+        const next = [...previous, globalLine];
+        if (next.length > RUNTIME_LOG_LIMIT) {
+          return next.slice(next.length - RUNTIME_LOG_LIMIT);
+        }
+
+        return next;
+      });
+
+      setRuntimeBackgroundCommands((previous) =>
+        previous.map((item) => {
+          if (item.key !== key) {
+            return item;
+          }
+
+          const nextLogs = [...item.logs, tabLine];
+          return {
+            ...item,
+            logs:
+              nextLogs.length > RUNTIME_LOG_LIMIT
+                ? nextLogs.slice(nextLogs.length - RUNTIME_LOG_LIMIT)
+                : nextLogs,
+          };
+        }),
+      );
+    },
+    [formatRuntimeLogLine],
+  );
+
+  const clearActiveRuntimeOutput = useCallback(() => {
+    if (activeRuntimeTabKey === MAIN_RUNTIME_TAB_KEY) {
+      setRuntimeLogs([]);
+      return;
+    }
+
+    setRuntimeBackgroundCommands((previous) =>
+      previous.map((item) =>
+        item.key === activeRuntimeTabKey ? { ...item, logs: [] } : item,
+      ),
+    );
+  }, [activeRuntimeTabKey]);
+
+  const activeRuntimeOutput = useMemo(() => {
+    if (activeRuntimeTabKey === MAIN_RUNTIME_TAB_KEY) {
+      return runtimeLogs.join("\n");
+    }
+
+    const activeTab = runtimeBackgroundCommands.find(
+      (item) => item.key === activeRuntimeTabKey,
+    );
+
+    return activeTab ? activeTab.logs.join("\n") : runtimeLogs.join("\n");
+  }, [activeRuntimeTabKey, runtimeBackgroundCommands, runtimeLogs]);
+
+  useEffect(() => {
+    if (activeRuntimeTabKey === MAIN_RUNTIME_TAB_KEY) {
+      return;
+    }
+
+    if (
+      runtimeBackgroundCommands.some((item) => item.key === activeRuntimeTabKey)
+    ) {
+      return;
+    }
+
+    setActiveRuntimeTabKey(MAIN_RUNTIME_TAB_KEY);
+  }, [activeRuntimeTabKey, runtimeBackgroundCommands]);
 
   const resetRuntimeDevServerFailures = useCallback(() => {
     runtimeDevServerFailureStateRef.current = {
@@ -1028,6 +1149,13 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       }
     },
     [appendRuntimeLog],
+  );
+
+  const runningRuntimeBackgroundCommandCount = useMemo(
+    () =>
+      runtimeBackgroundCommands.filter((item) => item.status === "running")
+        .length,
+    [runtimeBackgroundCommands],
   );
 
   const selectedFilePath = useMemo(() => {
@@ -1478,6 +1606,240 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     },
     [appendRuntimeLog, syncRuntimeCommandChangesToProject],
   );
+
+  const startRuntimeBackgroundCommand = useCallback(
+    async (
+      rawInput?: string,
+      options?: { terminalKey?: string; activateTab?: boolean },
+    ) => {
+      const sourceCommand = (rawInput ?? runtimeCommand).trim();
+      if (
+        !sourceCommand ||
+        isRuntimeBusy ||
+        runtimeTraceWorkerRunningRef.current
+      ) {
+        return false;
+      }
+
+      const [command, ...commandArgs] = tokenizeCommandLine(sourceCommand);
+      if (!command) {
+        return false;
+      }
+
+      const key =
+        options?.terminalKey ??
+        `manual-${normalizeRuntimeBackgroundKeySegment(command)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+      const existingTarget = runtimeBackgroundCommands.find(
+        (item) => item.key === key,
+      );
+
+      if (existingTarget?.status === "running") {
+        appendRuntimeTabLog(
+          key,
+          "A command is already running in this terminal. Stop it before starting another command.",
+        );
+        return false;
+      }
+
+      const startedAt = Date.now();
+
+      setRuntimeCommand("");
+      setActiveView("runtime");
+
+      setRuntimeBackgroundCommands((previous) => {
+        const target = previous.find((item) => item.key === key);
+
+        const nextLogs = [
+          ...(target?.logs ?? []),
+          formatRuntimeLogLine(`$ ${sourceCommand}`),
+        ].slice(-RUNTIME_LOG_LIMIT);
+
+        const updated: RuntimeBackgroundCommand = {
+          key,
+          commandLine: sourceCommand,
+          startedAt,
+          status: "running",
+          exitCode: null,
+          errorMessage: null,
+          logs: nextLogs,
+        };
+
+        const next = [updated, ...previous.filter((item) => item.key !== key)];
+
+        return next.slice(0, RUNTIME_BACKGROUND_COMMAND_HISTORY_LIMIT);
+      });
+
+      if (options?.activateTab ?? true) {
+        setActiveRuntimeTabKey(key);
+      }
+
+      appendRuntimeLog(
+        `Starting background command (${key}): ${sourceCommand}`,
+      );
+
+      try {
+        await projectWebcontainerRuntime.ensureBooted(appendRuntimeLog);
+        await syncProjectSnapshotToRuntime();
+
+        const backgroundLog = (line: string) => {
+          appendRuntimeTabLog(key, line);
+        };
+
+        await projectWebcontainerRuntime.startBackgroundCommand({
+          key,
+          command,
+          commandArgs,
+          log: backgroundLog,
+        });
+
+        void (async () => {
+          const exit =
+            await projectWebcontainerRuntime.waitForBackgroundCommandExit({
+              key,
+            });
+
+          if (!isMountedRef.current || !exit) {
+            return;
+          }
+
+          setRuntimeBackgroundCommands((previous) =>
+            previous.map((item) =>
+              item.key === key
+                ? {
+                    ...item,
+                    status: "exited",
+                    exitCode: exit.code,
+                    errorMessage: exit.errorMessage,
+                  }
+                : item,
+            ),
+          );
+
+          if (exit.errorMessage) {
+            appendRuntimeTabLog(
+              key,
+              `Background command failed: ${exit.errorMessage}`,
+            );
+          } else {
+            appendRuntimeTabLog(
+              key,
+              `Background command exited with code ${exit.code}.`,
+            );
+          }
+
+          await syncRuntimeCommandChangesToProjectSafely(
+            `Background command ${command}`,
+          );
+        })();
+
+        return true;
+      } catch (error) {
+        const message = getErrorMessage(error);
+        appendRuntimeLog(`Failed to start background command: ${message}`);
+
+        setRuntimeBackgroundCommands((previous) =>
+          previous.map((item) =>
+            item.key === key
+              ? {
+                  ...item,
+                  status: "exited",
+                  errorMessage: message,
+                  logs: [
+                    ...item.logs,
+                    formatRuntimeLogLine(
+                      `Failed to start background command: ${message}`,
+                    ),
+                  ].slice(-RUNTIME_LOG_LIMIT),
+                }
+              : item,
+          ),
+        );
+
+        return false;
+      }
+    },
+    [
+      appendRuntimeTabLog,
+      appendRuntimeLog,
+      formatRuntimeLogLine,
+      isRuntimeBusy,
+      runtimeBackgroundCommands,
+      runtimeCommand,
+      syncProjectSnapshotToRuntime,
+      syncRuntimeCommandChangesToProjectSafely,
+    ],
+  );
+
+  const createRuntimeTerminalTab = useCallback(() => {
+    const createdAt = Date.now();
+    const key = `manual-terminal-${createdAt.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const label = `terminal-${key.slice(-4)}`;
+
+    setRuntimeBackgroundCommands((previous) => {
+      const next: RuntimeBackgroundCommand[] = [
+        {
+          key,
+          commandLine: label,
+          startedAt: createdAt,
+          status: "idle",
+          exitCode: null,
+          errorMessage: null,
+          logs: [
+            formatRuntimeLogLine(
+              `Terminal created (${label}). Enter a command and press Enter to run in this terminal.`,
+            ),
+          ],
+        },
+        ...previous,
+      ];
+
+      return next.slice(0, RUNTIME_BACKGROUND_COMMAND_HISTORY_LIMIT);
+    });
+
+    setActiveRuntimeTabKey(key);
+    setActiveView("runtime");
+    appendRuntimeLog(`Created new terminal tab (${label}).`);
+  }, [appendRuntimeLog, formatRuntimeLogLine]);
+
+  const stopRuntimeBackgroundCommand = useCallback(
+    (key: string) => {
+      const stopped = projectWebcontainerRuntime.stopBackgroundCommand({
+        key,
+        log: appendRuntimeLog,
+      });
+
+      if (!stopped) {
+        return;
+      }
+
+      appendRuntimeTabLog(key, "Stopped manually.");
+
+      setRuntimeBackgroundCommands((previous) =>
+        previous.map((item) =>
+          item.key === key
+            ? {
+                ...item,
+                status: "exited",
+                exitCode: null,
+                errorMessage: "Stopped manually.",
+              }
+            : item,
+        ),
+      );
+    },
+    [appendRuntimeTabLog, appendRuntimeLog],
+  );
+
+  const stopAllRuntimeBackgroundCommands = useCallback(() => {
+    const runningCommands = runtimeBackgroundCommands.filter(
+      (item) => item.status === "running",
+    );
+
+    for (const item of runningCommands) {
+      stopRuntimeBackgroundCommand(item.key);
+    }
+  }, [runtimeBackgroundCommands, stopRuntimeBackgroundCommand]);
 
   const installRuntimeDependenciesWithRetry = useCallback(
     async (install: ReturnType<typeof buildInstallCommand>) => {
@@ -2027,6 +2389,25 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       return;
     }
 
+    const shouldRunInBackground =
+      activeRuntimeTabKey !== MAIN_RUNTIME_TAB_KEY || rawCommand.endsWith("&");
+
+    if (shouldRunInBackground) {
+      const backgroundCommand = rawCommand.replace(/&+$/, "").trim();
+      if (!backgroundCommand) {
+        return;
+      }
+
+      await startRuntimeBackgroundCommand(backgroundCommand, {
+        terminalKey:
+          activeRuntimeTabKey === MAIN_RUNTIME_TAB_KEY
+            ? undefined
+            : activeRuntimeTabKey,
+        activateTab: true,
+      });
+      return;
+    }
+
     const [command, ...commandArgs] = tokenizeCommandLine(rawCommand);
     if (!command) {
       return;
@@ -2034,6 +2415,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
     setRuntimeCommand("");
     setActiveView("runtime");
+    setActiveRuntimeTabKey(MAIN_RUNTIME_TAB_KEY);
     setIsRuntimeCommandRunning(true);
     appendRuntimeLog(`$ ${rawCommand}`);
 
@@ -2060,10 +2442,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       setIsRuntimeCommandRunning(false);
     }
   }, [
+    activeRuntimeTabKey,
     appendRuntimeLog,
     isRuntimeBusy,
     isRuntimeCommandRunning,
     runtimeCommand,
+    startRuntimeBackgroundCommand,
     syncRuntimeCommandChangesToProjectSafely,
     syncProjectSnapshotToRuntime,
   ]);
@@ -2371,10 +2755,143 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               )}
             </div>
 
-            <div className="min-h-0 p-3">
-              <div className="mb-2 flex items-center gap-2">
+            <div className="min-h-0 p-3 flex flex-col">
+              <div className="flex h-9 items-center border border-[#2d2d2d] border-b-0 bg-[#181818] px-2 text-[11px]">
+                <span className="mr-2 shrink-0 tracking-[0.08em] text-[#8f8f8f]">
+                  TERMINAL
+                </span>
+
+                <div className="min-w-0 flex items-center gap-1 overflow-x-auto scrollbar-none">
+                  <button
+                    className={cn(
+                      "flex h-7 items-center gap-1 rounded-t border px-2",
+                      activeRuntimeTabKey === MAIN_RUNTIME_TAB_KEY
+                        ? "border-[#2d2d2d] border-b-[#1e1e1e] bg-[#1e1e1e] text-[#d4d4d4]"
+                        : "border-[#2b2b2b] border-b-[#181818] bg-[#181818] text-[#8f8f8f]",
+                    )}
+                    onClick={() => setActiveRuntimeTabKey(MAIN_RUNTIME_TAB_KEY)}
+                    type="button"
+                  >
+                    <TerminalSquareIcon className="size-3.5 text-[#4fc1ff]" />
+                    <span className="font-mono text-[11px]">orbit-runtime</span>
+                  </button>
+
+                  {runtimeBackgroundCommands.slice(0, 6).map((item) => (
+                    <div
+                      key={item.key}
+                      className={cn(
+                        "flex h-7 items-center gap-1 rounded-t border px-2",
+                        activeRuntimeTabKey === item.key
+                          ? "border-[#2d2d2d] border-b-[#1e1e1e] bg-[#1e1e1e] text-[#d4d4d4]"
+                          : item.status === "running"
+                            ? "border-[#2d2d2d] border-b-[#181818] bg-[#181818] text-[#c7c7c7]"
+                            : item.status === "idle"
+                              ? "border-[#2b2b2b] border-b-[#181818] bg-[#181818] text-[#9bc3ff]"
+                              : "border-[#2b2b2b] border-b-[#181818] bg-[#181818] text-[#848484]",
+                      )}
+                      onClick={() => setActiveRuntimeTabKey(item.key)}
+                    >
+                      <span
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          item.status === "running"
+                            ? "bg-[#73c991]"
+                            : item.status === "idle"
+                              ? "bg-[#4fc1ff]"
+                              : "bg-[#6b6b6b]",
+                        )}
+                      />
+                      <span className="max-w-48 truncate font-mono text-[11px]">
+                        {item.commandLine}
+                      </span>
+                      {item.status === "running" && (
+                        <button
+                          className="ml-1 rounded p-0.5 text-[#9d9d9d] hover:bg-[#2a2d2e] hover:text-[#d4d4d4]"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            stopRuntimeBackgroundCommand(item.key);
+                          }}
+                          title={`Stop ${item.commandLine}`}
+                          type="button"
+                        >
+                          <XIcon className="size-3" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="ml-auto flex items-center gap-0.5 pl-2">
+                  <Button
+                    className="h-7 w-7 px-0 text-[#c5c5c5] hover:bg-[#2a2d2e]"
+                    disabled={
+                      !runtimeCommand.trim() ||
+                      isRuntimeCommandRunning ||
+                      isRuntimeBusy
+                    }
+                    onClick={() => {
+                      void handleRunRuntimeCommand();
+                    }}
+                    title="Run command"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <PlayIcon className="size-3.5" />
+                  </Button>
+                  <Button
+                    className="h-7 w-7 px-0 text-[#c5c5c5] hover:bg-[#2a2d2e]"
+                    onClick={() => {
+                      createRuntimeTerminalTab();
+                    }}
+                    title="New terminal"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <PlusIcon className="size-3.5" />
+                  </Button>
+                  <Button
+                    className="h-7 w-7 px-0 text-[#c5c5c5] hover:bg-[#2a2d2e]"
+                    disabled={runningRuntimeBackgroundCommandCount === 0}
+                    onClick={() => {
+                      stopAllRuntimeBackgroundCommands();
+                    }}
+                    title="Stop background commands"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <SquareIcon className="size-3.5" />
+                  </Button>
+                  <Button
+                    className="h-7 w-7 px-0 text-[#c5c5c5] hover:bg-[#2a2d2e]"
+                    onClick={() => clearActiveRuntimeOutput()}
+                    title="Clear terminal"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </Button>
+                </div>
+              </div>
+
+              <Terminal
+                className="min-h-0 flex-1 rounded-none border border-[#2d2d2d] border-t-0 bg-[#1e1e1e] shadow-none"
+                isStreaming={
+                  isRuntimeBusy ||
+                  isRuntimeCommandRunning ||
+                  runningRuntimeBackgroundCommandCount > 0
+                }
+                onClear={() => clearActiveRuntimeOutput()}
+                output={activeRuntimeOutput}
+              >
+                <TerminalContent className="h-full bg-[#1e1e1e] px-3 py-2 font-mono text-[12px] leading-[1.45] text-[#d4d4d4]" />
+              </Terminal>
+
+              <div className="flex h-9 items-center gap-2 border border-[#2d2d2d] border-t-0 bg-[#181818] px-2">
+                <span className="shrink-0 font-mono text-xs text-[#6a9955]">
+                  $
+                </span>
                 <Input
-                  className="h-8 bg-[#1f1f1f] text-xs text-[#d4d4d4]"
+                  className="h-7 border-0 bg-transparent px-1 font-mono text-xs text-[#d4d4d4] shadow-none focus-visible:ring-0"
                   onChange={(event) => setRuntimeCommand(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") {
@@ -2384,47 +2901,19 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                     event.preventDefault();
                     void handleRunRuntimeCommand();
                   }}
-                  placeholder="Run command in WebContainer (for example: npm test)"
+                  placeholder="Type command and press Enter (runs in selected terminal tab)"
                   value={runtimeCommand}
                 />
-                <Button
-                  className="h-8 px-3 text-xs"
-                  disabled={
-                    !runtimeCommand.trim() ||
-                    isRuntimeCommandRunning ||
-                    isRuntimeBusy
-                  }
-                  onClick={() => {
-                    void handleRunRuntimeCommand();
-                  }}
-                  type="button"
-                >
-                  Run
-                </Button>
-                <Button
-                  className="h-8 px-3 text-xs"
-                  onClick={() => setRuntimeLogs([])}
-                  type="button"
-                  variant="secondary"
-                >
-                  Clear
-                </Button>
+                <span className="shrink-0 text-[10px] text-[#8f8f8f]">
+                  {isRuntimeBusy
+                    ? "Applying AI execution..."
+                    : isRuntimeCommandRunning
+                      ? "Running command..."
+                      : runningRuntimeBackgroundCommandCount > 0
+                        ? `${runningRuntimeBackgroundCommandCount} background task(s)`
+                        : "Idle"}
+                </span>
               </div>
-
-              <div className="mb-2 text-[11px] text-[#8f8f8f]">
-                {isRuntimeBusy
-                  ? "Applying AI execution steps in WebContainer..."
-                  : isRuntimeCommandRunning
-                    ? "Running command..."
-                    : "Runtime idle."}
-              </div>
-
-              <Terminal
-                className="h-[calc(100%-3rem)] border-[#2d2d2d]"
-                isStreaming={isRuntimeBusy || isRuntimeCommandRunning}
-                onClear={() => setRuntimeLogs([])}
-                output={runtimeLogs.join("\n")}
-              />
             </div>
           </div>
         </div>
