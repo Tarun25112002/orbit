@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 import {
   AlertTriangleIcon,
   BotIcon,
@@ -293,6 +294,7 @@ const ChatView = ({
   const conversation = useConversation(conversationId);
   const messages = useMessages(conversationId);
   const sendMessage = useSendMessage();
+  const { getToken } = useAuth();
   const [isSending, setIsSending] = useState(false);
   const [pendingAssistantMessageId, setPendingAssistantMessageId] =
     useState<Id<"messages"> | null>(null);
@@ -329,6 +331,23 @@ const ChatView = ({
 
     return activeFilePath.slice(0, separatorIndex);
   }, [activeFilePath]);
+
+  const buildAuthHeaders = useCallback(async () => {
+    const headers = new Headers({
+      "Content-Type": "application/json",
+    });
+
+    try {
+      const token = await getToken();
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+    } catch {
+      // Fall back to cookie-based auth if token retrieval fails.
+    }
+
+    return headers;
+  }, [getToken]);
 
   useEffect(() => {
     dispatchedExecutionTraceRef.current.clear();
@@ -446,7 +465,8 @@ const ChatView = ({
 
         const response = await fetch("/api/messages", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          headers: await buildAuthHeaders(),
           body: JSON.stringify({
             conversationId,
             userMessageId: result.userMessageId,
@@ -472,7 +492,8 @@ const ChatView = ({
           try {
             await fetch("/api/messages/complete", {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              headers: await buildAuthHeaders(),
               body: JSON.stringify({
                 messageId: assistantMessageId,
                 content: classified.message,
@@ -487,7 +508,14 @@ const ChatView = ({
         setIsSending(false);
       }
     },
-    [activeFilePath, activeFolderPath, conversationId, isSending, sendMessage],
+    [
+      activeFilePath,
+      activeFolderPath,
+      buildAuthHeaders,
+      conversationId,
+      isSending,
+      sendMessage,
+    ],
   );
 
   const handleSuggestionClick = useCallback(
@@ -504,7 +532,8 @@ const ChatView = ({
     try {
       const response = await fetch("/api/messages/cancel", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        headers: await buildAuthHeaders(),
         body: JSON.stringify({
           assistantMessageId: messageId,
         }),
@@ -521,7 +550,7 @@ const ChatView = ({
     } finally {
       setCancellingMessageId(null);
     }
-  }, []);
+  }, [buildAuthHeaders]);
 
   const handleCancelActiveMessage = useCallback(() => {
     if (!activeAssistantMessageId || isCancellingActiveAssistant) {

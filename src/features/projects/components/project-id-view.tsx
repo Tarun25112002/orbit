@@ -83,8 +83,22 @@ const RUNTIME_COMMAND_SYNC_PATH_CANDIDATES = [
   "vite.config.ts",
   "vite.config.cjs",
   "tsconfig.json",
+  "tsconfig.node.json",
   "jsconfig.json",
 ] as const;
+
+const RUNTIME_TSCONFIG_FILENAME = "tsconfig.json";
+const RUNTIME_TSCONFIG_NODE_FILENAME = "tsconfig.node.json";
+const RUNTIME_TSCONFIG_NODE_SHIM = `{
+  "compilerOptions": {
+    "composite": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true
+  },
+  "include": ["vite.config.ts"]
+}`;
 
 type RuntimePackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
@@ -472,6 +486,36 @@ const isPlainInstallOperation = (operation: AiPipelineOperation) =>
 const isInlineHtmlPreviewFile = (pathOrName: string) => {
   const lower = pathOrName.trim().toLowerCase();
   return lower.endsWith(".html") || lower.endsWith(".htm");
+};
+
+const shouldInjectRuntimeTsconfigNodeShim = (filesByPath: Map<string, string>) => {
+  if (filesByPath.has(RUNTIME_TSCONFIG_NODE_FILENAME)) {
+    return false;
+  }
+
+  const tsconfig = filesByPath.get(RUNTIME_TSCONFIG_FILENAME);
+  if (!tsconfig) {
+    return false;
+  }
+
+  return /\btsconfig\.node\.json\b/.test(tsconfig);
+};
+
+const buildRuntimeSnapshotWithCompat = (filesByPath: Map<string, string>) => {
+  if (!shouldInjectRuntimeTsconfigNodeShim(filesByPath)) {
+    return {
+      filesByPath,
+      injectedTsconfigNodeShim: false,
+    };
+  }
+
+  const compatSnapshot = new Map(filesByPath);
+  compatSnapshot.set(RUNTIME_TSCONFIG_NODE_FILENAME, RUNTIME_TSCONFIG_NODE_SHIM);
+
+  return {
+    filesByPath: compatSnapshot,
+    injectedTsconfigNodeShim: true,
+  };
 };
 
 const describeRuntimeOperation = (operation: AiPipelineOperation) => {
@@ -1028,6 +1072,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const previewBootInFlightRef = useRef(false);
   const runtimeTraceQueueRef = useRef<OrbitAiExecutionTraceEventDetail[]>([]);
   const runtimeTraceWorkerRunningRef = useRef(false);
+  const runtimeTsconfigNodeShimLoggedRef = useRef(false);
   const selectedEditableFileIdRef = useRef<Id<"files"> | null>(null);
   const persistFileContentRef = useRef<
     (fileId: Id<"files">, content: string) => Promise<void>
@@ -1683,8 +1728,26 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   );
 
   const syncProjectSnapshotToRuntime = useCallback(async () => {
+    const runtimeSnapshot = buildRuntimeSnapshotWithCompat(
+      projectFileContentByPathRef.current,
+    );
+
+    if (
+      runtimeSnapshot.injectedTsconfigNodeShim &&
+      !runtimeTsconfigNodeShimLoggedRef.current
+    ) {
+      appendRuntimeLog(
+        "Added runtime compatibility shim for missing tsconfig.node.json referenced by tsconfig.json.",
+      );
+      runtimeTsconfigNodeShimLoggedRef.current = true;
+    }
+
+    if (!runtimeSnapshot.injectedTsconfigNodeShim) {
+      runtimeTsconfigNodeShimLoggedRef.current = false;
+    }
+
     await projectWebcontainerRuntime.syncProjectFiles({
-      filesByPath: projectFileContentByPathRef.current,
+      filesByPath: runtimeSnapshot.filesByPath,
       log: appendRuntimeLog,
     });
   }, [appendRuntimeLog]);

@@ -92,6 +92,12 @@ const MAX_PLANNER_KEY_FILE_CHARS = parsePositiveInt(
 const NEXTJS_FRAMEWORK_PATTERN = /\bnext(?:\.js|js)?\b/i;
 const NEXTJS_SCAFFOLD_INTENT_PATTERN =
   /\b(create|scaffold|setup|generate|starter|boilerplate|from scratch|new)\b/i;
+const NEXTJS_BASIC_STARTER_INTENT_PATTERN =
+  /\b(starter|boilerplate|template|minimal|basic|blank|empty|hello world)\b/i;
+const END_TO_END_BUILD_INTENT_PATTERN =
+  /\b(end[\s-]?to[\s-]?end|full[\s-]?stack|production(?:\s|-)?ready|complete\s+app|complete\s+project)\b/i;
+const COMPLEX_FEATURE_SCOPE_PATTERN =
+  /\b(auth|authentication|login|signup|database|db|prisma|postgres|mysql|mongodb|redis|payment|stripe|webhook|dashboard|admin|roles|permissions|upload|storage|notification|socket|realtime|real-time|queue|worker|cron|backend|server|api)\b/i;
 const STRICT_EXECUTION_ACTION_PATTERN =
   /\b(do it|apply(?:\s+it)?|apply changes|make changes|edit files|update files|create files|scaffold|set\s*up|setup|run commands?|execute commands?|install dependencies|wire up|hook up)\b/i;
 const PROJECT_SCOPED_EXECUTION_PATTERN =
@@ -306,6 +312,8 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "",
   "1. COMPLETE CODE ONLY: Every create_file/update_file MUST contain the FULL, FINAL, RUNNABLE file content.",
   "   No placeholders. No `// TODO`. No `// add your code here`. No `...` ellipsis. Every file must work AS-IS.",
+  "   Unless the user explicitly asks for a starter/minimal template, implement a COMPLETE end-to-end slice, not a bare shell.",
+  "   For app feature requests, include frontend UI + server/API/data flow + validation/error handling so the feature actually works.",
   "",
   "2. COMMANDS: Put the binary name in `command` and args in `commandArgs` array.",
   "   NEVER use shell chaining (&&, ||, ;, |). Use SEPARATE run_command operations instead.",
@@ -1402,6 +1410,24 @@ const isNextJsScaffoldRequest = (input: ConversationOrchestrationInput) => {
   return NEXTJS_SCAFFOLD_INTENT_PATTERN.test(message);
 };
 
+const isNextJsBasicStarterRequest = (input: ConversationOrchestrationInput) => {
+  const message = input.message.trim();
+
+  if (!isNextJsScaffoldRequest(input)) {
+    return false;
+  }
+
+  if (END_TO_END_BUILD_INTENT_PATTERN.test(message)) {
+    return false;
+  }
+
+  if (COMPLEX_FEATURE_SCOPE_PATTERN.test(message)) {
+    return false;
+  }
+
+  return NEXTJS_BASIC_STARTER_INTENT_PATTERN.test(message);
+};
+
 const buildNextJsStarterPackageJson = () =>
   `${JSON.stringify(
     {
@@ -1853,6 +1879,8 @@ const buildFileOperationPlannerPrompt = (
     "",
     "REMINDERS:",
     "- Your output is EXECUTED, not displayed. Include COMPLETE file contents.",
+    "- Unless the user explicitly asks for starter/minimal scaffold, do NOT stop at a basic frontend shell.",
+    "- For feature requests, deliver an end-to-end implementation (UI + API/backend/data flow) that runs in this project.",
     '- After changing package.json: {"type":"run_command","command":"npm","commandArgs":["install"]}',
     '- To start dev server: {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
     "- For Next.js scaffolds, include at minimum: package.json, next.config.ts, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css.",
@@ -2128,7 +2156,8 @@ const planConversationFileOperations = async (
 
   const shouldUseDeterministicNextJsFallback =
     isNextJsScaffoldRequest(input) &&
-    isLikelyEmptyProjectForScaffold(input.projectFiles);
+    isLikelyEmptyProjectForScaffold(input.projectFiles) &&
+    isNextJsBasicStarterRequest(input);
 
   if (shouldUseDeterministicNextJsFallback) {
     const deterministicOperations = ensureDependencyInstallOperation(
@@ -2351,10 +2380,7 @@ const planConversationFileOperations = async (
       }
     }
 
-    if (
-      isNextJsScaffoldRequest(input) &&
-      isLikelyEmptyProjectForScaffold(input.projectFiles)
-    ) {
+    if (shouldUseDeterministicNextJsFallback) {
       const deterministicOperations = normalizeOperations(
         buildDeterministicNextJsScaffoldOperations(input.projectFiles),
       );

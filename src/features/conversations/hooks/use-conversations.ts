@@ -1,5 +1,6 @@
 import { useMutation, useQuery } from "convex/react";
 import { useCallback, useState } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 import { classifyError } from "@/lib/errors";
@@ -42,8 +43,26 @@ export type ChatStatus = "idle" | "sending" | "error";
 
 export const useChatActions = (conversationId: Id<"conversations"> | null) => {
   const sendMessage = useSendMessage();
+  const { getToken } = useAuth();
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+
+  const buildAuthHeaders = useCallback(async () => {
+    const headers = new Headers({
+      "Content-Type": "application/json",
+    });
+
+    try {
+      const token = await getToken();
+      if (token) {
+        headers.set("Authorization", `Bearer ${token}`);
+      }
+    } catch {
+      // Fall back to cookie-based auth if token retrieval fails.
+    }
+
+    return headers;
+  }, [getToken]);
 
   const send = useCallback(
     async (content: string) => {
@@ -64,7 +83,8 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
 
           const response = await fetch("/api/messages", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            headers: await buildAuthHeaders(),
             body: JSON.stringify({
               conversationId,
               userMessageId: result.userMessageId,
@@ -87,7 +107,8 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
             try {
               await fetch("/api/messages/complete", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                headers: await buildAuthHeaders(),
                 body: JSON.stringify({
                   messageId: assistantMessageId,
                   content: err instanceof Error ? err.message : "Failed to send message",
@@ -106,7 +127,7 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
         setStatus("error");
       }
     },
-    [conversationId, sendMessage],
+    [buildAuthHeaders, conversationId, sendMessage],
   );
 
   return { send, status, error };

@@ -14,13 +14,7 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const { userId, getToken } = await auth();
-  if (!userId) {
-    return NextResponse.json(
-      { error: "Please sign in to continue." },
-      { status: 401 },
-    );
-  }
+  const { getToken } = await auth();
 
   let body: unknown;
   try {
@@ -41,7 +35,7 @@ export async function POST(request: Request) {
     const convexToken = await getToken({ template: "convex" });
     if (!convexToken) {
       return NextResponse.json(
-        { error: "Could not verify workspace access." },
+        { error: "Please sign in to continue." },
         { status: 401 },
       );
     }

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
 import { FaGithub } from "react-icons/fa";
 import { AlertCircleIcon, GlobeIcon, Loader2Icon } from "lucide-react";
@@ -64,9 +63,11 @@ const EmptyState = () => {
 };
 
 const ProjectCard = ({ data }: { data: Doc<"projects"> }) => {
+  const href = `/projects/${data._id}`;
+
   return (
-    <Link
-      href={`/projects/${data._id}`}
+    <a
+      href={href}
       className="group flex items-center gap-3 rounded-xl px-3.5 py-2.5 transition-colors duration-200 hover:bg-white/5"
     >
       <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-white/4 transition-colors duration-200 group-hover:border-ring/20 group-hover:bg-ring/8">
@@ -84,7 +85,7 @@ const ProjectCard = ({ data }: { data: Doc<"projects"> }) => {
           {formatTimestamp(data.updatedAt)}
         </div>
       </div>
-    </Link>
+    </a>
   );
 };
 

@@ -1,6 +1,5 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import { FaGithub } from "react-icons/fa";
 import {
@@ -105,12 +104,12 @@ export const ProjectsCommandDialog = ({
   open,
   onOpenChange,
 }: ProjectsCommandDialogProps) => {
-  const router = useRouter();
   const projects = useProjects();
 
   const handleSelect = (projectId: string) => {
     onOpenChange(false);
-    router.push(`/projects/${projectId}`);
+    // Cross-origin isolation is document-scoped, so project entry must be a hard navigation.
+    window.location.assign(`/projects/${projectId}`);
   };
 
   return (
