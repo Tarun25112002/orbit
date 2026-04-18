@@ -59,23 +59,8 @@ export const Providers = ({ children }: { children: React.ReactNode }) => {
           enableSystem
           disableTransitionOnChange
         >
-          <Authenticated>{children}</Authenticated>
+          {children}
           <Toaster />
-
-          <Unauthenticated>
-            <ConvexUnauthenticatedState />
-          </Unauthenticated>
-
-          <AuthLoading>
-            <div className="flex min-h-screen items-center justify-center bg-background px-4">
-              <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-                <Spinner className="size-4 text-ring" />
-                <span className="text-sm text-muted-foreground">
-                  Loading workspace...
-                </span>
-              </div>
-            </div>
-          </AuthLoading>
         </ThemeProvider>
       </ConvexProviderWithClerk>
     </ClerkProvider>
