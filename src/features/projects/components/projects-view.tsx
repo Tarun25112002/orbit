@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Image from "next/image";
 import { UserButton } from "@clerk/nextjs";
 import { Plus, Search, Blocks } from "lucide-react";
-import { motion } from "framer-motion";
+import { motion, Variants } from "framer-motion";
 import {
   adjectives,
   animals,
@@ -22,7 +22,7 @@ export const ProjectsView = () => {
   const createProject = useCreateProject();
   const [commandOpen, setCommandOpen] = useState(false);
 
-  const containerVariants = {
+  const containerVariants: Variants = {
     hidden: { opacity: 0 },
     visible: {
       opacity: 1,
@@ -33,14 +33,14 @@ export const ProjectsView = () => {
     },
   };
 
-  const itemVariants = {
+  const itemVariants: Variants = {
     hidden: { opacity: 0, y: 20 },
     visible: {
       opacity: 1,
       y: 0,
       transition: {
         duration: 0.6,
-        ease: [0.22, 1, 0.36, 1],
+        ease: "easeOut",
       },
     },
   };
