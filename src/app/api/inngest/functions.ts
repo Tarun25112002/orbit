@@ -16,6 +16,7 @@ import type {
   AiPipelineOperation,
   AiPipelineOperationResult,
 } from "@/lib/ai-execution";
+import { parseAiExecutionTrace } from "@/lib/ai-execution";
 import {
   generateSuggestion,
   type ParsedSuggestionInput,
@@ -31,6 +32,9 @@ const MAX_CONTEXT_FILES = 24;
 const MAX_HISTORY_MESSAGES = 40;
 const ENABLE_CONVERSATION_AI_TITLE = /^(1|true)$/i.test(
   process.env.CONVERSATION_ENABLE_AI_TITLE?.trim() ?? "",
+);
+const ENABLE_TRACE_HISTORY = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_ENABLE_TRACE_HISTORY?.trim() ?? "true",
 );
 const TITLE_SKIP_HEAVY_REQUEST_PATTERN =
   /\b(create|build|generate|scaffold|setup|implement|fix|refactor|rename|move|delete|update|install|dependency|dependencies|next(?:\.js|js)?|project|app|route|api)\b/i;
@@ -588,12 +592,99 @@ const getParentFolderPath = (path: string | undefined) => {
   return path.slice(0, separatorIndex);
 };
 
+const describeTraceOperation = (operation: AiPipelineOperation): string => {
+  if (operation.type === "run_command") {
+    const args = operation.commandArgs?.join(" ") ?? "";
+    return `${operation.command}${args ? ` ${args}` : ""}`;
+  }
+  if (operation.type === "start_background_command") {
+    const args = operation.commandArgs?.join(" ") ?? "";
+    return `${operation.command}${args ? ` ${args}` : ""} (background: ${operation.key})`;
+  }
+  if (operation.type === "rename_path") {
+    return `${operation.path} → ${operation.newPath}`;
+  }
+  return (operation as { path: string }).path ?? "unknown";
+};
+
+const buildExecutionTraceSummary = (
+  reasoningDetails: unknown,
+): string | null => {
+  if (
+    typeof reasoningDetails !== "object" ||
+    reasoningDetails === null
+  ) {
+    return null;
+  }
+
+  const record = reasoningDetails as Record<string, unknown>;
+  const trace = parseAiExecutionTrace(record.executionTrace);
+  if (!trace || trace.operationResults.length === 0) {
+    return null;
+  }
+
+  const lines: string[] = ["[Previous AI Actions]"];
+
+  // Summarize file operations
+  const fileOps = trace.operationResults.filter(
+    (r) =>
+      r.operation.type !== "run_command" &&
+      r.operation.type !== "start_background_command",
+  );
+  const appliedFiles = fileOps.filter((r) => r.status === "applied");
+  const failedFiles = fileOps.filter((r) => r.status === "failed");
+
+  if (appliedFiles.length > 0) {
+    const filePaths = appliedFiles
+      .map((r) => describeTraceOperation(r.operation))
+      .slice(0, 15);
+    const suffix =
+      appliedFiles.length > 15
+        ? ` (+${appliedFiles.length - 15} more)`
+        : "";
+    lines.push(
+      `- Created/modified ${appliedFiles.length} files: ${filePaths.join(", ")}${suffix}`,
+    );
+  }
+
+  if (failedFiles.length > 0) {
+    for (const f of failedFiles.slice(0, 5)) {
+      lines.push(
+        `- FAILED: ${f.operation.type} ${describeTraceOperation(f.operation)} — ${f.message.slice(0, 150)}`,
+      );
+    }
+  }
+
+  // Summarize command operations
+  const commandOps = trace.operationResults.filter(
+    (r) =>
+      r.operation.type === "run_command" ||
+      r.operation.type === "start_background_command",
+  );
+
+  for (const cmd of commandOps) {
+    const cmdDesc = describeTraceOperation(cmd.operation);
+    if (cmd.status === "applied") {
+      lines.push(`- Ran: ${cmdDesc} → OK`);
+    } else if (cmd.status === "failed") {
+      lines.push(
+        `- Ran: ${cmdDesc} → FAILED: ${cmd.message.slice(0, 200)}`,
+      );
+    } else if (cmd.status === "skipped") {
+      lines.push(`- Skipped: ${cmdDesc} — ${cmd.message.slice(0, 100)}`);
+    }
+  }
+
+  return lines.length > 1 ? lines.join("\n") : null;
+};
+
 const buildConversationHistoryBlock = (
   messages: Array<{
     role: "user" | "assistant";
     content: string;
     status?: string;
     _id: string;
+    reasoning_details?: unknown;
   }>,
   userMessageId: string,
   assistantMessageId: string,
@@ -613,7 +704,23 @@ const buildConversationHistoryBlock = (
   return historyMessages
     .map((historyMessage) => {
       const role = historyMessage.role === "assistant" ? "Assistant" : "User";
-      return `${role}: ${historyMessage.content}`;
+      const contentBlock = `${role}: ${historyMessage.content}`;
+
+      // Append execution trace summary for assistant messages (if available and enabled)
+      if (
+        ENABLE_TRACE_HISTORY &&
+        historyMessage.role === "assistant" &&
+        historyMessage.reasoning_details
+      ) {
+        const traceSummary = buildExecutionTraceSummary(
+          historyMessage.reasoning_details,
+        );
+        if (traceSummary) {
+          return `${contentBlock}\n\n${traceSummary}`;
+        }
+      }
+
+      return contentBlock;
     })
     .join("\n\n");
 };

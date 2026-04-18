@@ -2505,6 +2505,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           runtimeFileSyncReady &&
           !hasFilesystemOperationAfterNonFilesystemOperation;
         let skippedFilesystemReplayCount = 0;
+        let managedPreviewAttempted = false;
 
         for (const [index, operation] of detail.trace.operations.entries()) {
           appendRuntimeLog(
@@ -2631,6 +2632,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               appendRuntimeLog(
                 "Starting managed preview dev server pipeline...",
               );
+              managedPreviewAttempted = true;
               const started = await maybeStartRuntimeDevServer();
               if (!started) {
                 appendRuntimeLog(
@@ -2664,7 +2666,13 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           );
         }
 
-        if (!hasBackgroundRuntimeOperation || previewRequestedByOperations) {
+        // Only auto-start the dev server if the managed preview wasn't already attempted
+        // during the trace loop. This prevents double-starts when the AI includes
+        // start_background_command[dev-server] in the execution trace.
+        if (
+          !managedPreviewAttempted &&
+          (!hasBackgroundRuntimeOperation || previewRequestedByOperations)
+        ) {
           const previewStarted = await maybeStartRuntimeDevServer();
           if (previewStarted) {
             setActiveView("preview");

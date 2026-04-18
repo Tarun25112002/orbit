@@ -115,6 +115,23 @@ const MAX_PLANNER_KEY_FILE_CHARS = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_KEY_FILE_CHARS?.trim(),
   12_000,
 );
+const MAX_FIXUP_ITERATIONS = parsePositiveInt(
+  process.env.CONVERSATION_MAX_FIXUP_ITERATIONS?.trim(),
+  3,
+);
+const MAX_FIXUP_OUTPUT_CHARS = parsePositiveInt(
+  process.env.CONVERSATION_FIXUP_MAX_OUTPUT_CHARS?.trim(),
+  2_000,
+);
+const ENABLE_DEP_PREVALIDATION = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_ENABLE_DEP_PREVALIDATION?.trim() ?? "true",
+);
+const ENABLE_INSTALL_GATE = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_ENABLE_INSTALL_GATE?.trim() ?? "true",
+);
+const ENABLE_TRACE_HISTORY = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_ENABLE_TRACE_HISTORY?.trim() ?? "true",
+);
 const NEXTJS_FRAMEWORK_PATTERN = /\bnext(?:\.js|js)?\b/i;
 const NEXTJS_SCAFFOLD_INTENT_PATTERN =
   /\b(create|scaffold|setup|generate|starter|boilerplate|from scratch|new)\b/i;
@@ -302,17 +319,21 @@ export type ConversationFileOperation =
       type: "run_command";
       command: string;
       commandArgs?: string[];
+      gatedOnPreviousSuccess?: boolean;
     }
   | {
       type: "start_background_command";
       key: string;
       command: string;
       commandArgs?: string[];
+      gatedOnPreviousSuccess?: boolean;
     };
 
 export type ConversationFileOperationExecutionResult = {
   status: "applied" | "skipped" | "failed";
   message: string;
+  commandOutput?: string;
+  commandExitCode?: number | null;
 };
 
 export type ConversationFileOperationExecutor = (
@@ -327,6 +348,8 @@ type ConversationFileOperationResult = {
   operation: ConversationFileOperation;
   status: "applied" | "skipped" | "failed";
   message: string;
+  commandOutput?: string;
+  commandExitCode?: number | null;
 };
 
 type SpecialistReport = {
@@ -1148,6 +1171,12 @@ const ensureFolderOperationsForWrites = (
   for (const operation of operations) {
     if (operation.type === "create_folder") {
       const folderPath = operation.path;
+
+      // Skip duplicate create_folder for folders already known or planned
+      if (existingFolders.has(folderPath) || plannedFolders.has(folderPath)) {
+        continue;
+      }
+
       const missingAncestors = expandPathAncestors(folderPath).filter(
         (ancestor) =>
           !existingFolders.has(ancestor) && !plannedFolders.has(ancestor),
@@ -1327,7 +1356,15 @@ const moveManagedDevServerStartToEnd = (
     (operation) => !isManagedDevServerStartOperation(operation),
   );
 
-  return [...withoutManagedStarts, managedStarts[managedStarts.length - 1]!];
+  const lastManagedStart = managedStarts[managedStarts.length - 1]!;
+
+  // Gate the dev-server start on the previous operation (npm install) succeeding.
+  const gatedDevServerStart: ConversationFileOperation =
+    ENABLE_INSTALL_GATE && lastManagedStart.type === "start_background_command"
+      ? { ...lastManagedStart, gatedOnPreviousSuccess: true }
+      : lastManagedStart;
+
+  return [...withoutManagedStarts, gatedDevServerStart];
 };
 
 const hasDependencyInstallCommand = (operations: ConversationFileOperation[]) =>
@@ -1380,6 +1417,223 @@ const ensureDependencyInstallOperation = (
 
   return moveManagedDevServerStartToEnd(withInstall);
 };
+
+const COMMON_IMPORT_PATTERN =
+  /(?:^|\n)\s*import\s+(?:[^;]*?)\s+from\s+["']([^"'./][^"']*)["']/g;
+const COMMON_REQUIRE_PATTERN =
+  /\brequire\s*\(\s*["']([^"'./][^"']*)["']\s*\)/g;
+
+const extractImportedPackageNames = (sourceCode: string): Set<string> => {
+  const packages = new Set<string>();
+
+  const addFromPattern = (pattern: RegExp, code: string) => {
+    const regex = new RegExp(pattern.source, pattern.flags);
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(code)) !== null) {
+      const packageSpec = match[1]?.trim();
+      if (!packageSpec) continue;
+      // Handle scoped packages (@scope/name) and bare specifiers (name/path)
+      const packageName = packageSpec.startsWith("@")
+        ? packageSpec.split("/").slice(0, 2).join("/")
+        : packageSpec.split("/")[0]!;
+      if (packageName) packages.add(packageName);
+    }
+  };
+
+  addFromPattern(COMMON_IMPORT_PATTERN, sourceCode);
+  addFromPattern(COMMON_REQUIRE_PATTERN, sourceCode);
+
+  return packages;
+};
+
+const NODE_BUILTIN_MODULES = new Set([
+  "assert", "buffer", "child_process", "cluster", "crypto", "dgram", "dns",
+  "events", "fs", "http", "http2", "https", "net", "os", "path", "perf_hooks",
+  "process", "querystring", "readline", "stream", "string_decoder", "timers",
+  "tls", "tty", "url", "util", "v8", "vm", "worker_threads", "zlib",
+  "node:assert", "node:buffer", "node:child_process", "node:cluster",
+  "node:crypto", "node:dgram", "node:dns", "node:events", "node:fs",
+  "node:http", "node:http2", "node:https", "node:net", "node:os", "node:path",
+  "node:perf_hooks", "node:process", "node:querystring", "node:readline",
+  "node:stream", "node:string_decoder", "node:timers", "node:tls", "node:tty",
+  "node:url", "node:util", "node:v8", "node:vm", "node:worker_threads",
+  "node:zlib", "node:test",
+]);
+
+const FRAMEWORK_IMPLICIT_PACKAGES = new Set([
+  "react", "react-dom", "next", "react/jsx-runtime", "react/jsx-dev-runtime",
+]);
+
+const validatePackageJsonDependencies = (
+  operations: ConversationFileOperation[],
+): ConversationFileOperation[] => {
+  if (!ENABLE_DEP_PREVALIDATION) return operations;
+
+  // Find the package.json operation
+  const packageJsonOpIndex = operations.findIndex(
+    (op) =>
+      (op.type === "create_file" || op.type === "update_file") &&
+      op.path === "package.json",
+  );
+
+  if (packageJsonOpIndex === -1) return operations;
+
+  const packageJsonOp = operations[packageJsonOpIndex]!;
+  if (packageJsonOp.type !== "create_file" && packageJsonOp.type !== "update_file") {
+    return operations;
+  }
+
+  // Parse existing package.json content
+  let packageJson: Record<string, unknown>;
+  try {
+    packageJson = JSON.parse(packageJsonOp.content) as Record<string, unknown>;
+  } catch {
+    return operations; // Can't parse, skip validation
+  }
+
+  const existingDeps = new Set<string>();
+  const addDepsFrom = (obj: unknown) => {
+    if (typeof obj === "object" && obj !== null) {
+      for (const key of Object.keys(obj as Record<string, unknown>)) {
+        existingDeps.add(key);
+      }
+    }
+  };
+  addDepsFrom(packageJson.dependencies);
+  addDepsFrom(packageJson.devDependencies);
+  addDepsFrom(packageJson.peerDependencies);
+
+  // Collect all imported packages from source files in this batch
+  const allImportedPackages = new Set<string>();
+  for (const op of operations) {
+    if (
+      (op.type === "create_file" || op.type === "update_file") &&
+      op.path !== "package.json" &&
+      /\.(tsx?|jsx?|mjs|cjs)$/.test(op.path)
+    ) {
+      for (const pkg of extractImportedPackageNames(op.content)) {
+        allImportedPackages.add(pkg);
+      }
+    }
+  }
+
+  // Find missing packages
+  const missingPackages: string[] = [];
+  for (const pkg of allImportedPackages) {
+    if (existingDeps.has(pkg)) continue;
+    if (NODE_BUILTIN_MODULES.has(pkg)) continue;
+    if (FRAMEWORK_IMPLICIT_PACKAGES.has(pkg)) continue;
+    // Skip path aliases and relative imports that slipped through
+    if (pkg.startsWith("@/") || pkg.startsWith("~/") || pkg.startsWith(".")) continue;
+    missingPackages.push(pkg);
+  }
+
+  // Detect framework-essential dev dependencies that are ALWAYS needed
+  // but the AI frequently forgets to include
+  const frameworkEssentialPackages: Array<{ name: string; version: string }> = [];
+
+  const hasVite = existingDeps.has("vite") || allImportedPackages.has("vite");
+  const hasReactFiles = operations.some(
+    (op) =>
+      (op.type === "create_file" || op.type === "update_file") &&
+      /\.(tsx|jsx)$/.test(op.path),
+  );
+  const hasViteConfig = operations.some(
+    (op) =>
+      (op.type === "create_file" || op.type === "update_file") &&
+      /^vite\.config\.(ts|js|mjs)$/.test(op.path),
+  );
+
+  // Vite + React → always needs @vitejs/plugin-react
+  if ((hasVite || hasViteConfig) && hasReactFiles && !existingDeps.has("@vitejs/plugin-react") && !existingDeps.has("@vitejs/plugin-react-swc")) {
+    frameworkEssentialPackages.push({ name: "@vitejs/plugin-react", version: "^4" });
+  }
+
+  // Tailwind CSS → always needs postcss and autoprefixer
+  if (existingDeps.has("tailwindcss")) {
+    if (!existingDeps.has("postcss")) {
+      frameworkEssentialPackages.push({ name: "postcss", version: "^8" });
+    }
+    if (!existingDeps.has("autoprefixer")) {
+      frameworkEssentialPackages.push({ name: "autoprefixer", version: "^10" });
+    }
+  }
+
+  // Vite + TypeScript → needs typescript
+  if ((hasVite || hasViteConfig) && !existingDeps.has("typescript")) {
+    const hasTsFiles = operations.some(
+      (op) =>
+        (op.type === "create_file" || op.type === "update_file") &&
+        /\.tsx?$/.test(op.path) &&
+        !/\.d\.ts$/.test(op.path),
+    );
+    if (hasTsFiles) {
+      frameworkEssentialPackages.push({ name: "typescript", version: "^5" });
+    }
+  }
+
+  // React projects → need @types/react and @types/react-dom
+  if (hasReactFiles && (existingDeps.has("react") || allImportedPackages.has("react"))) {
+    if (!existingDeps.has("@types/react")) {
+      frameworkEssentialPackages.push({ name: "@types/react", version: "^18" });
+    }
+    if (!existingDeps.has("@types/react-dom")) {
+      frameworkEssentialPackages.push({ name: "@types/react-dom", version: "^18" });
+    }
+  }
+
+  const hasFrameworkEssentialGaps = frameworkEssentialPackages.length > 0;
+
+
+  if (missingPackages.length === 0 && !hasFrameworkEssentialGaps) {
+    return operations;
+  }
+
+  console.info("conversation.planner.dep-prevalidation.fixing", {
+    missingPackages,
+    frameworkEssentials: frameworkEssentialPackages.length > 0 ? frameworkEssentialPackages : undefined,
+    existingDepCount: existingDeps.size,
+  });
+
+  // Add missing packages to dependencies with "latest" version
+  const deps = (
+    typeof packageJson.dependencies === "object" && packageJson.dependencies !== null
+      ? { ...(packageJson.dependencies as Record<string, string>) }
+      : {}
+  );
+  const devDeps = (
+    typeof packageJson.devDependencies === "object" && packageJson.devDependencies !== null
+      ? { ...(packageJson.devDependencies as Record<string, string>) }
+      : {}
+  );
+
+  for (const pkg of missingPackages) {
+    deps[pkg] = "latest";
+  }
+
+  // Add framework essential packages to devDependencies
+  for (const { name, version } of frameworkEssentialPackages) {
+    if (!existingDeps.has(name)) {
+      devDeps[name] = version;
+    }
+  }
+
+  packageJson.dependencies = deps;
+  if (Object.keys(devDeps).length > 0) {
+    packageJson.devDependencies = devDeps;
+  }
+
+  const updatedContent = `${JSON.stringify(packageJson, null, 2)}\n`;
+  const updatedOp: ConversationFileOperation = {
+    ...packageJsonOp,
+    content: updatedContent,
+  };
+
+  const result = [...operations];
+  result[packageJsonOpIndex] = updatedOp;
+  return result;
+};
+
 
 const parseFileOperation = (
   value: unknown,
@@ -2703,7 +2957,9 @@ const planConversationFileOperations = async (
     const maxOperations = args?.maxOperations ?? MAX_FILE_OPERATIONS_PER_RUN;
 
     return ensureDependencyInstallOperation(
-      ensureFolderOperationsForWrites(operations, projectFiles),
+      validatePackageJsonDependencies(
+        ensureFolderOperationsForWrites(operations, projectFiles),
+      ),
       projectFiles,
     ).slice(0, maxOperations);
   };
@@ -2760,6 +3016,33 @@ const planConversationFileOperations = async (
           FILE_OPS_MODEL;
         const preferredModel = pickAvailableModel(rotatedCandidate);
 
+        // Build enriched context from previous chunks — include actual file contents
+        const previousChunkFilesList = aggregateChunkOperations
+          .filter(
+            (op) => op.type === "create_file" || op.type === "update_file",
+          )
+          .map((op) => (op as { path: string }).path);
+
+        const previousKeyFileContents: string[] = [];
+        if (workingProjectFiles.length > 0) {
+          const keyPatterns = [
+            "package.json", "tsconfig.json", "next.config.ts", "next.config.mjs",
+            "vite.config.ts", "tailwind.config.ts", "postcss.config.mjs",
+            "src/app/layout.tsx", "src/app/globals.css",
+          ];
+          for (const pattern of keyPatterns) {
+            const file = workingProjectFiles.find(
+              (f) => f.type === "file" && f.path === pattern && f.content,
+            );
+            if (file?.content) {
+              const truncated = file.content.length > 4_000
+                ? `${file.content.slice(0, 4_000)}\n/* ...truncated... */`
+                : file.content;
+              previousKeyFileContents.push(`--- ${file.path} ---\n${truncated}`);
+            }
+          }
+        }
+
         const chunkMessage = [
           input.message,
           "",
@@ -2772,8 +3055,24 @@ const planConversationFileOperations = async (
                 ...chunkSummaries.map((summary) => `- ${summary}`),
               ].join("\n")
             : "",
+          previousChunkFilesList.length > 0
+            ? [
+                "",
+                "Files already created/modified by previous chunks:",
+                ...previousChunkFilesList.map((path) => `- ${path}`),
+              ].join("\n")
+            : "",
+          previousKeyFileContents.length > 0
+            ? [
+                "",
+                "Key file contents from previous chunks (use these for compatibility):",
+                ...previousKeyFileContents,
+              ].join("\n")
+            : "",
+          "",
           "Implement ONLY this chunk now.",
           "Do not repeat previously completed chunk operations.",
+          "Ensure imports/types/exports are compatible with files already created above.",
         ]
           .filter(Boolean)
           .join("\n");
@@ -3095,6 +3394,38 @@ const executePlannedFileOperations = async (
   const results: ConversationFileOperationResult[] = [];
 
   for (const operation of operations) {
+    // Gate check: skip this operation if previous operation failed and this op requires it to succeed
+    const isGated =
+      (operation.type === "run_command" ||
+        operation.type === "start_background_command") &&
+      operation.gatedOnPreviousSuccess === true;
+
+    if (isGated && results.length > 0) {
+      const previousResult = results[results.length - 1]!;
+      if (previousResult.status === "failed") {
+        results.push({
+          operation,
+          status: "skipped",
+          message: `Skipped because previous operation failed: ${previousResult.message.slice(0, 200)}`,
+        });
+        continue;
+      }
+
+      // Also skip if the previous command exited with a non-zero code
+      if (
+        previousResult.commandExitCode !== undefined &&
+        previousResult.commandExitCode !== null &&
+        previousResult.commandExitCode !== 0
+      ) {
+        results.push({
+          operation,
+          status: "skipped",
+          message: `Skipped because previous command exited with code ${previousResult.commandExitCode}.`,
+        });
+        continue;
+      }
+    }
+
     if (!executeFileOperation) {
       const isCommandOperation =
         operation.type === "run_command" ||
@@ -3116,6 +3447,8 @@ const executePlannedFileOperations = async (
         operation,
         status: execution.status,
         message: execution.message.trim() || "No details returned.",
+        commandOutput: execution.commandOutput,
+        commandExitCode: execution.commandExitCode,
       });
     } catch (error) {
       results.push({
@@ -3686,33 +4019,60 @@ export const runConversationAgentOrchestration = async (
     input.executeFileOperation,
   );
 
-  const commandFailures = operationResults.filter(
-    (result) =>
-      result.status === "failed" &&
-      (result.operation.type === "run_command" ||
-        result.operation.type === "start_background_command"),
-  );
+  // ─── Iterative Fixup Loop ───────────────────────────────────────────
+  // Detect failures (commands, file writes) and attempt repair up to
+  // MAX_FIXUP_ITERATIONS times, feeding actual error output back to the
+  // planner so it can make informed corrections.
 
-  if (
-    commandFailures.length > 0 &&
+  const collectFailures = (results: ConversationFileOperationResult[]) =>
+    results.filter(
+      (result) =>
+        result.status === "failed" ||
+        (result.status === "skipped" &&
+          result.message.startsWith("Skipped because previous")),
+    );
+
+  let currentFailures = collectFailures(operationResults);
+
+  for (
+    let fixupIteration = 1;
+    fixupIteration <= MAX_FIXUP_ITERATIONS &&
+    currentFailures.length > 0 &&
     input.executeFileOperation &&
-    plannerCallsUsed < MAX_PLANNER_CALLS_PER_REQUEST
+    plannerCallsUsed < MAX_PLANNER_CALLS_PER_REQUEST;
+    fixupIteration += 1
   ) {
-    console.info("conversation.planner.fixup.start", {
-      failedCommands: commandFailures.length,
-      failures: commandFailures.map((f) => ({
+    console.info("conversation.planner.fixup.iteration", {
+      iteration: fixupIteration,
+      maxIterations: MAX_FIXUP_ITERATIONS,
+      failureCount: currentFailures.length,
+      failures: currentFailures.map((f) => ({
         op: describeFileOperation(f.operation),
         msg: f.message.slice(0, 200),
+        exitCode: f.commandExitCode,
+        hasOutput: Boolean(f.commandOutput),
       })),
     });
 
-    const failureSummary = commandFailures
-      .map(
-        (r) =>
+    // Build failure summary with actual command output
+    const failureSummary = currentFailures
+      .map((r) => {
+        const parts = [
           `- ${describeFileOperation(r.operation)}: ${r.message.slice(0, 300)}`,
-      )
-      .join("\n");
+        ];
+        if (r.commandExitCode !== undefined && r.commandExitCode !== null) {
+          parts.push(`  Exit code: ${r.commandExitCode}`);
+        }
+        if (r.commandOutput) {
+          parts.push(
+            `  Terminal output:\n${r.commandOutput.slice(0, MAX_FIXUP_OUTPUT_CHARS)}`,
+          );
+        }
+        return parts.join("\n");
+      })
+      .join("\n\n");
 
+    // Reload project files to see current state after previous operations
     let fixupProjectFiles = input.projectFiles ?? [];
     if (input.loadProjectFilesAfterOperations) {
       try {
@@ -3722,24 +4082,59 @@ export const runConversationAgentOrchestration = async (
       }
     }
 
+    // Build enhanced fixup prompt with error context
+    const keyFileContents = buildPlannerKeyFileContext(fixupProjectFiles);
+
+    // Find all source files that were created to analyze imports
+    const createdSourceFiles = allOperations
+      .filter(
+        (op) =>
+          (op.type === "create_file" || op.type === "update_file") &&
+          /\.(tsx?|jsx?|mjs|cjs)$/.test(op.path) &&
+          op.path !== "package.json",
+      )
+      .map((op) => (op as { path: string; content: string }).path);
+
     const fixupPrompt = [
-      "FIXUP MODE: Previous operations had command failures that need correction.",
+      `FIXUP MODE (attempt ${fixupIteration}/${MAX_FIXUP_ITERATIONS}): Previous operations had failures that need correction.`,
       "Your output is PARSED AND EXECUTED IMMEDIATELY to fix the issue.",
       "",
-      "Command failures:",
+      "═══════════════════════════════════════════════════",
+      "FAILURES TO FIX:",
+      "═══════════════════════════════════════════════════",
       failureSummary,
       "",
+      "═══════════════════════════════════════════════════",
+      "DIAGNOSIS CHECKLIST:",
+      "═══════════════════════════════════════════════════",
+      "1. Are ALL imported packages listed in package.json dependencies?",
+      "2. Are package versions compatible (not conflicting peer deps)?",
+      "3. Are TypeScript config paths correct (baseUrl, paths)?",
+      "4. Are all type definition packages included (@types/...)?",
+      "5. Do all import paths resolve to files that exist?",
+      "",
       "Original user request:",
-      input.message.slice(0, 300),
+      input.message.slice(0, 500),
       "",
       "Existing project files:",
       buildProjectFileInventory(fixupProjectFiles),
       "",
-      ...buildPlannerKeyFileContext(fixupProjectFiles),
+      ...(keyFileContents.length > 0
+        ? ["Current key file contents:", ...keyFileContents, ""]
+        : []),
+      createdSourceFiles.length > 0
+        ? [
+            "Source files that were created (check their imports):",
+            ...createdSourceFiles.map((p) => `- ${p}`),
+          ].join("\n")
+        : "",
       "",
-      "Return ONLY the corrective operations needed (e.g., fix package.json, add missing config, fix import paths).",
-      "Do NOT recreate files that already exist and are correct.",
-      'Return valid JSON: {"operations":[...]}',
+      "IMPORTANT RULES:",
+      "- Return ONLY corrective operations (fix package.json, add missing config, fix import paths).",
+      "- Do NOT recreate files that already exist and are correct.",
+      "- If package.json needs fixing, include the COMPLETE updated package.json content.",
+      "- After fixing package.json, include a run_command for npm install.",
+      '- Return valid JSON: {"operations":[...]}',
     ]
       .filter(Boolean)
       .join("\n");
@@ -3748,7 +4143,7 @@ export const runConversationAgentOrchestration = async (
       const fixupModel = pickAvailableModel(FILE_OPS_MODEL);
       const fixupOutput = await runFileOpsPlannerDirect(
         fixupPrompt,
-        "fixup",
+        `fixup-${fixupIteration}`,
         {
           preferredModel: fixupModel,
           callBudget: { used: plannerCallsUsed, max: MAX_PLANNER_CALLS_PER_REQUEST },
@@ -3770,7 +4165,9 @@ export const runConversationAgentOrchestration = async (
 
         if (fixupOps.length > 0) {
           const normalizedFixupOps = ensureDependencyInstallOperation(
-            ensureFolderOperationsForWrites(fixupOps, fixupProjectFiles),
+            validatePackageJsonDependencies(
+              ensureFolderOperationsForWrites(fixupOps, fixupProjectFiles),
+            ),
             fixupProjectFiles,
           ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
 
@@ -3782,20 +4179,44 @@ export const runConversationAgentOrchestration = async (
           allOperations = [...allOperations, ...normalizedFixupOps];
           operationResults = [...operationResults, ...fixupResults];
 
+          const fixupApplied = fixupResults.filter((r) => r.status === "applied").length;
+          const fixupFailed = fixupResults.filter((r) => r.status === "failed").length;
+
           console.info("conversation.planner.fixup.applied", {
+            iteration: fixupIteration,
             fixupOperationCount: normalizedFixupOps.length,
-            fixupApplied: fixupResults.filter((r) => r.status === "applied")
-              .length,
-            fixupFailed: fixupResults.filter((r) => r.status === "failed")
-              .length,
+            fixupApplied,
+            fixupFailed,
           });
+
+          // Update failures for the next iteration
+          currentFailures = collectFailures(fixupResults);
+
+          if (currentFailures.length === 0) {
+            console.info("conversation.planner.fixup.resolved", {
+              iteration: fixupIteration,
+            });
+            break;
+          }
+        } else {
+          console.warn("conversation.planner.fixup.empty-ops", {
+            iteration: fixupIteration,
+          });
+          break;
         }
+      } else {
+        console.warn("conversation.planner.fixup.no-json", {
+          iteration: fixupIteration,
+        });
+        break;
       }
     } catch (fixupError) {
       console.warn("conversation.planner.fixup.error", {
+        iteration: fixupIteration,
         error:
           fixupError instanceof Error ? fixupError.message : String(fixupError),
       });
+      break;
     }
   }
 

@@ -1,4 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
+import { createGroq } from "@ai-sdk/groq";
+import { generateText } from "ai";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -91,6 +93,12 @@ const applyAttemptCap = <T>(items: T[], maxItems: number | null) => {
 
 const getGeminiApiKey = () =>
   getRuntimeEnvValue("GEMINI_API_KEY") || getRuntimeEnvValue("GOOGLE_API_KEY");
+
+const getGroqApiKey = () => getRuntimeEnvValue("GROQ_API_KEY");
+
+const isGroqEnabled = () => Boolean(getGroqApiKey());
+
+const GROQ_MODEL = getRuntimeEnvValue("GROQ_MODEL") || "openai/gpt-oss-120b";
 
 const getGeminiKeyScope = (apiKey: string) => {
   const trimmed = apiKey.trim();
@@ -396,9 +404,11 @@ export const markGeminiModelRateLimited = (
   setModelCooldown(model, retryAfterSeconds ?? null);
 };
 
-/** Default model used across the app — configurable via GEMINI_MODEL env var */
-export const GEMINI_MODEL_DEFAULT =
-  getRuntimeEnvValue("GEMINI_MODEL") || GEMINI_FREE_FALLBACK_CHAIN[0];
+/** Default model used across the app — configurable via GEMINI_MODEL env var.
+ *  When Groq is configured (GROQ_API_KEY), defaults to the Groq model. */
+export const GEMINI_MODEL_DEFAULT = isGroqEnabled()
+  ? GROQ_MODEL
+  : getRuntimeEnvValue("GEMINI_MODEL") || GEMINI_FREE_FALLBACK_CHAIN[0];
 
 export type GeminiChatMessage = {
   role: "user" | "model";
@@ -434,6 +444,99 @@ const getClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+const getGroqClient = () => {
+  const apiKey = getGroqApiKey();
+  if (!apiKey) {
+    throw new GeminiRequestError({
+      message: "GROQ_API_KEY is not configured",
+      status: 500,
+    });
+  }
+
+  return createGroq({ apiKey });
+};
+
+const generateGroqCompletion = async (args: {
+  model?: string;
+  messages: GeminiChatMessage[];
+  maxTokens?: number;
+  temperature?: number;
+}): Promise<GeminiCompletionResult> => {
+  const groq = getGroqClient();
+  const modelId = GROQ_MODEL;
+
+  const aiMessages = args.messages.map((msg) => ({
+    role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
+    content: msg.content,
+  }));
+
+  try {
+    const result = await generateText({
+      model: groq(modelId),
+      messages: aiMessages,
+      maxOutputTokens: args.maxTokens ?? 65536,
+      temperature: args.temperature ?? 0.7,
+    });
+
+    const text = result.text?.trim() ?? "";
+    if (!text) {
+      throw new GeminiRequestError({
+        message: "Groq response did not include any content",
+        status: 502,
+      });
+    }
+
+    return {
+      content: text,
+      model: `groq:${modelId}`,
+    };
+  } catch (error) {
+    if (error instanceof GeminiRequestError) {
+      throw error;
+    }
+
+    const rawMessage = extractRawErrorMessage(error);
+    const structuredStatusCode = extractStructuredStatusCode(error);
+
+    const isRateLimited = isRateLimitedGeminiError({
+      statusCode: structuredStatusCode,
+      message: rawMessage,
+    });
+
+    if (isRateLimited) {
+      throw new GeminiRequestError({
+        message: `Groq model ${modelId} is rate-limited. ${rawMessage}`,
+        status: 429,
+      });
+    }
+
+    if (
+      /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
+        rawMessage,
+      )
+    ) {
+      throw new GeminiRequestError({
+        message:
+          "Unable to reach Groq. Please check your internet connection.",
+        status: 503,
+      });
+    }
+
+    if (/api.?key|permission.?denied|forbidden|unauthorized/i.test(rawMessage)) {
+      throw new GeminiRequestError({
+        message:
+          "Groq API key is invalid or missing. Please check GROQ_API_KEY.",
+        status: 401,
+      });
+    }
+
+    throw new GeminiRequestError({
+      message: rawMessage || "Groq service encountered an error. Please try again.",
+      status: structuredStatusCode ?? 500,
+    });
+  }
+};
+
 export const generateGeminiCompletion = async (args: {
   model?: string;
   messages: GeminiChatMessage[];
@@ -441,6 +544,30 @@ export const generateGeminiCompletion = async (args: {
   temperature?: number;
   responseMimeType?: string;
 }): Promise<GeminiCompletionResult> => {
+  // Route through Groq when available (primary provider)
+  if (isGroqEnabled()) {
+    try {
+      return await generateGroqCompletion(args);
+    } catch (error) {
+      // If Groq fails with a non-auth error and Gemini key is available, fall back
+      const geminiKey = getGeminiApiKey();
+      if (
+        geminiKey &&
+        error instanceof GeminiRequestError &&
+        error.status !== 401
+      ) {
+        console.warn("groq.fallback-to-gemini", {
+          groqError: error.message,
+          status: error.status,
+        });
+        // Fall through to Gemini logic below
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  // Gemini pathway (original logic or Groq fallback)
   const attemptBudget = getRequestAttemptBudget();
   const modelName = (args.model ?? GEMINI_MODEL_DEFAULT).trim();
   const modelCandidates = applyAttemptCap(
