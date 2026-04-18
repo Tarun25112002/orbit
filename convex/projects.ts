@@ -113,3 +113,92 @@ export const rename = mutation({
     });
   },
 });
+
+export const completeGithubImport = mutation({
+  args: {
+    projectId: v.id("projects"),
+    importRepoUrl: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+    const project = await ctx.db.get(args.projectId);
+    if (!project || project.ownerId !== identity.subject) {
+      throw new Error("Project not found or unauthorized");
+    }
+    await ctx.db.patch(args.projectId, {
+      importStatus: "completed",
+      importRepoUrl: args.importRepoUrl,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const failGithubImport = mutation({
+  args: {
+    projectId: v.id("projects"),
+  },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+    const project = await ctx.db.get(args.projectId);
+    if (!project || project.ownerId !== identity.subject) {
+      throw new Error("Project not found or unauthorized");
+    }
+    await ctx.db.patch(args.projectId, {
+      importStatus: "failed",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const startGithubExport = mutation({
+  args: {
+    projectId: v.id("projects"),
+  },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+    const project = await ctx.db.get(args.projectId);
+    if (!project || project.ownerId !== identity.subject) {
+      throw new Error("Project not found or unauthorized");
+    }
+    await ctx.db.patch(args.projectId, {
+      exportStatus: "exporting",
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const completeGithubExport = mutation({
+  args: {
+    projectId: v.id("projects"),
+    exportRepoUrl: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+    const project = await ctx.db.get(args.projectId);
+    if (!project || project.ownerId !== identity.subject) {
+      throw new Error("Project not found or unauthorized");
+    }
+    await ctx.db.patch(args.projectId, {
+      exportStatus: "completed",
+      exportRepoUrl: args.exportRepoUrl,
+      updatedAt: Date.now(),
+    });
+  },
+});
+
+export const failGithubExport = mutation({
+  args: {
+    projectId: v.id("projects"),
+  },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+    const project = await ctx.db.get(args.projectId);
+    if (!project || project.ownerId !== identity.subject) {
+      throw new Error("Project not found or unauthorized");
+    }
+    await ctx.db.patch(args.projectId, {
+      exportStatus: "failed",
+      updatedAt: Date.now(),
+    });
+  },
+});

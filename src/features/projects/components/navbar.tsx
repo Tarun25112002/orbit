@@ -4,14 +4,16 @@ import { useRef, useState } from "react";
 import Link from "next/link";
 import { UserButton } from "@clerk/nextjs";
 import { formatDistanceToNow } from "date-fns";
-import { ChevronRightIcon, ClockIcon, PencilIcon } from "lucide-react";
+import { ChevronRightIcon, ClockIcon, PencilIcon, GithubIcon } from "lucide-react";
 
 import { Spinner } from "@/components/ui/spinner";
+import { Button } from "@/components/ui/button";
 
 import { Id } from "../../../../convex/_generated/dataModel";
 import { useProject, useRenameProject } from "../hooks/use-projects";
 import { AutoSaveBadge } from "./auto-save-badge";
 import { useProjectHeaderContext } from "./project-header-context";
+import { GitHubDialog } from "./github-dialog";
 
 interface NavbarProps {
   projectId: Id<"projects">;
@@ -91,6 +93,7 @@ const ProjectNameEditor = ({
 export const Navbar = ({ projectId }: NavbarProps) => {
   const project = useProject(projectId);
   const { badge } = useProjectHeaderContext();
+  const [gitHubOpen, setGitHubOpen] = useState(false);
 
   return (
     <header className="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-white/4 bg-background/90 px-4 backdrop-blur-sm">
@@ -129,7 +132,24 @@ export const Navbar = ({ projectId }: NavbarProps) => {
         )}
       </div>
 
-      <UserButton />
+      <div className="flex items-center gap-3">
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={() => setGitHubOpen(true)}
+          className="gap-2 h-8 text-xs font-medium"
+        >
+          <GithubIcon className="size-3.5" />
+          <span className="hidden sm:inline">GitHub</span>
+        </Button>
+        <UserButton />
+      </div>
+
+      <GitHubDialog 
+        projectId={projectId} 
+        open={gitHubOpen} 
+        onOpenChange={setGitHubOpen} 
+      />
     </header>
   );
 };

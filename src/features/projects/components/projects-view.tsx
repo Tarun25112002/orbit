@@ -3,7 +3,8 @@
 import { useEffect, useState, useCallback } from "react";
 import Image from "next/image";
 import { UserButton } from "@clerk/nextjs";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Blocks } from "lucide-react";
+import { motion } from "framer-motion";
 import {
   adjectives,
   animals,
@@ -20,6 +21,29 @@ import { useCreateProject } from "../hooks/use-projects";
 export const ProjectsView = () => {
   const createProject = useCreateProject();
   const [commandOpen, setCommandOpen] = useState(false);
+
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.1,
+        delayChildren: 0.1,
+      },
+    },
+  };
+
+  const itemVariants = {
+    hidden: { opacity: 0, y: 20 },
+    visible: {
+      opacity: 1,
+      y: 0,
+      transition: {
+        duration: 0.6,
+        ease: [0.22, 1, 0.36, 1],
+      },
+    },
+  };
 
   const handleNewProject = useCallback(async () => {
     const projectName = uniqueNamesGenerator({
@@ -53,110 +77,121 @@ export const ProjectsView = () => {
 
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden bg-background">
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-40"
-        style={{
-          backgroundImage:
-            "radial-gradient(circle, oklch(0.92 0 0 / 0.06) 1px, transparent 1px)",
-          backgroundSize: "32px 32px",
-        }}
-      />
-
-      <div
-        aria-hidden
-        className="pointer-events-none absolute left-1/2 top-0 h-48 w-130 -translate-x-1/2"
-        style={{
-          background:
-            "radial-gradient(ellipse at top, oklch(0.98 0 0 / 0.08) 0%, transparent 70%)",
-        }}
-      />
-
-      <header className="relative z-10 flex items-center justify-between border-b border-white/4 px-5 py-3">
-        <Image
-          src="/orbit logo.svg"
-          alt="Orbit"
-          width={80}
-          height={24}
-          className="grayscale brightness-95 contrast-125"
-          priority
+      {/* Dynamic Background */}
+      <div className="absolute inset-0 z-0">
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
+        <motion.div
+          animate={{
+            backgroundPosition: ["0px 0px", "0px -24px"],
+          }}
+          transition={{
+            repeat: Number.POSITIVE_INFINITY,
+            ease: "linear",
+            duration: 5,
+          }}
+          className="absolute inset-x-0 bottom-0 top-[20%] z-0 bg-gradient-to-t from-background via-background/80 to-transparent"
         />
-        <UserButton />
+        <div className="absolute left-1/2 top-0 -ml-[50%] -mt-[10%] h-[600px] w-[1000px] rounded-full bg-primary/5 opacity-50 blur-[100px] pointer-events-none" />
+      </div>
+
+      <header className="relative z-10 flex items-center justify-between p-6 max-w-7xl mx-auto w-full">
+        <motion.div
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.6 }}
+          className="flex items-center space-x-2"
+        >
+          <div className="w-8 h-8 rounded-sm bg-foreground flex items-center justify-center">
+            <span className="text-background font-mono font-bold">O</span>
+          </div>
+          <span className="font-semibold text-lg tracking-tight">Orbit</span>
+        </motion.div>
+        
+        <motion.div
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ duration: 0.6 }}
+          className="flex items-center space-x-4 font-mono text-sm"
+        >
+          <UserButton />
+        </motion.div>
       </header>
 
-      <main className="relative z-10 flex flex-1 items-center justify-center px-4 pb-6 pt-16">
-        <div className="w-full max-w-md animate-in fade-in slide-in-from-bottom-3 duration-500">
+      <main className="relative z-10 flex flex-1 items-center justify-center px-4 pb-6 mt-[-5vh]">
+        <motion.div 
+          variants={containerVariants}
+          initial="hidden"
+          animate="visible"
+          className="w-full max-w-lg"
+        >
           <div className="flex flex-col items-center gap-8">
-            <div className="space-y-2 text-center">
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-                What are you building?
+            <motion.div variants={itemVariants} className="space-y-3 text-center">
+              <span className="inline-flex items-center rounded-full border border-border bg-muted/50 px-3 py-1 font-mono text-xs text-muted-foreground backdrop-blur-sm">
+                <Blocks className="size-3.5 mr-2" />
+                Workspace
+              </span>
+              <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl bg-clip-text text-transparent bg-gradient-to-b from-foreground to-foreground/70">
+                Launch your next idea.
               </h1>
-              <p className="text-sm text-muted-foreground">
-                Start a new project or continue where you left off.
+              <p className="text-sm md:text-base text-muted-foreground max-w-md mx-auto">
+                Create a new agentic workspace or jump right back into an existing one.
               </p>
-            </div>
+            </motion.div>
 
-            <div className="w-full overflow-hidden rounded-2xl border border-white/8 bg-white/2 shadow-[0_0_0_1px_rgba(255,255,255,0.04)_inset,0_8px_40px_-12px_rgba(0,0,0,0.6)] backdrop-blur-sm">
-              <div className="p-1.5 pb-0">
+            <motion.div 
+              variants={itemVariants}
+              className="w-full overflow-hidden rounded-[20px] border border-border/80 bg-card/40 shadow-2xl backdrop-blur-xl"
+            >
+              <div className="p-2 pb-0">
                 <button
                   onClick={handleNewProject}
-                  className="group flex w-full items-center gap-3 rounded-xl px-3.5 py-2.5 text-left transition-colors duration-200 hover:bg-ring/8"
+                  className="group flex w-full items-center gap-4 rounded-2xl px-4 py-3 text-left transition-all duration-300 hover:bg-foreground hover:text-background"
                 >
-                  <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-ring/20 bg-ring/10">
-                    <Plus className="size-4 text-ring/80" />
+                  <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-foreground text-background transition-colors duration-300 group-hover:bg-background group-hover:text-foreground">
+                    <Plus className="size-5" />
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <span className="text-sm font-medium text-foreground">
-                      New project
+                    <span className="text-base font-semibold">
+                      New Project
                     </span>
+                    <p className="text-xs text-muted-foreground group-hover:text-background/70 transition-colors">
+                      Scaffold an application instantly
+                    </p>
                   </div>
 
-                  <Kbd className="font-mono text-[10px] opacity-40 transition-opacity group-hover:opacity-80">
+                  <Kbd className="font-mono text-xs opacity-50 group-hover:text-background transition-all group-hover:border-background/20 group-hover:bg-background/10">
                     ⌘J
                   </Kbd>
                 </button>
               </div>
 
-              <div className="px-3 py-1.5">
+              <div className="px-3 py-2">
                 <button
                   onClick={() => setCommandOpen(true)}
-                  className="group flex w-full items-center gap-2.5 rounded-lg border border-white/6 bg-white/3 px-3 py-2 text-left transition-colors duration-200 hover:border-white/12 hover:bg-white/5"
+                  className="group flex w-full items-center gap-3 rounded-xl border border-transparent bg-muted/30 px-4 py-2.5 text-left transition-all duration-200 hover:border-border hover:bg-muted/60"
                 >
-                  <Search className="size-3.5 shrink-0 text-muted-foreground/40" />
+                  <Search className="size-4 shrink-0 text-muted-foreground/60 transition-colors group-hover:text-foreground" />
 
-                  <span className="flex-1 text-[13px] text-muted-foreground/40">
-                    Search projects…
+                  <span className="flex-1 text-[13px] text-muted-foreground transition-colors group-hover:text-foreground">
+                    Quick search projects…
                   </span>
 
-                  <Kbd className="h-4.5 font-mono text-[10px] opacity-60">
+                  <Kbd className="h-5 font-mono text-[10px] opacity-60">
                     ⌘K
                   </Kbd>
                 </button>
               </div>
 
-              <div className="border-t border-white/6" />
+              <div className="border-t border-border/50" />
 
-              <div className="p-1.5">
+              <div className="p-2">
                 <ProjectsList onViewAll={() => setCommandOpen(true)} />
               </div>
-            </div>
+            </motion.div>
           </div>
-        </div>
+        </motion.div>
       </main>
-
-      <footer className="pointer-events-none z-10 flex items-center justify-center overflow-hidden px-4 pb-8">
-        <div
-          aria-label="Orbit"
-          className="flex select-none items-center justify-center gap-[0.14em] text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[-0.04em] text-white/6"
-        >
-          <span>O</span>
-          <span>r</span>
-          <span>b</span>
-          <span>i</span>
-          <span>t</span>
-        </div>
-      </footer>
 
       <ProjectsCommandDialog open={commandOpen} onOpenChange={setCommandOpen} />
     </div>
