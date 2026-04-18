@@ -37,7 +37,7 @@ import { buildSuggestionProjectContext } from "../utils/codebase-context";
 
 const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
-  minimap: true,
+  minimap: false,
   fontSize: 13,
   tabSize: 2,
   insertSpaces: true,
@@ -243,6 +243,8 @@ export const CodeEditor = ({
 
   useEffect(() => {
     inlineSuggestionCacheRef.current.clear();
+    setSelectionBar(null);
+    setAiInstruction("");
   }, [activeFileId, currentFileReference]);
 
   const cacheInlineSuggestion = useCallback(
@@ -1413,6 +1415,9 @@ export const CodeEditor = ({
       renderWhitespace: settings.renderWhitespace,
       fontSize: settings.fontSize,
       lineHeight: Math.max(18, Math.round(settings.fontSize * 1.6)),
+      fontFamily:
+        "var(--font-plex-mono), 'IBM Plex Mono', Consolas, 'Courier New', monospace",
+      fontLigatures: false,
       tabSize: settings.tabSize,
       insertSpaces: settings.insertSpaces,
       minimap: {
@@ -1431,12 +1436,18 @@ export const CodeEditor = ({
         verticalScrollbarSize: 12,
         horizontalScrollbarSize: 12,
       },
-      smoothScrolling: true,
+      smoothScrolling: false,
       scrollBeyondLastLine: true,
       scrollBeyondLastColumn: 4,
-      cursorBlinking: "blink",
-      cursorSmoothCaretAnimation: "on",
+      cursorBlinking: "solid",
+      cursorSmoothCaretAnimation: "off",
       cursorSurroundingLines: 2,
+      padding: {
+        top: 14,
+        bottom: 14,
+      },
+      overviewRulerBorder: false,
+      hideCursorInOverviewRuler: true,
       folding: true,
       contextmenu: false,
       dragAndDrop: true,

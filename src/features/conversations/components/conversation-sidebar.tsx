@@ -97,31 +97,31 @@ const ExecutionTimeline = ({ trace }: { trace: AiExecutionTrace }) => {
   }
 
   return (
-    <div className="mt-2.5 rounded-md border border-[#2d2d2d] bg-[#252526]/70 p-2.5 text-[11px]">
-      <div className="mb-1.5 text-[10px] font-medium tracking-wide text-[#9cdcfe] uppercase">
+    <div className="mt-2.5 rounded-md border border-border/50 bg-card/40 backdrop-blur-sm p-2.5 text-[11px] shadow-sm">
+      <div className="mb-1.5 text-[10px] font-semibold tracking-wider text-primary uppercase">
         Execution Pipeline
       </div>
       <div className="space-y-1">
         {trace.operationResults.map((result, index) => {
           const statusColor =
             result.status === "applied"
-              ? "text-emerald-300"
+              ? "text-emerald-500"
               : result.status === "failed"
-                ? "text-red-300"
-                : "text-amber-300";
+                ? "text-red-500"
+                : "text-amber-500";
 
           return (
             <div
               key={`${index}:${result.status}:${result.message}`}
-              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 text-[#c7c7c7]"
+              className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2 text-foreground/80"
             >
-              <span className="text-[#858585]">{index + 1}.</span>
+              <span className="text-muted-foreground/70">{index + 1}.</span>
               <div className="min-w-0">
                 <div className="break-all">
                   {describePipelineOperation(result.operation)}
                 </div>
                 {result.message ? (
-                  <div className="text-[#7f7f7f]">{result.message}</div>
+                  <div className="text-muted-foreground/70">{result.message}</div>
                 ) : null}
               </div>
               <span className={cn("font-medium uppercase", statusColor)}>
@@ -172,10 +172,10 @@ const ConversationListItem = ({
   return (
     <div
       className={cn(
-        "group relative flex items-center gap-2 rounded-md px-2.5 py-2 text-xs transition-colors cursor-pointer",
+        "group relative flex items-center gap-2 rounded-md px-2.5 py-2 text-xs  cursor-pointer border border-transparent",
         isActive
-          ? "bg-[#37373d] text-[#ffffff]"
-          : "text-[#cccccc] hover:bg-[#2a2d2e]",
+          ? "bg-primary/5 text-foreground border-primary/10 shadow-sm"
+          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
       )}
       onClick={isEditing ? undefined : onSelect}
     >
@@ -184,7 +184,7 @@ const ConversationListItem = ({
       {isEditing ? (
         <input
           ref={inputRef}
-          className="min-w-0 flex-1 rounded border border-[#007acc] bg-[#3c3c3c] px-1.5 py-0.5 text-xs text-[#cccccc] outline-none"
+          className="min-w-0 flex-1 rounded border border-primary bg-background px-1.5 py-0.5 text-xs text-foreground outline-none shadow-sm"
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}
           onBlur={handleRename}
@@ -195,14 +195,14 @@ const ConversationListItem = ({
           onClick={(e) => e.stopPropagation()}
         />
       ) : (
-        <span className="min-w-0 flex-1 truncate">{title}</span>
+        <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
       )}
 
       {!isEditing && (
-        <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <div className="flex items-center gap-0.5 opacity-0  group-hover:opacity-100">
           <button
             type="button"
-            className="rounded p-0.5 hover:bg-[#ffffff15]"
+            className="rounded p-0.5 hover:bg-muted/80 text-muted-foreground hover:text-foreground "
             onClick={(e) => {
               e.stopPropagation();
               setEditValue(title);
@@ -214,7 +214,7 @@ const ConversationListItem = ({
           </button>
           <button
             type="button"
-            className="rounded p-0.5 hover:bg-[#ffffff15] text-red-400"
+            className="rounded p-0.5 hover:bg-destructive/10 text-destructive/70 hover:text-destructive "
             onClick={(e) => {
               e.stopPropagation();
               onDelete();
@@ -256,12 +256,12 @@ const ChatMessage = ({
             <Shimmer duration={1.5}>Thinking...</Shimmer>
           </div>
         ) : role === "assistant" && isFailed ? (
-          <div className="flex items-center gap-2 text-red-400 text-sm">
+          <div className="flex items-center gap-2 text-destructive/90 text-sm font-medium">
             <XIcon className="size-3.5" />
             <span>Failed to generate response</span>
           </div>
         ) : role === "assistant" && isCancelled ? (
-          <div className="flex items-center gap-2 text-[#858585] text-sm">
+          <div className="flex items-center gap-2 text-muted-foreground text-sm font-medium">
             <XIcon className="size-3.5" />
             <span>{content || "Response cancelled."}</span>
           </div>
@@ -562,13 +562,13 @@ const ChatView = ({
   const isEmpty = !messages || messages.length === 0;
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-background relative z-10 before:absolute before:inset-0 before:bg-gradient-to-t before:from-primary/5 before:to-transparent before:-z-10 before:opacity-50">
       {/* Header */}
-      <div className="flex h-9 items-center gap-2 border-b border-[#2d2d2d] bg-[#252526] px-3">
+      <div className="flex flex-none h-11 items-center gap-2 border-b border-border/60 bg-background/80 backdrop-blur-md px-4 shadow-sm z-20">
         <button
           type="button"
           onClick={onBack}
-          className="rounded p-0.5 text-[#858585] hover:bg-[#ffffff12] hover:text-[#cccccc] transition-colors"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted/80 hover:text-foreground "
           aria-label="Back to conversations"
         >
           <svg
@@ -577,54 +577,56 @@ const ChatView = ({
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="2.5"
             strokeLinecap="round"
             strokeLinejoin="round"
           >
             <path d="m15 18-6-6 6-6" />
           </svg>
         </button>
-        <div className="flex min-w-0 items-center gap-1.5">
-          <SparklesIcon className="size-3.5 text-[#007acc]" />
-          <span className="truncate text-xs font-medium text-[#cccccc]">
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="p-1 rounded bg-primary/10">
+            <SparklesIcon className="size-3.5 text-primary" />
+          </div>
+          <span className="truncate text-[13px] font-semibold text-foreground tracking-tight">
             {conversation?.title ?? "Orbit AI"}
           </span>
         </div>
       </div>
 
       {/* Messages */}
-      <Conversation className="flex-1 bg-[#1e1e1e]">
-        <ConversationContent className="gap-5 px-3 py-4">
+      <Conversation className="flex-1 bg-transparent">
+        <ConversationContent className="gap-6 px-4 py-6">
           {isEmpty && !isSending ? (
             <ConversationEmptyState
               title="Start a conversation"
               description="Ask Orbit AI about your code, architecture, or anything else."
               icon={
-                <div className="rounded-xl bg-[#252526] p-4 border border-[#2d2d2d]">
-                  <BotIcon className="size-8 text-[#007acc]" />
+                <div className="rounded-2xl bg-card p-4 border border-border shadow-sm">
+                  <BotIcon className="size-8 text-primary" />
                 </div>
               }
             >
-              <div className="flex flex-col items-center gap-4 mt-4">
-                <div className="rounded-xl bg-[#252526] p-4 border border-[#2d2d2d]">
-                  <BotIcon className="size-8 text-[#007acc]" />
+              <div className="flex flex-col items-center gap-5 mt-4">
+                <div className="rounded-2xl bg-card p-4 border border-border shadow-sm ring-1 ring-primary/5">
+                  <BotIcon className="size-8 text-primary" />
                 </div>
-                <div className="space-y-1 text-center">
-                  <h3 className="font-medium text-sm text-[#cccccc]">
+                <div className="space-y-1.5 text-center">
+                  <h3 className="font-semibold text-[15px] text-foreground tracking-tight">
                     Start a conversation
                   </h3>
-                  <p className="text-[#858585] text-xs max-w-[240px]">
+                  <p className="text-muted-foreground text-[13px] max-w-[240px] leading-relaxed">
                     Ask Orbit AI about your code, architecture, bugs, or
                     anything else.
                   </p>
                 </div>
-                <div className="flex flex-wrap justify-center gap-1.5 mt-2 max-w-[280px]">
+                <div className="flex flex-wrap justify-center gap-2 mt-4 max-w-[300px]">
                   {STARTER_SUGGESTIONS.map((s) => (
                     <Suggestion
                       key={s}
                       suggestion={s}
                       onClick={handleSuggestionClick}
-                      className="text-[10px] h-7 px-2.5 bg-[#252526] border-[#3e3e42] text-[#cccccc] hover:bg-[#2a2d2e] hover:border-[#007acc]/40"
+                      className="text-[11px] h-8 px-3 bg-card border-border text-muted-foreground hover:bg-muted/80 hover:text-foreground hover:border-primary/30  font-medium rounded-full shadow-sm"
                     />
                   ))}
                 </div>
@@ -642,30 +644,30 @@ const ChatView = ({
             ))
           )}
         </ConversationContent>
-        <ConversationScrollButton className="bg-[#252526] border-[#3e3e42] hover:bg-[#2a2d2e]" />
+        <ConversationScrollButton className="bg-card border-border hover:bg-muted shadow-md" />
       </Conversation>
 
       {/* Error */}
       {error && (
-        <div className="px-3 py-2 text-[11px] bg-red-400/5 border-t border-red-400/20 flex flex-col gap-1.5">
-          <div className="flex items-start gap-2">
-            <AlertTriangleIcon className="size-3.5 shrink-0 text-red-400 mt-0.5" />
-            <span className="text-red-300 leading-relaxed">
+        <div className="px-4 py-3 text-[12px] bg-red-500/10 border-t border-red-500/20 flex flex-col gap-2">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangleIcon className="size-4 shrink-0 text-red-500 mt-0.5" />
+            <span className="text-red-600 dark:text-red-400 font-medium leading-relaxed">
               {error.message}
             </span>
             <button
               type="button"
-              className="ml-auto text-red-300/60 hover:text-red-200 shrink-0 p-0.5"
+              className="ml-auto text-red-500/60 hover:text-red-500 shrink-0 p-1 rounded-sm hover:bg-red-500/10 "
               onClick={() => setError(null)}
               aria-label="Dismiss error"
             >
-              <XIcon className="size-3" />
+              <XIcon className="size-3.5" />
             </button>
           </div>
           {error.retryable && (
             <button
               type="button"
-              className="self-start ml-5 text-[10px] text-[#007acc] hover:text-[#3794d1] hover:underline transition-colors"
+              className="self-start ml-6 text-[11px] font-semibold text-primary hover:text-primary/80 "
               onClick={() => setError(null)}
             >
               Dismiss and try again
@@ -675,12 +677,12 @@ const ChatView = ({
       )}
 
       {/* Input */}
-      <div className="border-t border-[#2d2d2d] bg-[#252526] p-2.5">
+      <div className="border-t border-border/60 bg-background/80 backdrop-blur-xl p-3 z-20">
         <PromptInput
           onSubmit={(msg) => {
             void handleSend(msg.text);
           }}
-          className="w-full"
+          className="w-full relative shadow-sm"
         >
           <PromptInputTextarea
             placeholder="Ask Orbit AI..."
@@ -695,11 +697,11 @@ const ChatView = ({
                 handleCancelActiveMessage();
               }
             }}
-            className="min-h-10 max-h-32 text-xs bg-[#3c3c3c] border-[#3e3e42] text-[#cccccc] placeholder:text-[#5a5a5a] focus:border-[#007acc] rounded-md"
+            className="min-h-12 max-h-32 text-[13px] bg-card border border-border text-foreground placeholder:text-muted-foreground focus:border-primary focus:ring-1 focus:ring-primary/20 rounded-xl px-3 py-2  shadow-inner"
           />
-          <PromptInputFooter className="mt-1.5">
-            <div className="flex items-center gap-1 text-[10px] text-[#5a5a5a]">
-              <SparklesIcon className="size-3" />
+          <PromptInputFooter className="mt-2.5 px-1">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground/70">
+              <SparklesIcon className="size-3.5 text-primary/70" />
               <span>Orbit AI</span>
             </div>
             <PromptInputSubmit
@@ -713,10 +715,10 @@ const ChatView = ({
                   : isCancellingActiveAssistant
               }
               className={cn(
-                "text-white rounded-md h-7",
+                "text-primary-foreground font-medium rounded-lg h-8  shadow-sm",
                 activeAssistantMessageId
-                  ? "bg-[#3e3e42] hover:bg-[#4a4a50] w-auto px-2.5 text-[10px]"
-                  : "bg-[#007acc] hover:bg-[#0065a9] w-7",
+                  ? "bg-muted hover:bg-muted/80 text-foreground w-auto px-3 text-[11px] border border-border"
+                  : "bg-primary hover:bg-primary/90 w-8",
               )}
             >
               {activeAssistantMessageId ? undefined : undefined}
@@ -793,55 +795,57 @@ export const ConversationSidebar = ({
 
   // Otherwise show the conversation list
   return (
-    <div className="flex h-full flex-col bg-[#252526]">
+    <div className="flex h-full flex-col bg-background relative z-10 border-r border-border/50 shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)]">
       {/* Header */}
-      <div className="flex h-9 items-center justify-between border-b border-[#2d2d2d] px-3">
-        <div className="flex items-center gap-1.5">
-          <SparklesIcon className="size-3.5 text-[#007acc]" />
-          <span className="text-xs font-medium tracking-wide text-[#cccccc] uppercase">
+      <div className="flex flex-none h-12 items-center justify-between border-b border-border/60 bg-card/50 backdrop-blur-md px-4 relative z-20">
+        <div className="flex items-center gap-2">
+          <div className="p-1 rounded bg-primary/10">
+            <SparklesIcon className="size-4 text-primary" />
+          </div>
+          <span className="text-[13px] font-bold tracking-widest text-foreground uppercase">
             Orbit AI
           </span>
         </div>
         <button
           type="button"
           onClick={handleCreate}
-          className="rounded p-1 text-[#858585] hover:bg-[#ffffff12] hover:text-[#cccccc] transition-colors"
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground hover:shadow-sm  border border-transparent hover:border-border/50"
           aria-label="New conversation"
         >
-          <PlusIcon className="size-3.5" />
+          <PlusIcon className="size-4" />
         </button>
       </div>
 
       {/* Conversation List */}
-      <div className="flex-1 overflow-y-auto p-1.5">
+      <div className="flex-1 overflow-y-auto p-2 scrollbar-none">
         {conversations === undefined ? (
-          <div className="flex items-center justify-center py-8">
-            <Shimmer duration={1.5}>Loading conversations...</Shimmer>
+          <div className="flex items-center justify-center py-10">
+            <Shimmer duration={1.5} className="text-sm tracking-wide">Loading conversations...</Shimmer>
           </div>
         ) : conversations.length === 0 ? (
-          <div className="flex flex-col items-center gap-4 py-12 px-4">
-            <div className="rounded-xl bg-[#1e1e1e] p-4 border border-[#2d2d2d]">
-              <BotIcon className="size-8 text-[#007acc]" />
+          <div className="flex flex-col items-center gap-5 py-16 px-4">
+            <div className="rounded-2xl bg-card p-5 border border-border shadow-sm ring-1 ring-primary/5">
+              <BotIcon className="size-10 text-primary" />
             </div>
-            <div className="space-y-1.5 text-center">
-              <p className="text-xs font-medium text-[#cccccc]">
+            <div className="space-y-2 text-center">
+              <p className="text-[14px] font-semibold text-foreground tracking-tight">
                 No conversations yet
               </p>
-              <p className="text-[10px] text-[#858585] max-w-[200px]">
+              <p className="text-[12px] text-muted-foreground max-w-[220px] leading-relaxed">
                 Start a new conversation to get AI help with your project.
               </p>
             </div>
             <button
               type="button"
               onClick={handleCreate}
-              className="flex items-center gap-1.5 rounded-md bg-[#007acc] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#0065a9] transition-colors"
+              className="flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-[13px] font-semibold text-primary-foreground hover:bg-primary/90  shadow-md hover:shadow-lg hover:-translate-y-[1px]"
             >
-              <PlusIcon className="size-3.5" />
+              <PlusIcon className="size-4" />
               New Conversation
             </button>
           </div>
         ) : (
-          <div className="space-y-0.5">
+          <div className="space-y-1">
             {conversations.map((conv) => (
               <ConversationListItem
                 key={conv._id}
@@ -858,13 +862,13 @@ export const ConversationSidebar = ({
 
       {/* Footer */}
       {conversations && conversations.length > 0 && (
-        <div className="border-t border-[#2d2d2d] p-2">
+        <div className="border-t border-border/60 bg-card/40 backdrop-blur-md p-3">
           <button
             type="button"
             onClick={handleCreate}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border border-[#3e3e42] bg-[#2d2d2d] px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#333333] hover:border-[#007acc]/40 transition-colors"
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-[13px] font-medium text-foreground hover:bg-muted hover:border-primary/30  shadow-sm"
           >
-            <PlusIcon className="size-3.5" />
+            <PlusIcon className="size-4" />
             New Conversation
           </button>
         </div>

@@ -197,8 +197,8 @@ export const SchemaDisplayParameters = ({
 
   return (
     <Collapsible className={cn(className)} defaultOpen {...props}>
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/50">
-        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-3 text-left  hover:bg-muted/50">
+        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground  group-data-[state=open]:rotate-90" />
         <span className="font-medium text-sm">Parameters</span>
         <Badge className="ml-auto text-xs" variant="secondary">
           {parameters?.length}
@@ -240,12 +240,12 @@ export const SchemaDisplayProperty = ({
       <Collapsible defaultOpen={depth < 2}>
         <CollapsibleTrigger
           className={cn(
-            "group flex w-full items-center gap-2 py-3 text-left transition-colors hover:bg-muted/50",
+            "group flex w-full items-center gap-2 py-3 text-left  hover:bg-muted/50",
             className
           )}
           style={{ paddingLeft }}
         >
-          <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+          <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground  group-data-[state=open]:rotate-90" />
           <span className="font-mono text-sm">{name}</span>
           <Badge className="text-xs" variant="outline">
             {type}
@@ -329,8 +329,8 @@ export const SchemaDisplayRequest = ({
 
   return (
     <Collapsible className={cn(className)} defaultOpen {...props}>
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/50">
-        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-3 text-left  hover:bg-muted/50">
+        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground  group-data-[state=open]:rotate-90" />
         <span className="font-medium text-sm">Request Body</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -356,8 +356,8 @@ export const SchemaDisplayResponse = ({
 
   return (
     <Collapsible className={cn(className)} defaultOpen {...props}>
-      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/50">
-        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-4 py-3 text-left  hover:bg-muted/50">
+        <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground  group-data-[state=open]:rotate-90" />
         <span className="font-medium text-sm">Response</span>
       </CollapsibleTrigger>
       <CollapsibleContent>

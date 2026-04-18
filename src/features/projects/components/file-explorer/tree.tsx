@@ -110,7 +110,7 @@ export const Tree = ({
   if (item.type === "file") {
     const isActive = activeItemId === item._id;
     const fileActions = (
-      <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <div className="ml-auto flex items-center gap-0.5 opacity-0  group-hover:opacity-100 group-focus-within:opacity-100">
         <Button
           type="button"
           aria-label={`Rename ${item.name}`}
@@ -180,7 +180,7 @@ export const Tree = ({
   );
   const isActive = activeItemId === item._id;
   const folderActions = (
-    <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+    <div className="ml-auto flex items-center gap-0.5 opacity-0  group-hover:opacity-100 group-focus-within:opacity-100">
       <Button
         type="button"
         aria-label={`Rename ${item.name}`}

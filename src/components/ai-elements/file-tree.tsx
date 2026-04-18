@@ -171,13 +171,13 @@ export const FileTreeFolder = ({
         >
           <div
             className={cn(
-              "flex w-full items-center gap-1 rounded px-2 py-1 text-left transition-colors hover:bg-muted/50",
+              "flex w-full items-center gap-1 rounded px-2 py-1 text-left  hover:bg-muted/50",
               isSelected && "bg-muted"
             )}
           >
             <CollapsibleTrigger render={<button className="flex shrink-0 cursor-pointer items-center border-none bg-transparent p-0" type="button" />}><ChevronRightIcon
                                         className={cn(
-                                          "size-4 shrink-0 text-muted-foreground transition-transform",
+                                          "size-4 shrink-0 text-muted-foreground ",
                                           isExpanded && "rotate-90"
                                         )}
                                       /></CollapsibleTrigger>
@@ -251,7 +251,7 @@ export const FileTreeFile = ({
     <FileTreeFileContext.Provider value={fileContextValue}>
       <div
         className={cn(
-          "flex cursor-pointer items-center gap-1 rounded px-2 py-1 transition-colors hover:bg-muted/50",
+          "flex cursor-pointer items-center gap-1 rounded px-2 py-1  hover:bg-muted/50",
           isSelected && "bg-muted",
           className
         )}

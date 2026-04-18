@@ -85,7 +85,7 @@ const ProjectResultItem = ({
     onSelect={() => onSelect(project._id)}
     className="group flex items-center gap-3 rounded-lg px-3 py-2.5 data-selected:bg-white/5"
   >
-    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-white/3 transition-colors duration-150 group-data-selected:border-ring/20 group-data-selected:bg-ring/8">
+    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-white/3   group-data-selected:border-ring/20 group-data-selected:bg-ring/8">
       {getProjectIcon(project)}
     </div>
 

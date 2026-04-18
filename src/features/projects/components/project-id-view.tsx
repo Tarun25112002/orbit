@@ -583,11 +583,11 @@ const Tab = ({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex h-full items-center border-r px-3 text-muted-foreground hover:bg-accent/30",
-        isActive && "bg-background text-foreground",
+        "inline-flex h-7 items-center rounded-md border border-transparent px-3 text-[12px] font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+        isActive && "border-border/70 bg-card text-foreground shadow-sm",
       )}
     >
-      <span className="text-sm">{label}</span>
+      <span>{label}</span>
     </button>
   );
 };
@@ -651,7 +651,7 @@ const EditorTabStrip = ({
     );
     if (activeEl) {
       activeEl.scrollIntoView({
-        behavior: "smooth",
+        behavior: "auto",
         block: "nearest",
         inline: "nearest",
       });
@@ -672,7 +672,7 @@ const EditorTabStrip = ({
   const scroll = useCallback((direction: "left" | "right") => {
     scrollRef.current?.scrollBy({
       left: direction === "left" ? -SCROLL_AMOUNT : SCROLL_AMOUNT,
-      behavior: "smooth",
+      behavior: "auto",
     });
   }, []);
 
@@ -700,12 +700,12 @@ const EditorTabStrip = ({
   }
 
   return (
-    <div className="relative flex h-8.75 items-end border-b border-[#252526] bg-[#252526]">
+    <div className="relative z-20 flex h-9 items-center border-b border-border/60 bg-background">
       {canScrollLeft && (
         <button
           type="button"
           onClick={() => scroll("left")}
-          className="absolute left-0 z-10 flex h-full w-6 items-center justify-center bg-linear-to-r from-[#252526] to-transparent text-[#858585] hover:text-[#cccccc]"
+          className="absolute left-0 z-10 flex h-full w-8 items-center justify-center border-r border-border/50 bg-background text-muted-foreground hover:text-foreground"
           aria-label="Scroll tabs left"
         >
           <ChevronLeftIcon className="size-3.5" />
@@ -714,7 +714,7 @@ const EditorTabStrip = ({
 
       <div
         ref={scrollRef}
-        className="flex h-full w-full items-end overflow-x-auto scrollbar-none"
+        className="flex h-full w-full items-center overflow-x-auto scrollbar-none"
         style={{ scrollbarWidth: "none" }}
       >
         {tabs.map((tab) => {
@@ -728,16 +728,12 @@ const EditorTabStrip = ({
               onMouseDown={(e) => handleMouseDown(e, tab.id)}
               onContextMenu={(e) => handleContextMenu(e, tab.id)}
               className={cn(
-                "group relative flex h-8.75 w-40 shrink-0 items-center gap-1.5 border-r border-[#252526] px-2.5",
+                "group relative flex h-full w-44 shrink-0 items-center gap-2 border-r border-b-2 border-r-border/45 border-b-transparent px-3",
                 isActive
-                  ? "bg-[#1e1e1e] text-[#ffffff]"
-                  : "bg-[#2d2d2d] text-[#969696] hover:bg-[#2d2d2dee]",
+                  ? "border-b-primary bg-card text-foreground"
+                  : "bg-transparent text-muted-foreground hover:bg-muted/40",
               )}
             >
-              {isActive && (
-                <div className="absolute top-0 left-0 right-0 h-px bg-[#007acc]" />
-              )}
-
               <span className="shrink-0">
                 <ItemIcon type="file" name={tab.label} />
               </span>
@@ -757,10 +753,15 @@ const EditorTabStrip = ({
                   e.stopPropagation();
                   onClose(tab.id);
                 }}
-                className="shrink-0 rounded p-0.5 opacity-0 transition-opacity group-hover:opacity-70 hover:opacity-100! hover:bg-[#ffffff15]"
+                className={cn(
+                  "shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground",
+                  isActive
+                    ? "opacity-70 hover:opacity-100"
+                    : "opacity-0 group-hover:opacity-70 hover:opacity-100!",
+                )}
                 aria-label={`Close ${tab.label}`}
               >
-                <XIcon className="size-3.5" />
+                <XIcon className="size-3" />
               </button>
             </div>
           );
@@ -771,7 +772,7 @@ const EditorTabStrip = ({
         <button
           type="button"
           onClick={() => scroll("right")}
-          className="absolute right-0 z-10 flex h-full w-6 items-center justify-center bg-linear-to-l from-[#252526] to-transparent text-[#858585] hover:text-[#cccccc]"
+          className="absolute right-0 z-10 flex h-full w-8 items-center justify-center border-l border-border/50 bg-background text-muted-foreground hover:text-foreground"
           aria-label="Scroll tabs right"
         >
           <ChevronRightIcon className="size-3.5" />
@@ -780,7 +781,7 @@ const EditorTabStrip = ({
 
       {contextMenu && (
         <div
-          className="fixed z-50 min-w-45 rounded-md border border-[#454545] bg-[#252526] py-1 shadow-lg"
+          className="fixed z-50 min-w-48 rounded-lg border border-border bg-popover p-1 shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           {[
@@ -812,7 +813,7 @@ const EditorTabStrip = ({
             "divider" in item && item.divider ? (
               <div
                 key={`divider-${i}`}
-                className="mx-2 my-1 border-t border-[#454545]"
+                className="mx-2 my-1 border-t border-border/60"
               />
             ) : (
               <button
@@ -822,11 +823,11 @@ const EditorTabStrip = ({
                   item.action?.();
                   setContextMenu(null);
                 }}
-                className="flex w-full items-center justify-between px-3 py-1 text-left text-[12px] text-[#cccccc] hover:bg-[#094771]"
+                className="flex w-full items-center justify-between rounded-md px-3 py-1.5 text-left text-[12px] font-medium text-foreground/80 hover:bg-muted hover:text-foreground"
               >
                 <span>{item.label}</span>
                 {item.shortcut && (
-                  <span className="ml-6 text-[11px] text-[#858585]">
+                  <span className="ml-6 text-[10px] tracking-widest text-muted-foreground/60">
                     {item.shortcut}
                   </span>
                 )}
@@ -887,11 +888,13 @@ const BreadcrumbSegment = ({
     <Popover>
       <PopoverTrigger
         className={cn(
-          "flex shrink-0 cursor-pointer items-center gap-1 rounded px-1 py-0.5 transition-colors hover:bg-[#ffffff12]",
-          isLast ? "text-[#cccccc]" : "text-[#858585]",
+          "flex shrink-0 cursor-pointer items-center gap-1.5 rounded-md px-1.5 py-0.5 hover:bg-muted/70",
+          isLast
+            ? "font-medium text-foreground"
+            : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <span className="shrink-0">
+        <span className="shrink-0 opacity-80">
           <ItemIcon
             type={isLast ? ancestor.type : "folder"}
             name={ancestor.name}
@@ -899,13 +902,13 @@ const BreadcrumbSegment = ({
             className="size-3.5!"
           />
         </span>
-        <span className="text-[11px]">{ancestor.name}</span>
+        <span className="text-[12px] tracking-tight">{ancestor.name}</span>
       </PopoverTrigger>
       <PopoverContent
         align="start"
         side="bottom"
-        sideOffset={2}
-        className="max-h-64 w-56 overflow-y-auto p-1 bg-[#252526] border-[#454545]"
+        sideOffset={4}
+        className="max-h-72 w-60 overflow-y-auto rounded-lg border-border bg-popover p-1.5 shadow-lg"
       >
         {siblings.map((item) => {
           const isActive = item._id === activeFileId;
@@ -919,14 +922,14 @@ const BreadcrumbSegment = ({
                 }
               }}
               className={cn(
-                "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs transition-colors",
+                "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[12px] font-medium",
                 isActive
-                  ? "bg-[#094771] text-white"
-                  : "text-[#cccccc] hover:bg-[#ffffff12]",
-                item.type === "folder" && "opacity-70",
+                  ? "bg-muted text-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                item.type === "folder" && "opacity-80",
               )}
             >
-              <span className="shrink-0">
+              <span className="shrink-0 opacity-80">
                 <ItemIcon
                   type={item.type}
                   name={item.name}
@@ -960,7 +963,7 @@ const BreadcrumbBar = ({
 
   return (
     <div
-      className="flex h-5.5 items-center gap-0.5 border-b border-[#2d2d2d] bg-[#1e1e1e] px-2 overflow-x-auto scrollbar-none"
+      className="flex h-8 items-center gap-1 overflow-x-auto border-b border-border/50 bg-card/35 px-3 scrollbar-none"
       style={{ scrollbarWidth: "none" }}
     >
       {ancestors.map((ancestor, index) => {
@@ -969,7 +972,7 @@ const BreadcrumbBar = ({
         return (
           <span key={ancestor._id} className="flex shrink-0 items-center">
             {index > 0 && (
-              <ChevronRightIcon className="size-3 text-[#4a4a4a]" />
+              <ChevronRightIcon className="mx-0.5 size-3.5 text-muted-foreground/35" />
             )}
             <BreadcrumbSegment
               ancestor={ancestor}
@@ -2829,8 +2832,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   ]);
 
   return (
-    <div className="h-full flex flex-col">
-      <nav className="h-8.75 flex items-center bg-sidebar border-b">
+    <div className="flex h-full flex-col bg-background">
+      <nav className="flex h-10 items-center gap-1 border-b border-border/70 bg-background px-2">
         <Tab
           label="Code"
           isActive={activeView === "editor"}
@@ -2847,14 +2850,14 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           onClick={() => setActiveView("runtime")}
         />
       </nav>
-      <div className="flex-1 relative">
+      <div className="relative min-h-0 flex-1">
         <div
           className={cn(
             "absolute inset-0",
             activeView === "editor" ? "visible" : "invisible",
           )}
         >
-          <div className="relative h-full">
+          <div className="relative h-full bg-background">
             <Allotment
               defaultSizes={[DEFAULT_SIDEBAR_WIDTH, DEFAULT_MAIN_SIZE]}
             >
@@ -2889,14 +2892,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                 />
               </Allotment.Pane>
               <Allotment.Pane>
-                <div className="relative h-full flex flex-col">
-                  <div className="pointer-events-none absolute left-1/2 top-1/2 z-0 -translate-x-1/2 -translate-y-1/2">
-                    <span className="select-none text-[clamp(4.5rem,15vw,10rem)] font-semibold leading-none tracking-[0.14em] text-white/3">
-                      Orbit
-                    </span>
-                  </div>
-
-                  <div className="relative z-10 flex h-full min-h-0 flex-col">
+                <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background">
+                  <div className="flex h-full min-h-0 flex-col">
                     <EditorTabStrip
                       tabs={editorTabs}
                       activeTabId={activeTabId}
@@ -2917,7 +2914,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       />
                     )}
 
-                    <div className="min-h-0 flex-1 overflow-hidden">
+                    <div className="min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
                       {!selectedFileId && (
                         <WelcomeTab
                           projectId={projectId}
@@ -3117,8 +3114,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             activeView === "runtime" ? "visible" : "invisible",
           )}
         >
-          <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_minmax(0,24rem)] bg-[#111111]">
-            <div className="border-b border-[#2d2d2d]">
+          <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_minmax(0,24rem)] bg-background">
+            <div className="border-b border-border/50 bg-background/50 backdrop-blur-sm z-10 relative">
               {runtimePreviewUrl ? (
                 <iframe
                   className="h-full w-full"
@@ -3131,58 +3128,59 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               )}
             </div>
 
-            <div className="min-h-0 p-3 flex flex-col">
-              <div className="flex h-9 items-center border border-[#2d2d2d] border-b-0 bg-[#181818] px-2 text-[11px]">
-                <span className="mr-2 shrink-0 tracking-[0.08em] text-[#8f8f8f]">
-                  TERMINAL
-                </span>
+            <div className="min-h-0 p-4 flex flex-col gap-2 relative isolate before:absolute before:inset-0 before:bg-gradient-to-t before:from-primary/5 before:to-transparent before:-z-10">
+              <div className="flex h-10 items-center justify-between border border-border/40 bg-card/60 backdrop-blur-md px-3 rounded-t-xl shadow-sm">
+                <div className="flex items-center gap-3">
+                  <span className="shrink-0 tracking-widest text-[11px] font-bold text-foreground/70 uppercase">
+                    Terminal
+                  </span>
 
-                <div className="min-w-0 flex items-center gap-1 overflow-x-auto scrollbar-none">
-                  <button
-                    className={cn(
-                      "flex h-7 items-center gap-1 rounded-t border px-2",
-                      activeRuntimeTabKey === MAIN_RUNTIME_TAB_KEY
-                        ? "border-[#2d2d2d] border-b-[#1e1e1e] bg-[#1e1e1e] text-[#d4d4d4]"
-                        : "border-[#2b2b2b] border-b-[#181818] bg-[#181818] text-[#8f8f8f]",
-                    )}
-                    onClick={() => setActiveRuntimeTabKey(MAIN_RUNTIME_TAB_KEY)}
-                    type="button"
-                  >
-                    <TerminalSquareIcon className="size-3.5 text-[#4fc1ff]" />
-                    <span className="font-mono text-[11px]">orbit-runtime</span>
-                  </button>
+                  <div className="min-w-0 flex items-center gap-1.5 overflow-x-auto scrollbar-none h-full pt-1.5">
+                    <button
+                      className={cn(
+                        "flex h-8 items-center gap-2 rounded-t-lg border border-b-0 px-3 ",
+                        activeRuntimeTabKey === MAIN_RUNTIME_TAB_KEY
+                          ? "border-primary/20 bg-primary/10 text-primary shadow-[inset_0_2px_10px_-4px_rgba(var(--primary),0.3)]"
+                          : "border-border/30 bg-background/50 text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                      )}
+                      onClick={() => setActiveRuntimeTabKey(MAIN_RUNTIME_TAB_KEY)}
+                      type="button"
+                    >
+                      <TerminalSquareIcon className="size-4" />
+                      <span className="font-mono text-[12px] font-medium">orbit-runtime</span>
+                    </button>
 
                   {runtimeBackgroundCommands.slice(0, 6).map((item) => (
                     <div
                       key={item.key}
                       className={cn(
-                        "flex h-7 items-center gap-1 rounded-t border px-2",
+                        "flex h-8 items-center gap-2 rounded-t-lg border border-b-0 px-3 cursor-pointer ",
                         activeRuntimeTabKey === item.key
-                          ? "border-[#2d2d2d] border-b-[#1e1e1e] bg-[#1e1e1e] text-[#d4d4d4]"
+                          ? "border-border/60 bg-card text-foreground shadow-[0_-2px_10px_rgba(0,0,0,0.05)] border-t-[2px] border-t-primary"
                           : item.status === "running"
-                            ? "border-[#2d2d2d] border-b-[#181818] bg-[#181818] text-[#c7c7c7]"
+                            ? "border-border/30 bg-background/50 text-foreground/80 hover:bg-muted/50"
                             : item.status === "idle"
-                              ? "border-[#2b2b2b] border-b-[#181818] bg-[#181818] text-[#9bc3ff]"
-                              : "border-[#2b2b2b] border-b-[#181818] bg-[#181818] text-[#848484]",
+                              ? "border-border/30 bg-background/50 text-blue-400 hover:bg-muted/50"
+                              : "border-border/30 bg-background/50 text-muted-foreground hover:bg-muted/50",
                       )}
                       onClick={() => setActiveRuntimeTabKey(item.key)}
                     >
                       <span
                         className={cn(
-                          "size-1.5 rounded-full",
+                          "size-2 rounded-full shadow-[0_0_10px_currentColor]",
                           item.status === "running"
-                            ? "bg-[#73c991]"
+                            ? "bg-green-500 text-green-500/50"
                             : item.status === "idle"
-                              ? "bg-[#4fc1ff]"
-                              : "bg-[#6b6b6b]",
+                              ? "bg-blue-400 text-blue-400/50"
+                              : "bg-muted-foreground text-transparent",
                         )}
                       />
-                      <span className="max-w-48 truncate font-mono text-[11px]">
+                      <span className="max-w-48 truncate font-mono text-[12px] font-medium">
                         {item.commandLine}
                       </span>
                       {item.status === "running" && (
                         <button
-                          className="ml-1 rounded p-0.5 text-[#9d9d9d] hover:bg-[#2a2d2e] hover:text-[#d4d4d4]"
+                          className="ml-1 rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground "
                           onClick={(event) => {
                             event.stopPropagation();
                             stopRuntimeBackgroundCommand(item.key);
@@ -3190,16 +3188,19 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                           title={`Stop ${item.commandLine}`}
                           type="button"
                         >
-                          <XIcon className="size-3" />
+                          <XIcon className="size-3.5" />
                         </button>
                       )}
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
 
-                <div className="ml-auto flex items-center gap-0.5 pl-2">
+            <div className="flex h-11 items-center justify-between border border-border/40 border-t-0 bg-card/80 backdrop-blur-xl px-3 border-b-0">
+                <div className="flex items-center gap-1.5 ml-auto">
                   <Button
-                    className="h-7 w-7 px-0 text-[#c5c5c5] hover:bg-[#2a2d2e]"
+                    className="h-8 w-8 px-0 text-muted-foreground hover:bg-muted hover:text-foreground rounded-lg "
                     disabled={
                       !runtimeCommand.trim() ||
                       isRuntimeCommandRunning ||
@@ -3212,10 +3213,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                     type="button"
                     variant="ghost"
                   >
-                    <PlayIcon className="size-3.5" />
+                    <PlayIcon className="size-4" />
                   </Button>
                   <Button
-                    className="h-7 w-7 px-0 text-[#c5c5c5] hover:bg-[#2a2d2e]"
+                    className="h-8 w-8 px-0 text-muted-foreground hover:bg-primary/20 hover:text-primary rounded-lg "
                     onClick={() => {
                       createRuntimeTerminalTab();
                     }}
@@ -3223,10 +3224,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                     type="button"
                     variant="ghost"
                   >
-                    <PlusIcon className="size-3.5" />
+                    <PlusIcon className="size-4" />
                   </Button>
                   <Button
-                    className="h-7 w-7 px-0 text-[#c5c5c5] hover:bg-[#2a2d2e]"
+                    className="h-8 w-8 px-0 text-muted-foreground hover:bg-destructive/20 hover:text-destructive rounded-lg "
                     disabled={runningRuntimeBackgroundCommandCount === 0}
                     onClick={() => {
                       stopAllRuntimeBackgroundCommands();
@@ -3235,22 +3236,22 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                     type="button"
                     variant="ghost"
                   >
-                    <SquareIcon className="size-3.5" />
+                    <SquareIcon className="size-4" />
                   </Button>
                   <Button
-                    className="h-7 w-7 px-0 text-[#c5c5c5] hover:bg-[#2a2d2e]"
+                    className="h-8 w-8 px-0 text-muted-foreground hover:bg-muted hover:text-foreground rounded-lg "
                     onClick={() => clearActiveRuntimeOutput()}
                     title="Clear terminal"
                     type="button"
                     variant="ghost"
                   >
-                    <Trash2Icon className="size-3.5" />
+                    <Trash2Icon className="size-4" />
                   </Button>
                 </div>
               </div>
 
               <Terminal
-                className="min-h-0 flex-1 rounded-none border border-[#2d2d2d] border-t-0 bg-[#1e1e1e] shadow-none"
+                className="min-h-0 flex-1 rounded-none border-x border-border/40 bg-background/50 shadow-inner overflow-hidden"
                 isStreaming={
                   isRuntimeBusy ||
                   isRuntimeCommandRunning ||
@@ -3259,15 +3260,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                 onClear={() => clearActiveRuntimeOutput()}
                 output={activeRuntimeOutput}
               >
-                <TerminalContent className="h-full bg-[#1e1e1e] px-3 py-2 font-mono text-[12px] leading-[1.45] text-[#d4d4d4]" />
+                <TerminalContent className="h-full bg-transparent px-4 py-3 font-mono text-[13px] leading-[1.6] text-foreground/90 selection:bg-primary/30" />
               </Terminal>
 
-              <div className="flex h-9 items-center gap-2 border border-[#2d2d2d] border-t-0 bg-[#181818] px-2">
-                <span className="shrink-0 font-mono text-xs text-[#6a9955]">
+              <div className="flex h-12 items-center gap-3 border border-border/40 bg-card/80 backdrop-blur-xl px-4 rounded-b-xl shadow-[0_-4px_10px_-1px_rgba(0,0,0,0.05)]">
+                <span className="shrink-0 font-mono text-[13px] font-bold text-primary">
                   $
                 </span>
                 <Input
-                  className="h-7 border-0 bg-transparent px-1 font-mono text-xs text-[#d4d4d4] shadow-none focus-visible:ring-0"
+                  className="h-9 border-0 bg-transparent px-1 font-mono text-[13px] text-foreground placeholder:text-muted-foreground/50 shadow-none focus-visible:ring-0"
                   onChange={(event) => setRuntimeCommand(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key !== "Enter") {
@@ -3280,7 +3281,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   placeholder="Type command and press Enter (runs in selected terminal tab)"
                   value={runtimeCommand}
                 />
-                <span className="shrink-0 text-[10px] text-[#8f8f8f]">
+                <span className="shrink-0 text-[11px] font-medium tracking-wide text-muted-foreground/70 bg-muted px-2 py-1 rounded-md">
                   {isRuntimeBusy
                     ? "Applying AI execution..."
                     : isRuntimeCommandRunning

@@ -40,7 +40,7 @@ export interface EditorSettings {
 
 const defaultEditorSettings: EditorSettings = {
   wordWrap: false,
-  minimap: true,
+  minimap: false,
   fontSize: 13,
   tabSize: 2,
   insertSpaces: true,

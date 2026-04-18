@@ -4,11 +4,11 @@ import { SparklesIcon } from "lucide-react";
 import { type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
 
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Kbd } from "@/components/ui/kbd";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 
 export interface EditorSelectionAiBarProps {
   top: number;
@@ -47,7 +47,7 @@ export function EditorSelectionAiBar({
   return createPortal(
     <div
       className={cn(
-        "pointer-events-auto flex max-w-[min(92vw,520px)] items-center gap-2 rounded-lg border border-[#454545] bg-[#2d2d2d] px-2 py-1.5 shadow-lg",
+        "pointer-events-auto flex max-w-[min(92vw,520px)] items-center gap-2 rounded-lg border border-border bg-popover px-2 py-1.5 shadow-lg",
       )}
       style={{
         position: "fixed",
@@ -58,36 +58,40 @@ export function EditorSelectionAiBar({
       role="dialog"
       aria-label="Edit selection with AI"
     >
+      <SparklesIcon className="hidden size-4 shrink-0 text-muted-foreground sm:block" />
       <Input
         value={instruction}
-        onChange={(e) => onInstructionChange(e.target.value)}
+        onChange={(event) => onInstructionChange(event.target.value)}
         onKeyDown={onKeyDown}
-        placeholder="Describe what to change in selected code"
-        className="h-7 min-w-50 flex-1 border-[#3a3a3a] bg-[#1b1b1b] text-xs text-[#d6d6d6] placeholder:text-[#7a7a7a]"
+        placeholder="Describe what to change..."
+        className="h-8 min-w-[220px] flex-1 rounded-md border-border bg-background px-2.5 text-[13px] font-medium text-foreground shadow-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring/50"
         disabled={isApplying}
       />
       <Button
         type="button"
         size="sm"
-        variant="outline"
         disabled={!instruction.trim() || isApplying}
         onClick={() => {
           void onApply();
         }}
-        className="h-7 shrink-0 border-[#3a3a3a] bg-[#252526] text-[#d0d0d0] hover:bg-[#303031]"
+        className="h-8 shrink-0 rounded-md px-3 text-[12px] font-medium"
       >
         {isApplying ? (
-          <Spinner className="size-3.5" />
+          <Spinner className="mr-1 size-3.5" />
         ) : (
-          <SparklesIcon className="size-3.5" />
+          <SparklesIcon className="mr-1 size-3.5 text-primary-foreground/90" />
         )}
         Apply
       </Button>
-      <div className="hidden items-center gap-1 text-[11px] text-[#8f8f8f] sm:flex">
-        <span>{selectedCharCount} chars selected</span>
-        <span className="text-[#5f5f5f]">|</span>
-        <span>Submit</span>
-        <Kbd className="h-4 min-w-4 px-1 text-[10px]">Enter</Kbd>
+      <div className="hidden items-center gap-1.5 rounded-md border border-border/60 bg-muted/40 px-2 py-1 text-[10px] font-medium tracking-wide text-muted-foreground/80 sm:flex">
+        <span>{selectedCharCount} chars</span>
+        <span className="text-muted-foreground/35">|</span>
+        <span className="flex items-center gap-1">
+          Submit
+          <Kbd className="h-4 min-w-[34px] rounded-sm border-border/50 bg-background px-1 text-[9px] font-bold text-muted-foreground shadow-sm">
+            Enter
+          </Kbd>
+        </span>
       </div>
     </div>,
     document.body,

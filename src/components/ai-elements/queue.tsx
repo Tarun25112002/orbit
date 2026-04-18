@@ -36,7 +36,7 @@ export type QueueItemProps = ComponentProps<"li">;
 export const QueueItem = ({ className, ...props }: QueueItemProps) => (
   <li
     className={cn(
-      "group flex flex-col gap-1 rounded-md px-3 py-1 text-sm transition-colors hover:bg-muted",
+      "group flex flex-col gap-1 rounded-md px-3 py-1 text-sm  hover:bg-muted",
       className
     )}
     {...props}
@@ -126,7 +126,7 @@ export const QueueItemAction = ({
 }: QueueItemActionProps) => (
   <Button
     className={cn(
-      "size-auto rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-muted-foreground/10 hover:text-foreground group-hover:opacity-100",
+      "size-auto rounded p-1 text-muted-foreground opacity-0  hover:bg-muted-foreground/10 hover:text-foreground group-hover:opacity-100",
       className
     )}
     size="icon"
@@ -213,7 +213,7 @@ export const QueueSectionTrigger = ({
   ...props
 }: QueueSectionTriggerProps) => (
   <CollapsibleTrigger render={<button className={cn(
-            "group flex w-full items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-left font-medium text-muted-foreground text-sm transition-colors hover:bg-muted",
+            "group flex w-full items-center justify-between rounded-md bg-muted/40 px-3 py-2 text-left font-medium text-muted-foreground text-sm  hover:bg-muted",
             className
           )} type="button" {...props} />}>{children}</CollapsibleTrigger>
 );
@@ -233,7 +233,7 @@ export const QueueSectionLabel = ({
   ...props
 }: QueueSectionLabelProps) => (
   <span className={cn("flex items-center gap-2", className)} {...props}>
-    <ChevronDownIcon className="size-4 transition-transform group-data-[state=closed]:-rotate-90" />
+    <ChevronDownIcon className="size-4  group-data-[state=closed]:-rotate-90" />
     {icon}
     <span>
       {count} {label}

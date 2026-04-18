@@ -44,8 +44,8 @@ const StatusItem = ({
     type="button"
     onClick={onClick}
     title={title}
-    className={`flex shrink-0 items-center gap-1 px-2 py-0 h-full text-[11px] leading-none transition-colors ${
-      onClick ? "hover:bg-[#ffffff1a] cursor-pointer" : "cursor-default"
+    className={`flex h-full shrink-0 items-center gap-1.5 px-3 py-0 text-[11px] font-medium tracking-wide ${
+      onClick ? "cursor-pointer hover:bg-muted hover:text-foreground" : "cursor-default text-muted-foreground"
     }`}
     disabled={!onClick}
   >
@@ -153,7 +153,7 @@ export const EditorStatusBar = ({
   return (
     <div
       ref={containerRef}
-      className="flex h-5.5 items-center border-t border-[#1e1e1e] bg-[#007acc] text-white select-none whitespace-nowrap overflow-hidden"
+      className="flex h-8 items-center overflow-hidden whitespace-nowrap border-t border-border/60 bg-background text-muted-foreground select-none"
     >
       <div className="flex h-full min-w-0 items-center overflow-hidden">
         {isDirty && (

@@ -178,11 +178,11 @@ export const TestResultsProgress = ({
         <>
           <div className="flex h-2 overflow-hidden rounded-full bg-muted">
             <div
-              className="bg-green-500 transition-all"
+              className="bg-green-500 "
               style={{ width: `${passedPercent}%` }}
             />
             <div
-              className="bg-red-500 transition-all"
+              className="bg-red-500 "
               style={{ width: `${failedPercent}%` }}
             />
           </div>
@@ -230,7 +230,7 @@ const statusStyles: Record<TestStatus, string> = {
 const statusIcons: Record<TestStatus, React.ReactNode> = {
   failed: <XCircleIcon className="size-4" />,
   passed: <CheckCircle2Icon className="size-4" />,
-  running: <CircleDotIcon className="size-4 animate-pulse" />,
+  running: <CircleDotIcon className="size-4 " />,
   skipped: <CircleIcon className="size-4" />,
 };
 
@@ -275,12 +275,12 @@ export const TestSuiteName = ({
   return (
     <CollapsibleTrigger
       className={cn(
-        "group flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/50",
+        "group flex w-full items-center gap-2 px-4 py-3 text-left  hover:bg-muted/50",
         className
       )}
       {...props}
     >
-      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+      <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground  group-data-[state=open]:rotate-90" />
       <TestStatusIcon status={status} />
       <span className="font-medium text-sm">{children ?? name}</span>
     </CollapsibleTrigger>

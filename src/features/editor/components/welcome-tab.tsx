@@ -168,41 +168,47 @@ export const WelcomeTab = ({
   }, []);
 
   return (
-    <div className="flex h-full w-full items-center justify-center overflow-auto bg-[#1e1e1e] p-8">
-      <div className="w-full max-w-xl space-y-6 text-center">
-        <h2 className="text-5xl font-semibold tracking-[0.2em] text-[#d9d9d9]">
-          ORBIT
-        </h2>
-        <p className="text-sm text-[#858585]">
-          Open a file or folder to import it into this project.
-        </p>
+    <div className="flex h-full w-full items-center justify-center overflow-auto bg-background p-8">
+      <div className="w-full max-w-lg space-y-7 text-center">
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-lg border border-border bg-card">
+          <FileIcon className="size-5 text-muted-foreground" />
+        </div>
+
+        <div className="space-y-2">
+          <h2 className="text-2xl font-semibold tracking-tight text-foreground">
+            Start coding
+          </h2>
+          <p className="mx-auto max-w-sm text-sm leading-6 text-muted-foreground">
+            Open a file or import a folder to begin working in this project.
+          </p>
+        </div>
 
         <div className="flex flex-wrap items-center justify-center gap-3">
           <Button
             type="button"
             variant="outline"
-            className="border-[#3c3c3c] bg-[#252526] text-[#cccccc] hover:bg-[#2f2f2f]"
+            className="h-10 rounded-md border-border bg-card px-5 font-medium text-foreground hover:bg-muted hover:text-foreground"
             disabled={isImporting}
             onClick={() => fileInputRef.current?.click()}
           >
-            <FileIcon className="size-4 text-[#007acc]" />
+            <FileIcon className="size-4 text-muted-foreground" />
             Open file
           </Button>
           <Button
             type="button"
             variant="outline"
-            className="border-[#3c3c3c] bg-[#252526] text-[#cccccc] hover:bg-[#2f2f2f]"
+            className="h-10 rounded-md border-border bg-card px-5 font-medium text-foreground hover:bg-muted hover:text-foreground"
             disabled={isImporting}
             onClick={openFolderPicker}
           >
-            <FolderOpenIcon className="size-4 text-[#007acc]" />
+            <FolderOpenIcon className="size-4 text-muted-foreground" />
             Open folder
           </Button>
         </div>
 
         {isImporting && (
-          <div className="flex items-center justify-center gap-2 text-xs text-[#9a9a9a]">
-            <LoaderCircleIcon className="size-4 animate-spin text-[#007acc]" />
+          <div className="flex items-center justify-center gap-2 text-xs font-semibold tracking-wide text-muted-foreground">
+            <LoaderCircleIcon className="size-4 animate-spin" />
             Importing...
           </div>
         )}

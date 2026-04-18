@@ -13,9 +13,9 @@ export default function SignUpPage() {
       <div className="relative z-10 w-full max-w-md p-6">
         <Link 
           href="/" 
-          className="group flex items-center text-sm font-medium text-muted-foreground hover:text-foreground transition-colors mb-8"
+          className="group flex items-center text-sm font-medium text-muted-foreground hover:text-foreground  mb-8"
         >
-          <ArrowLeft className="mr-2 h-4 w-4 transition-transform group-hover:-translate-x-1" />
+          <ArrowLeft className="mr-2 h-4 w-4  group-hover:-translate-x-1" />
           Back to home
         </Link>
         
@@ -27,10 +27,10 @@ export default function SignUpPage() {
               headerTitle: "text-foreground",
               headerSubtitle: "text-muted-foreground",
               socialButtonsBlockButton: "border-border hover:bg-muted text-foreground",
-              formButtonPrimary: "bg-foreground text-background hover:bg-foreground/90 transition-colors",
+              formButtonPrimary: "bg-foreground text-background hover:bg-foreground/90 ",
               formFieldInput: "bg-background border-border text-foreground",
               formFieldLabel: "text-foreground",
-              footerActionLink: "text-foreground hover:opacity-80 transition-opacity",
+              footerActionLink: "text-foreground hover:opacity-80 ",
               identityPreviewText: "text-foreground",
               identityPreviewEditButton: "text-muted-foreground hover:text-foreground",
             }

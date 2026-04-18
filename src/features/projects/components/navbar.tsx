@@ -72,7 +72,7 @@ const ProjectNameEditor = ({
           if (e.key === "Enter") e.currentTarget.blur();
           if (e.key === "Escape") cancel();
         }}
-        className="h-7 max-w-55 rounded-lg border border-ring/40 bg-white/5 px-2.5 text-sm font-medium text-foreground outline-none transition-[border-color,box-shadow] duration-150 focus:border-ring/60 focus:ring-2 focus:ring-ring/20"
+        className="h-7 max-w-55 rounded-lg border border-ring/40 bg-white/5 px-2.5 text-sm font-medium text-foreground outline-none   focus:border-ring/60 focus:ring-2 focus:ring-ring/20"
         style={{ minWidth: `${Math.max(draft.length, 6) + 4}ch` }}
       />
     );
@@ -82,10 +82,10 @@ const ProjectNameEditor = ({
     <button
       type="button"
       onClick={startEditing}
-      className="group flex max-w-55 items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-medium text-foreground/80 transition-colors hover:bg-white/5 hover:text-foreground"
+      className="group flex max-w-55 items-center gap-1.5 rounded-lg px-2 py-1 text-sm font-medium text-foreground/80  hover:bg-white/5 hover:text-foreground"
     >
       <span className="truncate">{name}</span>
-      <PencilIcon className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-50" />
+      <PencilIcon className="size-3 shrink-0 text-muted-foreground opacity-0  group-hover:opacity-50" />
     </button>
   );
 };
@@ -100,7 +100,7 @@ export const Navbar = ({ projectId }: NavbarProps) => {
       <div className="flex items-center gap-1">
         <Link
           href="/"
-          className="text-sm font-semibold tracking-tight text-foreground transition-opacity hover:opacity-70"
+          className="text-sm font-semibold tracking-tight text-foreground  hover:opacity-70"
         >
           Orbit
         </Link>

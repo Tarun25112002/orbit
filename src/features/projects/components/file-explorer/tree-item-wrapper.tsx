@@ -82,8 +82,8 @@ export const TreeItemWrapper = ({
             }
           }}
           className={cn(
-            "group relative flex h-6 w-full items-center gap-1 overflow-hidden rounded-md pr-1.5 text-left text-sm text-foreground/85 transition-colors outline-none hover:bg-accent/30 hover:text-foreground focus-visible:ring-0",
-            isActive && "bg-accent/40 text-foreground",
+            "group relative flex h-7 w-full items-center gap-1.5 overflow-hidden rounded-md pr-1.5 text-left text-sm text-foreground/85 outline-none hover:bg-muted/70 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/40",
+            isActive && "bg-muted text-foreground shadow-sm",
             disabled && "pointer-events-none opacity-50",
           )}
           style={{ paddingLeft: getItemPadding(level, item.type === "file") }}
@@ -96,7 +96,7 @@ export const TreeItemWrapper = ({
               {guideOffsets.map((offset) => (
                 <span
                   key={offset}
-                  className="absolute inset-y-1 w-px bg-border/45"
+                  className="absolute inset-y-1.5 w-px bg-border/45"
                   style={{ left: offset }}
                 />
               ))}

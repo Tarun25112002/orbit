@@ -29,7 +29,7 @@ export const AutoSaveBadge = ({
     <Badge
       variant="outline"
       className={cn(
-        "relative px-2.5 py-0.5 transition-colors",
+        "relative px-2.5 py-0.5 ",
         status === "error" &&
           "border-destructive/40 bg-destructive/10 text-destructive",
         status === "offline" &&
@@ -48,7 +48,7 @@ export const AutoSaveBadge = ({
         )}
         <CloudIcon
           className={cn(
-            "relative z-10 size-4 transition-all",
+            "relative z-10 size-4 ",
             status === "saving" && "scale-105",
             status === "saved" && "drop-shadow-[0_0_4px_rgba(16,185,129,0.45)]",
           )}

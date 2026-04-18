@@ -106,7 +106,7 @@ export const ProjectsView = () => {
           </div>
           <span className="font-semibold text-lg tracking-tight">Orbit</span>
         </motion.div>
-        
+
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
@@ -118,14 +118,17 @@ export const ProjectsView = () => {
       </header>
 
       <main className="relative z-10 flex flex-1 items-center justify-center px-4 pb-6 mt-[-5vh]">
-        <motion.div 
+        <motion.div
           variants={containerVariants}
           initial="hidden"
           animate="visible"
           className="w-full max-w-lg"
         >
           <div className="flex flex-col items-center gap-8">
-            <motion.div variants={itemVariants} className="space-y-3 text-center">
+            <motion.div
+              variants={itemVariants}
+              className="space-y-3 text-center"
+            >
               <span className="inline-flex items-center rounded-full border border-border bg-muted/50 px-3 py-1 font-mono text-xs text-muted-foreground backdrop-blur-sm">
                 <Blocks className="size-3.5 mr-2" />
                 Workspace
@@ -134,11 +137,12 @@ export const ProjectsView = () => {
                 Launch your next idea.
               </h1>
               <p className="text-sm md:text-base text-muted-foreground max-w-md mx-auto">
-                Create a new agentic workspace or jump right back into an existing one.
+                Create a new agentic workspace or jump right back into an
+                existing one.
               </p>
             </motion.div>
 
-            <motion.div 
+            <motion.div
               variants={itemVariants}
               className="w-full overflow-hidden rounded-[20px] border border-border/80 bg-card/40 shadow-2xl backdrop-blur-xl"
             >
@@ -152,9 +156,7 @@ export const ProjectsView = () => {
                   </div>
 
                   <div className="min-w-0 flex-1">
-                    <span className="text-base font-semibold">
-                      New Project
-                    </span>
+                    <span className="text-base font-semibold">New Project</span>
                     <p className="text-xs text-muted-foreground group-hover:text-background/70 transition-colors">
                       Scaffold an application instantly
                     </p>
@@ -177,9 +179,7 @@ export const ProjectsView = () => {
                     Quick search projects…
                   </span>
 
-                  <Kbd className="h-5 font-mono text-[10px] opacity-60">
-                    ⌘K
-                  </Kbd>
+                  <Kbd className="h-5 font-mono text-[10px] opacity-60">⌘K</Kbd>
                 </button>
               </div>
 

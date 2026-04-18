@@ -221,13 +221,13 @@ export const FileExplorer = ({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-sidebar">
-      <div className="border-b border-sidebar-border/70 bg-sidebar/95 px-2 py-1.5 backdrop-blur-sm">
+    <div className="flex h-full min-h-0 flex-col border-r border-border/70 bg-background">
+      <div className="border-b border-border/60 bg-card/35 px-3 py-2">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/75">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">
             Explorer
           </span>
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-1">
             <Button
               type="button"
               aria-label="Create file"
@@ -238,7 +238,7 @@ export const FileExplorer = ({
               }}
               variant="ghost"
               size="icon-xs"
-              className="text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+              className="h-7 w-7 text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               <FilePlusCornerIcon className="size-3.5" />
             </Button>
@@ -252,22 +252,22 @@ export const FileExplorer = ({
               }}
               variant="ghost"
               size="icon-xs"
-              className="text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+              className="h-7 w-7 text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               <FolderPlusIcon className="size-3.5" />
             </Button>
           </div>
         </div>
-        <p className="mt-1 text-[11px] text-muted-foreground/55">
-          New items in {createTargetLabel ?? project?.name ?? "project root"}
+        <p className="mt-1 truncate text-[11px] text-muted-foreground/60">
+          Target: {createTargetLabel ?? project?.name ?? "project root"}
         </p>
       </div>
-      <div className="border-b border-sidebar-border/60 bg-sidebar-accent/45">
-        <div className="flex items-center gap-0.5 font-bold">
+      <div className="border-b border-border/50 bg-background">
+        <div className="flex items-center gap-0.5">
           <button
             type="button"
             onClick={() => setIsOpen((value) => !value)}
-            className="flex h-6 min-w-0 flex-1 items-center gap-0.5 px-2 text-left"
+            className="flex h-8 min-w-0 flex-1 items-center gap-1 px-3 text-left hover:bg-muted/60"
           >
             <ChevronRightIcon
               className={cn(
@@ -275,7 +275,7 @@ export const FileExplorer = ({
                 isOpen && "rotate-90",
               )}
             />
-            <p className="text-xs uppercase line-clamp-1">
+            <p className="line-clamp-1 text-xs font-semibold uppercase tracking-[0.06em] text-foreground/85">
               {project?.name ?? "Loading..."}
             </p>
           </button>
@@ -283,11 +283,11 @@ export const FileExplorer = ({
       </div>
       <ScrollArea className="min-h-0 flex-1">
         {isOpen && (
-          <div className="px-1 py-1.5">
+          <div className="px-1.5 py-2">
             {files !== undefined &&
               treeModel.roots.length === 0 &&
               !creating && (
-                <div className="px-2 py-6 text-center text-sm text-muted-foreground/70">
+                <div className="px-3 py-8 text-center text-sm text-muted-foreground/70">
                   Create your first file or folder to start building.
                 </div>
               )}
