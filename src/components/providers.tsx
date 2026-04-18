@@ -17,6 +17,38 @@ import { Toaster } from "./ui/sonner";
 
 const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
+const ConvexUnauthenticatedState = () => {
+  const { isLoaded, isSignedIn } = useAuth();
+
+  if (!isLoaded) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+          <Spinner className="size-4 text-ring" />
+          <span className="text-sm text-muted-foreground">
+            Loading workspace...
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  if (isSignedIn) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4">
+        <div className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+          <Spinner className="size-4 text-ring" />
+          <span className="text-sm text-muted-foreground">
+            Restoring workspace session...
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return <UnauthenticatedView />;
+};
+
 export const Providers = ({ children }: { children: React.ReactNode }) => {
   return (
     <ClerkProvider>
@@ -31,7 +63,7 @@ export const Providers = ({ children }: { children: React.ReactNode }) => {
           <Toaster />
 
           <Unauthenticated>
-            <UnauthenticatedView />
+            <ConvexUnauthenticatedState />
           </Unauthenticated>
 
           <AuthLoading>
