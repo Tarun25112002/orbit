@@ -461,6 +461,8 @@ const generateGroqCompletion = async (args: {
   messages: GeminiChatMessage[];
   maxTokens?: number;
   temperature?: number;
+  system?: string;
+  reasoningEffort?: "low" | "medium" | "high";
 }): Promise<GeminiCompletionResult> => {
   const groq = getGroqClient();
   const modelId = GROQ_MODEL;
@@ -473,9 +475,17 @@ const generateGroqCompletion = async (args: {
   try {
     const result = await generateText({
       model: groq(modelId),
+      ...(args.system ? { system: args.system } : {}),
       messages: aiMessages,
       maxOutputTokens: args.maxTokens ?? 65536,
-      temperature: args.temperature ?? 0.7,
+      temperature: args.temperature ?? 0.2,
+      ...(args.reasoningEffort
+        ? {
+            providerOptions: {
+              groq: { reasoningEffort: args.reasoningEffort },
+            },
+          }
+        : {}),
     });
 
     const text = result.text?.trim() ?? "";
@@ -543,6 +553,8 @@ export const generateGeminiCompletion = async (args: {
   maxTokens?: number;
   temperature?: number;
   responseMimeType?: string;
+  system?: string;
+  reasoningEffort?: "low" | "medium" | "high";
 }): Promise<GeminiCompletionResult> => {
   // Route through Groq when available (primary provider)
   if (isGroqEnabled()) {
