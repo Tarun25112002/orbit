@@ -130,7 +130,7 @@ const installMonacoTransientErrorGuard = () => {
             : "";
       const source =
         reason instanceof Error
-          ? reason.stack ?? ""
+          ? (reason.stack ?? "")
           : typeof reason === "string"
             ? reason
             : "";

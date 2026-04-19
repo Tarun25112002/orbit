@@ -501,6 +501,51 @@ const isPlainInstallOperation = (operation: AiPipelineOperation) =>
   operation.type === "run_command" &&
   isPlainInstallCommand(operation.command, operation.commandArgs);
 
+const commandLikelyRequiresPackageJson = (
+  command: string,
+  commandArgs?: string[],
+) => {
+  const normalizedCommand = command.trim().toLowerCase();
+  const args =
+    commandArgs?.map((arg) => arg.trim().toLowerCase()).filter(Boolean) ?? [];
+
+  if (
+    normalizedCommand === "npm" ||
+    normalizedCommand === "pnpm" ||
+    normalizedCommand === "yarn" ||
+    normalizedCommand === "bun"
+  ) {
+    if (args.length === 0) {
+      return normalizedCommand === "yarn";
+    }
+
+    const [firstArg, secondArg] = args;
+    if (firstArg === "install" || firstArg === "i" || firstArg === "ci") {
+      return true;
+    }
+
+    if (firstArg === "run") {
+      return Boolean(secondArg);
+    }
+
+    if (firstArg === "dev" || firstArg === "start" || firstArg === "build") {
+      return true;
+    }
+
+    return false;
+  }
+
+  if (normalizedCommand === "next" || normalizedCommand === "vite") {
+    return args[0] === "dev" || args[0] === "build" || args[0] === "start";
+  }
+
+  if (normalizedCommand === "npx") {
+    return args[0] === "next" || args[0] === "vite";
+  }
+
+  return false;
+};
+
 const isInlineHtmlPreviewFile = (pathOrName: string) => {
   const lower = pathOrName.trim().toLowerCase();
   return lower.endsWith(".html") || lower.endsWith(".htm");
@@ -1782,6 +1827,40 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     });
   }, [appendRuntimeLog]);
 
+  const ensureRuntimePackageJsonForCommand = useCallback(
+    async (command: string, commandArgs?: string[]) => {
+      if (!commandLikelyRequiresPackageJson(command, commandArgs)) {
+        return true;
+      }
+
+      const readRuntimePackageJson = async () => {
+        const packageJson =
+          await projectWebcontainerRuntime.readFileIfExists("package.json");
+        return typeof packageJson === "string" && packageJson.trim().length > 0;
+      };
+
+      if (await readRuntimePackageJson()) {
+        return true;
+      }
+
+      appendRuntimeLog(
+        `Preflight: ${command}${commandArgs?.length ? ` ${commandArgs.join(" ")}` : ""} needs package.json. Re-syncing runtime snapshot...`,
+      );
+
+      await syncProjectSnapshotToRuntime();
+
+      if (await readRuntimePackageJson()) {
+        return true;
+      }
+
+      appendRuntimeLog(
+        `Skipping command ${command}${commandArgs?.length ? ` ${commandArgs.join(" ")}` : ""}: package.json is missing in /workspace.`,
+      );
+      return false;
+    },
+    [appendRuntimeLog, syncProjectSnapshotToRuntime],
+  );
+
   const syncRuntimeCommandChangesToProject = useCallback(
     async (contextLabel: string, options?: { paths?: string[] }) => {
       const scopedPaths =
@@ -1973,6 +2052,27 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         await projectWebcontainerRuntime.ensureBooted(appendRuntimeLog);
         await syncProjectSnapshotToRuntime();
 
+        const packageJsonReady = await ensureRuntimePackageJsonForCommand(
+          command,
+          commandArgs,
+        );
+        if (!packageJsonReady) {
+          setRuntimeBackgroundCommands((previous) =>
+            previous.map((item) =>
+              item.key === key
+                ? {
+                    ...item,
+                    status: "exited",
+                    exitCode: null,
+                    errorMessage:
+                      "Skipped: package.json missing in runtime workspace.",
+                  }
+                : item,
+            ),
+          );
+          return false;
+        }
+
         const backgroundLog = (line: string) => {
           appendRuntimeTabLog(key, line);
         };
@@ -2053,6 +2153,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [
       appendRuntimeTabLog,
       appendRuntimeLog,
+      ensureRuntimePackageJsonForCommand,
       formatRuntimeLogLine,
       isRuntimeBusy,
       runtimeBackgroundCommands,
@@ -2659,6 +2760,17 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               `$ ${operation.command}${operation.commandArgs?.length ? ` ${operation.commandArgs.join(" ")}` : ""}`,
             );
 
+            const packageJsonReady = await ensureRuntimePackageJsonForCommand(
+              operation.command,
+              operation.commandArgs,
+            );
+            if (!packageJsonReady) {
+              appendRuntimeLog(
+                "Command skipped due to missing package.json in runtime workspace.",
+              );
+              continue;
+            }
+
             if (isPlainInstallOperation(operation)) {
               const preferredPackageManager =
                 toRuntimePackageManager(operation.command) ??
@@ -2733,6 +2845,17 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               continue;
             }
 
+            const packageJsonReady = await ensureRuntimePackageJsonForCommand(
+              operation.command,
+              operation.commandArgs,
+            );
+            if (!packageJsonReady) {
+              appendRuntimeLog(
+                `Skipping background command (${operation.key}) due to missing package.json in runtime workspace.`,
+              );
+              continue;
+            }
+
             appendRuntimeLog(
               `Starting background command (${operation.key}): ${operation.command}${operation.commandArgs?.length ? ` ${operation.commandArgs.join(" ")}` : ""}`,
             );
@@ -2784,6 +2907,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       appendRuntimeLog,
       installRuntimeDependenciesWithRetry,
       maybeStartRuntimeDevServer,
+      ensureRuntimePackageJsonForCommand,
       syncRuntimeCommandChangesToProjectSafely,
       syncProjectSnapshotToRuntime,
       waitForRuntimeFileSync,
@@ -2889,6 +3013,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     try {
       await projectWebcontainerRuntime.ensureBooted(appendRuntimeLog);
       await syncProjectSnapshotToRuntime();
+
+      const packageJsonReady = await ensureRuntimePackageJsonForCommand(
+        command,
+        commandArgs,
+      );
+      if (!packageJsonReady) {
+        return;
+      }
+
       const exitCode = await projectWebcontainerRuntime.runCommand({
         command,
         commandArgs,
@@ -2915,6 +3048,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     isRuntimeCommandRunning,
     runtimeCommand,
     startRuntimeBackgroundCommand,
+    ensureRuntimePackageJsonForCommand,
     syncRuntimeCommandChangesToProjectSafely,
     syncProjectSnapshotToRuntime,
   ]);

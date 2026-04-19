@@ -928,6 +928,75 @@ const normalizeCommandKey = (value: unknown) => {
   return normalized;
 };
 
+const DEV_SERVER_KEY = "dev-server";
+const DEV_SERVER_KEY_PATTERN = /^dev[-_.]?server(?:[-_.].*)?$/i;
+
+const normalizeCommandArgsForDetection = (commandArgs?: string[]) =>
+  commandArgs?.map((arg) => arg.trim().toLowerCase()).filter(Boolean) ?? [];
+
+const isLikelyDevServerCommandSpec = (args: {
+  command: string;
+  commandArgs?: string[];
+}) => {
+  const command = args.command.trim().toLowerCase();
+  const commandArgs = normalizeCommandArgsForDetection(args.commandArgs);
+
+  if (command === "npm") {
+    return (
+      (commandArgs[0] === "run" && commandArgs[1] === "dev") ||
+      commandArgs[0] === "dev"
+    );
+  }
+
+  if (command === "pnpm" || command === "bun") {
+    return (
+      (commandArgs[0] === "run" && commandArgs[1] === "dev") ||
+      commandArgs[0] === "dev"
+    );
+  }
+
+  if (command === "yarn") {
+    return (
+      commandArgs[0] === "dev" ||
+      (commandArgs[0] === "run" && commandArgs[1] === "dev")
+    );
+  }
+
+  if (command === "npx") {
+    return (
+      (commandArgs[0] === "next" && commandArgs[1] === "dev") ||
+      (commandArgs[0] === "vite" && commandArgs[1] === "dev")
+    );
+  }
+
+  if (command === "next" || command === "vite") {
+    return commandArgs[0] === "dev";
+  }
+
+  return false;
+};
+
+const canonicalizeBackgroundCommandKey = (args: {
+  key: string;
+  command: string;
+  commandArgs?: string[];
+}) => {
+  if (DEV_SERVER_KEY_PATTERN.test(args.key)) {
+    return DEV_SERVER_KEY;
+  }
+
+  if (
+    isLikelyDevServerCommandSpec({
+      command: args.command,
+      commandArgs: args.commandArgs,
+    })
+  ) {
+    return DEV_SERVER_KEY;
+  }
+
+  return args.key;
+};
+
 const normalizeOperationType = (
   value: unknown,
 ): ConversationFileOperation["type"] | null => {
@@ -1346,7 +1415,7 @@ const isManagedDevServerStartOperation = (
   operation: ConversationFileOperation,
 ) =>
   operation.type === "start_background_command" &&
-  operation.key === "dev-server";
+  operation.key === DEV_SERVER_KEY;
 
 const moveManagedDevServerStartToEnd = (
   operations: ConversationFileOperation[],
@@ -1423,6 +1492,59 @@ const ensureDependencyInstallOperation = (
   withInstall.splice(insertionIndex, 0, selectedInstallCommand);
 
   return moveManagedDevServerStartToEnd(withInstall);
+};
+
+const normalizeDevServerOperations = (
+  operations: ConversationFileOperation[],
+) => {
+  return operations.map((operation) => {
+    if (operation.type === "start_background_command") {
+      return {
+        ...operation,
+        key: canonicalizeBackgroundCommandKey({
+          key: operation.key,
+          command: operation.command,
+          commandArgs: operation.commandArgs,
+        }),
+      };
+    }
+
+    if (
+      operation.type === "run_command" &&
+      isLikelyDevServerCommandSpec({
+        command: operation.command,
+        commandArgs: operation.commandArgs,
+      })
+    ) {
+      return {
+        type: "start_background_command",
+        key: DEV_SERVER_KEY,
+        command: operation.command,
+        commandArgs: operation.commandArgs,
+        gatedOnPreviousSuccess: operation.gatedOnPreviousSuccess ?? true,
+      } satisfies ConversationFileOperation;
+    }
+
+    return operation;
+  });
+};
+
+const normalizePlannerOperationsForExecution = (args: {
+  operations: ConversationFileOperation[];
+  projectFiles?: ConversationProjectFile[];
+  maxOperations?: number;
+}) => {
+  const projectFiles = args.projectFiles ?? [];
+  const maxOperations = args.maxOperations ?? MAX_FILE_OPERATIONS_PER_RUN;
+
+  return ensureDependencyInstallOperation(
+    normalizeDevServerOperations(
+      validatePackageJsonDependencies(
+        ensureFolderOperationsForWrites(args.operations, projectFiles),
+      ),
+    ),
+    projectFiles,
+  ).slice(0, maxOperations);
 };
 
 const COMMON_IMPORT_PATTERN =
@@ -1743,9 +1865,16 @@ const parseFileOperation = (
       return null;
     }
 
+    const gatedOnPreviousSuccess = parseOptionalBoolean(
+      record.gatedOnPreviousSuccess,
+    );
+
     return {
       type: "run_command",
       ...commandSpec,
+      ...(gatedOnPreviousSuccess === undefined
+        ? {}
+        : { gatedOnPreviousSuccess }),
     };
   }
 
@@ -1764,10 +1893,21 @@ const parseFileOperation = (
       return null;
     }
 
+    const gatedOnPreviousSuccess = parseOptionalBoolean(
+      record.gatedOnPreviousSuccess,
+    );
+
     return {
       type: "start_background_command",
-      key,
+      key: canonicalizeBackgroundCommandKey({
+        key,
+        command: commandSpec.command,
+        commandArgs: commandSpec.commandArgs,
+      }),
       ...commandSpec,
+      ...(gatedOnPreviousSuccess === undefined
+        ? {}
+        : { gatedOnPreviousSuccess }),
     };
   }
 
@@ -3000,13 +3140,13 @@ const planConversationFileOperations = async (
     isNextJsBasicStarterRequest(input);
 
   if (shouldUseDeterministicNextJsFallback) {
-    const deterministicOperations = ensureDependencyInstallOperation(
-      ensureFolderOperationsForWrites(
-        buildDeterministicNextJsScaffoldOperations(input.projectFiles),
+    const deterministicOperations = normalizePlannerOperationsForExecution({
+      operations: buildDeterministicNextJsScaffoldOperations(
         input.projectFiles,
       ),
-      input.projectFiles,
-    ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
+      projectFiles: input.projectFiles,
+      maxOperations: MAX_FILE_OPERATIONS_PER_RUN,
+    });
 
     return toPlanResult(
       deterministicOperations,
@@ -3077,12 +3217,11 @@ const planConversationFileOperations = async (
     const projectFiles = args?.projectFiles ?? input.projectFiles;
     const maxOperations = args?.maxOperations ?? MAX_FILE_OPERATIONS_PER_RUN;
 
-    return ensureDependencyInstallOperation(
-      validatePackageJsonDependencies(
-        ensureFolderOperationsForWrites(operations, projectFiles),
-      ),
+    return normalizePlannerOperationsForExecution({
+      operations,
       projectFiles,
-    ).slice(0, maxOperations);
+      maxOperations,
+    });
   };
 
   const collectPlanIssues = (
@@ -3486,9 +3625,12 @@ const planConversationFileOperations = async (
     }
 
     if (shouldUseDeterministicNextJsFallback) {
-      const deterministicOperations = normalizeOperations(
-        buildDeterministicNextJsScaffoldOperations(input.projectFiles),
-      );
+      const deterministicOperations = normalizePlannerOperationsForExecution({
+        operations: buildDeterministicNextJsScaffoldOperations(
+          input.projectFiles,
+        ),
+        projectFiles: input.projectFiles,
+      });
       const deterministicIssues = collectPlanIssues(deterministicOperations);
 
       if (
@@ -4315,12 +4457,11 @@ export const runConversationAgentOrchestration = async (
         );
 
         if (fixupOps.length > 0) {
-          const normalizedFixupOps = ensureDependencyInstallOperation(
-            validatePackageJsonDependencies(
-              ensureFolderOperationsForWrites(fixupOps, fixupProjectFiles),
-            ),
-            fixupProjectFiles,
-          ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
+          const normalizedFixupOps = normalizePlannerOperationsForExecution({
+            operations: fixupOps,
+            projectFiles: fixupProjectFiles,
+            maxOperations: MAX_FILE_OPERATIONS_PER_RUN,
+          });
 
           const fixupResults = await executePlannedFileOperations(
             normalizedFixupOps,
