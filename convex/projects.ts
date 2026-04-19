@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { verifyAuth } from "./auth";
 
@@ -62,7 +62,7 @@ export const create = mutation({
     if (planTier === "advance") projectLimit = Infinity;
 
     if (existingProjects.length >= projectLimit) {
-      throw new Error("PROJECT_LIMIT_REACHED");
+      throw new ConvexError("PROJECT_LIMIT_REACHED");
     }
 
     const projectId = await ctx.db.insert("projects", {
@@ -82,7 +82,7 @@ export const touch = mutation({
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.projectId);
     if (!project || project.ownerId !== identity.subject) {
-      throw new Error("Project not found");
+      throw new ConvexError("Project not found");
     }
     const updatedAt = Date.now();
     await ctx.db.patch(args.projectId, { updatedAt });
@@ -99,7 +99,7 @@ export const startGithubImport = mutation({
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.projectId);
     if (!project || project.ownerId !== identity.subject) {
-      throw new Error("Project not found or unauthorized");
+      throw new ConvexError("Project not found or unauthorized");
     }
     await ctx.db.patch(args.projectId, {
       importStatus: "importing",
@@ -159,10 +159,10 @@ export const rename = mutation({
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.id);
     if (!project) {
-      throw new Error("Project not found");
+      throw new ConvexError("Project not found");
     }
     if (project.ownerId !== identity.subject) {
-      throw new Error("Unauthorized access to this project");
+      throw new ConvexError("Unauthorized access to this project");
     }
     await ctx.db.patch(args.id, {
       name: args.name,
@@ -180,7 +180,7 @@ export const completeGithubImport = mutation({
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.projectId);
     if (!project || project.ownerId !== identity.subject) {
-      throw new Error("Project not found or unauthorized");
+      throw new ConvexError("Project not found or unauthorized");
     }
     await ctx.db.patch(args.projectId, {
       importStatus: "completed",
@@ -198,7 +198,7 @@ export const failGithubImport = mutation({
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.projectId);
     if (!project || project.ownerId !== identity.subject) {
-      throw new Error("Project not found or unauthorized");
+      throw new ConvexError("Project not found or unauthorized");
     }
     await ctx.db.patch(args.projectId, {
       importStatus: "failed",
@@ -215,7 +215,7 @@ export const startGithubExport = mutation({
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.projectId);
     if (!project || project.ownerId !== identity.subject) {
-      throw new Error("Project not found or unauthorized");
+      throw new ConvexError("Project not found or unauthorized");
     }
     await ctx.db.patch(args.projectId, {
       exportStatus: "exporting",
@@ -233,7 +233,7 @@ export const completeGithubExport = mutation({
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.projectId);
     if (!project || project.ownerId !== identity.subject) {
-      throw new Error("Project not found or unauthorized");
+      throw new ConvexError("Project not found or unauthorized");
     }
     await ctx.db.patch(args.projectId, {
       exportStatus: "completed",
@@ -251,7 +251,7 @@ export const failGithubExport = mutation({
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.projectId);
     if (!project || project.ownerId !== identity.subject) {
-      throw new Error("Project not found or unauthorized");
+      throw new ConvexError("Project not found or unauthorized");
     }
     await ctx.db.patch(args.projectId, {
       exportStatus: "failed",
