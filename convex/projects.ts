@@ -2,12 +2,69 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { verifyAuth } from "./auth";
 
+export const checkAiAccess = query({
+  args: {},
+  handler: async (ctx) => {
+    try {
+      const identity = await verifyAuth(ctx);
+
+      const projects = await ctx.db
+        .query("projects")
+        .withIndex("by_owner", (q) => q.eq("ownerId", identity.subject))
+        .collect();
+
+      const activeSub = await ctx.db
+        .query("subscriptions")
+        .withIndex("by_owner", (q) => q.eq("ownerId", identity.subject))
+        .filter((q) => q.eq(q.field("status"), "active"))
+        .first();
+
+      const tier = activeSub ? activeSub.tier : "free";
+
+      let limit = 3;
+      if (tier === "basic") limit = 10;
+      if (tier === "pro") limit = 50;
+      if (tier === "advance") limit = 999999; // effectively unlimited
+
+      const count = projects.length;
+      const allowed = count < limit;
+
+      return { allowed, count, limit, tier };
+    } catch {
+      return { allowed: false, count: 0, limit: 3, tier: "free" as const };
+    }
+  },
+});
+
 export const create = mutation({
   args: {
     name: v.string(),
   },
   handler: async (ctx, args) => {
     const identity = await verifyAuth(ctx);
+    
+    const existingProjects = await ctx.db
+      .query("projects")
+      .withIndex("by_owner", (q) => q.eq("ownerId", identity.subject))
+      .collect();
+
+    const activeSub = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_owner", (q) => q.eq("ownerId", identity.subject))
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .first();
+
+    const planTier = activeSub ? activeSub.tier : "free";
+
+    let projectLimit = 3; // free tier
+    if (planTier === "basic") projectLimit = 10;
+    if (planTier === "pro") projectLimit = 50;
+    if (planTier === "advance") projectLimit = Infinity;
+
+    if (existingProjects.length >= projectLimit) {
+      throw new Error("PROJECT_LIMIT_REACHED");
+    }
+
     const projectId = await ctx.db.insert("projects", {
       name: args.name,
       ownerId: identity.subject,
