@@ -5,6 +5,35 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMappedPort } from "@/lib/docker/session-manager";
 
+const PREVIEW_PROXY_HEALTH_TIMEOUT_MS = 1_500;
+
+const buildDirectPreviewUrl = (hostPort: number) => {
+  const host = process.env.ORBIT_HOST || "localhost";
+  const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
+  return `${protocol}://${host}:${hostPort}`;
+};
+
+const isPreviewProxyReachable = async (proxyBase: string) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, PREVIEW_PROXY_HEALTH_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${proxyBase}/`, {
+      method: "HEAD",
+      signal: controller.signal,
+      cache: "no-store",
+    });
+
+    return response.status >= 200 && response.status < 600;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = request.nextUrl;
@@ -35,15 +64,27 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const proxyBase = process.env.NEXT_PUBLIC_PREVIEW_BASE_URL;
-    let url: string;
+    const proxyBase = process.env.NEXT_PUBLIC_PREVIEW_BASE_URL?.trim();
+    let url = buildDirectPreviewUrl(hostPort);
+
     if (proxyBase) {
-      url = `${proxyBase.replace(/\/$/, "")}/__orbit_proxy_init?sessionId=${encodeURIComponent(sessionId)}&port=${containerPort}`;
-    } else {
-      // Direct access (fallback if no proxy base configured)
-      const host = process.env.ORBIT_HOST || "localhost";
-      const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
-      url = `${protocol}://${host}:${hostPort}`;
+      const normalizedProxyBase = proxyBase.replace(/\/$/, "");
+      const proxyInitUrl = `${normalizedProxyBase}/__orbit_proxy_init?sessionId=${encodeURIComponent(sessionId)}&port=${containerPort}`;
+
+      const proxyReachable = await isPreviewProxyReachable(normalizedProxyBase);
+      if (proxyReachable) {
+        url = proxyInitUrl;
+      } else {
+        console.warn(
+          "[sandbox/port] Preview proxy unavailable; falling back to direct host port URL",
+          {
+            proxyBase: normalizedProxyBase,
+            sessionId,
+            containerPort,
+            hostPort,
+          },
+        );
+      }
     }
 
     return NextResponse.json({ port: hostPort, url });
