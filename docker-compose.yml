@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  orbit-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/orbit-workspaces:/tmp/orbit-workspaces
+    environment:
+      - NODE_ENV=production
+      - ORBIT_HOST=${ORBIT_HOST:-localhost}
+      - ORBIT_WS_PORT=3001
+      - ORBIT_WORKSPACE_BASE=/tmp/orbit-workspaces
+    networks:
+      - orbit-network
+    restart: unless-stopped
+
+networks:
+  orbit-network:
+    driver: bridge

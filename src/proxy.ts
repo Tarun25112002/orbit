@@ -20,7 +20,6 @@ const isPublicRoute = (pathname: string) =>
  *
  * 1. Protects all routes except public ones — unauthenticated users only see landing page
  * 2. Clears stale GitHub cookies on sign-out
- * 3. Sets COOP/COEP headers for WebContainer project routes
  */
 export default clerkMiddleware(async (_auth, request) => {
   const pathname = request.nextUrl.pathname;
@@ -66,19 +65,7 @@ export default clerkMiddleware(async (_auth, request) => {
     });
   }
 
-  // ─── WebContainer COOP/COEP headers for project routes ─────────────
-  if (isProjectRoute(pathname)) {
-    const ua = request.headers.get("user-agent") ?? "";
-    const isChromium =
-      /\b(?:Chrome|Chromium|Edg|OPR|Opera)\//i.test(ua) &&
-      !/\bFirefox\//i.test(ua);
 
-    response.headers.set("Cross-Origin-Opener-Policy", "same-origin");
-    response.headers.set(
-      "Cross-Origin-Embedder-Policy",
-      isChromium ? "credentialless" : "require-corp",
-    );
-  }
 
   return response;
 });

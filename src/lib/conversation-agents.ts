@@ -161,7 +161,7 @@ const REQUIRE_EXECUTABLE_FOR_CODE_INTENT = !/^(0|false)$/i.test(
 );
 const NEXTJS_REQUIRED_SCAFFOLD_FILE_PATHS = [
   "package.json",
-  "next.config.ts",
+  "next.config.mjs",
   "tsconfig.json",
   "next-env.d.ts",
   "src/app/layout.tsx",
@@ -222,7 +222,7 @@ const buildDeterministicChunks = (
   if (!hasExistingPackageJson) {
     chunks.push({
       title: "Project Foundation",
-      goal: "Create package.json with all needed dependencies, config files (tsconfig.json, framework config like next.config.ts or vite.config.ts), and global style files. Include COMPLETE dependency list so npm install succeeds in one pass.",
+      goal: "Create package.json with all needed dependencies, config files (tsconfig.json, framework config like next.config.mjs or vite.config.ts), and global style files. Include COMPLETE dependency list so npm install succeeds in one pass.",
     });
   }
 
@@ -505,7 +505,7 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "▸ NEXT.JS (App Router):",
   "  Required files:",
   "  - package.json (next, react, react-dom + any extras like tailwindcss)",
-  "  - next.config.mjs or next.config.ts",
+  "  - next.config.mjs or next.config.mjs",
   "  - tsconfig.json (with 'jsx': 'preserve', paths, etc.)",
   "  - src/app/layout.tsx (root layout with <html>, <body>)",
   "  - src/app/page.tsx (home page)",
@@ -1941,11 +1941,10 @@ const buildDeterministicNextJsScaffoldOperations = (
       existingPaths,
     }),
     upsertPlannerFileOperation({
-      path: "next.config.ts",
+      path: "next.config.mjs",
       content: [
-        'import type { NextConfig } from "next";',
-        "",
-        "const nextConfig: NextConfig = {};",
+        "/** @type {import('next').NextConfig} */",
+        "const nextConfig = {};",
         "",
         "export default nextConfig;",
         "",
@@ -2254,7 +2253,7 @@ const buildProjectFileInventory = (files: ConversationProjectFile[] = []) => {
 const PLANNER_KEY_FILE_PATTERNS = [
   "package.json",
   "tsconfig.json",
-  "next.config.ts",
+  "next.config.mjs",
   "next.config.js",
   "next.config.mjs",
   "vite.config.ts",
@@ -2327,7 +2326,7 @@ const buildFileOperationPlannerPrompt = (
     "- For feature requests, deliver an end-to-end implementation (UI + API/backend/data flow) that runs in this project.",
     '- After changing package.json: {"type":"run_command","command":"npm","commandArgs":["install"]}',
     '- To start dev server: {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
-    "- For Next.js scaffolds, include at minimum: package.json, next.config.ts, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css.",
+    "- For Next.js scaffolds, include at minimum: package.json, next.config.mjs, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css.",
     "- Create ALL files needed for the task. Do not leave gaps or TODOs.",
     "",
     "CODE QUALITY — CRITICAL:",
@@ -3031,7 +3030,7 @@ const planConversationFileOperations = async (
         const previousKeyFileContents: string[] = [];
         if (workingProjectFiles.length > 0) {
           const keyPatterns = [
-            "package.json", "tsconfig.json", "next.config.ts", "next.config.mjs",
+            "package.json", "tsconfig.json", "next.config.mjs", "next.config.mjs",
             "vite.config.ts", "tailwind.config.ts", "postcss.config.mjs",
             "src/app/layout.tsx", "src/app/globals.css",
           ];
@@ -3440,7 +3439,7 @@ const executePlannedFileOperations = async (
         operation,
         status: isCommandOperation ? "applied" : "skipped",
         message: isCommandOperation
-          ? "Queued for WebContainer runtime execution."
+          ? "Queued for sandbox runtime execution."
           : "No execution handler is available.",
       });
       continue;

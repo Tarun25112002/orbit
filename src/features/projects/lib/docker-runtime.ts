@@ -1,0 +1,755 @@
+"use client";
+
+/**
+ * Docker-backed Runtime Adapter
+ *
+ * Drop-in replacement for `projectWebcontainerRuntime`. Implements the
+ * exact same public interface (ensureBooted, syncProjectFiles, runCommand,
+ * startBackgroundCommand, stopBackgroundCommand, waitForBackgroundCommandExit,
+ * onServerReady, waitForServerReady, applyOperation, readFileIfExists,
+ * teardown, etc.) but proxies everything through API routes to Docker
+ * containers running on the Oracle Cloud VM.
+ */
+
+import type { AiPipelineOperation } from "@/lib/ai-execution";
+
+type RuntimeLogWriter = (line: string) => void;
+
+type ServerReadyHandler = (args: { port: number; url: string }) => void;
+
+type ServerReadyState = { port: number; url: string };
+
+type BackgroundCommandExit = {
+  code: number | null;
+  errorMessage: string | null;
+  at: number;
+};
+
+const DOCKER_RUNTIME_VERSION = 1;
+
+const normalizePath = (rawPath: string) =>
+  rawPath
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .replace(/\/+/g, "/");
+
+const getParentPath = (path: string) => {
+  const normalized = normalizePath(path);
+  if (!normalized || !normalized.includes("/")) {
+    return "";
+  }
+  return normalized.slice(0, normalized.lastIndexOf("/"));
+};
+
+const normalizeOutputChunk = (chunk: string) =>
+  chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trimEnd();
+
+const stripAnsiControlSequences = (value: string) =>
+  value
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+
+const isSpinnerFrame = (value: string) => /^[-\\|/]$/.test(value.trim());
+
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error ?? "unknown");
+
+const generateSessionId = () =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+/** Port patterns to detect server-ready messages in output */
+const PORT_PATTERNS: RegExp[] = [
+  /(?:listening|started|running)\s+(?:on|at)\s+(?:port\s+)?(\d{2,5})/i,
+  /(?:Local|Network):\s+https?:\/\/(?:localhost|0\.0\.0\.0|127\.0\.0\.1):(\d{2,5})/i,
+  /https?:\/\/(?:localhost|0\.0\.0\.0|127\.0\.0\.1):(\d{2,5})/i,
+];
+
+function detectPortFromLine(line: string): number | null {
+  for (const pattern of PORT_PATTERNS) {
+    const match = pattern.exec(line);
+    if (match?.[1]) {
+      const port = parseInt(match[1], 10);
+      if (port >= 1024 && port <= 65535) return port;
+    }
+  }
+  return null;
+}
+
+class ProjectDockerRuntime {
+  private sessionId: string | null = null;
+  private booted = false;
+  private bootPromise: Promise<void> | null = null;
+
+  private serverReadyHandlers = new Set<ServerReadyHandler>();
+  private lastServerReady: ServerReadyState | null = null;
+
+  private backgroundCommands = new Map<
+    string,
+    { abortController: AbortController }
+  >();
+  private backgroundExitPromises = new Map<
+    string,
+    Promise<BackgroundCommandExit>
+  >();
+  private backgroundLastExits = new Map<string, BackgroundCommandExit>();
+
+  private syncedProjectFileContent = new Map<string, string>();
+  private syncedProjectFilePaths = new Set<string>();
+
+  // ─── Boot ───────────────────────────────────────────────────────────
+
+  async ensureBooted(log?: RuntimeLogWriter): Promise<void> {
+    if (this.booted && this.sessionId) {
+      return;
+    }
+
+    if (this.bootPromise) {
+      return this.bootPromise;
+    }
+
+    this.bootPromise = (async () => {
+      try {
+        this.sessionId = this.sessionId || generateSessionId();
+        log?.("Starting Docker sandbox...");
+
+        const response = await fetch("/api/sandbox/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: this.sessionId,
+            runtime: "node",
+          }),
+        });
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: "Unknown error" }));
+          throw new Error(
+            (error as { error?: string }).error || "Failed to create sandbox",
+          );
+        }
+
+        this.booted = true;
+        log?.("Docker sandbox ready.");
+      } catch (error) {
+        this.bootPromise = null;
+        throw error;
+      }
+    })();
+
+    return this.bootPromise;
+  }
+
+  // ─── Server Ready ───────────────────────────────────────────────────
+
+  onServerReady(
+    handler: ServerReadyHandler,
+    options?: { emitCurrent?: boolean },
+  ) {
+    this.serverReadyHandlers.add(handler);
+
+    if (options?.emitCurrent && this.lastServerReady) {
+      handler(this.lastServerReady);
+    }
+
+    return () => {
+      this.serverReadyHandlers.delete(handler);
+    };
+  }
+
+  clearServerReadyState() {
+    this.lastServerReady = null;
+  }
+
+  getLastServerReady() {
+    return this.lastServerReady;
+  }
+
+  private emitServerReady(port: number, url: string) {
+    this.lastServerReady = { port, url };
+    for (const handler of this.serverReadyHandlers) {
+      handler({ port, url });
+    }
+  }
+
+  private async resolvePreviewUrl(port: number): Promise<string | null> {
+    if (!this.sessionId) return null;
+
+    try {
+      const response = await fetch(
+        `/api/sandbox/port?sessionId=${encodeURIComponent(this.sessionId)}&port=${port}`,
+      );
+      if (!response.ok) return null;
+
+      const data = (await response.json()) as { url?: string };
+      return data.url || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async waitForServerReady(args?: {
+    timeoutMs?: number;
+    expectedPort?: number;
+  }) {
+    const timeoutMs = args?.timeoutMs ?? 20_000;
+    const expectedPort = args?.expectedPort;
+
+    const cached = this.lastServerReady;
+    if (
+      cached &&
+      (expectedPort === undefined || cached.port === expectedPort)
+    ) {
+      return cached;
+    }
+
+    return await new Promise<ServerReadyState>((resolve, reject) => {
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
+        unsubscribe();
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+      };
+
+      const unsubscribe = this.onServerReady((ready) => {
+        if (expectedPort !== undefined && ready.port !== expectedPort) {
+          return;
+        }
+        cleanup();
+        resolve(ready);
+      });
+
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(
+          new Error(
+            `Timed out waiting for preview server${
+              expectedPort === undefined ? "" : ` on port ${expectedPort}`
+            }.`,
+          ),
+        );
+      }, timeoutMs);
+    });
+  }
+
+  // ─── File Sync ──────────────────────────────────────────────────────
+
+  async syncProjectFiles(args: {
+    filesByPath: Map<string, string>;
+    log?: RuntimeLogWriter;
+  }) {
+    await this.ensureBooted(args.log);
+
+    const files: Array<{ path: string; content: string }> = [];
+    const nextPaths = new Set<string>();
+
+    for (const [rawPath, content] of args.filesByPath.entries()) {
+      const normalizedPath = normalizePath(rawPath);
+      if (!normalizedPath) continue;
+
+      nextPaths.add(normalizedPath);
+
+      // Skip if content hasn't changed
+      if (this.syncedProjectFileContent.get(normalizedPath) === content) {
+        continue;
+      }
+
+      files.push({ path: normalizedPath, content });
+    }
+
+    if (files.length === 0 && this.syncedProjectFilePaths.size === nextPaths.size) {
+      return;
+    }
+
+    args.log?.(`Syncing ${files.length} file(s) to sandbox...`);
+
+    const response = await fetch("/api/sandbox/files/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: this.sessionId,
+        files,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response
+        .json()
+        .catch(() => ({ error: "Unknown" }));
+      throw new Error(
+        (error as { error?: string }).error || "File sync failed",
+      );
+    }
+
+    // Update caches
+    for (const file of files) {
+      this.syncedProjectFileContent.set(file.path, file.content);
+    }
+    this.syncedProjectFilePaths = nextPaths;
+  }
+
+  async readFileIfExists(path: string): Promise<string | null> {
+    if (!this.sessionId) return null;
+
+    try {
+      const normalizedPath = normalizePath(path);
+      const response = await fetch(
+        `/api/sandbox/files/read?sessionId=${encodeURIComponent(this.sessionId)}&filePath=${encodeURIComponent(normalizedPath)}`,
+      );
+
+      if (!response.ok) return null;
+
+      const data = (await response.json()) as { content?: string | null };
+      return data.content ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ─── Command Execution ──────────────────────────────────────────────
+
+  async runCommand(args: {
+    command: string;
+    commandArgs?: string[];
+    env?: Record<string, string>;
+    log?: RuntimeLogWriter;
+    timeoutMs?: number;
+  }): Promise<number> {
+    await this.ensureBooted(args.log);
+
+    const fullCommand = [args.command, ...(args.commandArgs ?? [])].join(" ");
+
+    const abortController = new AbortController();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    if (args.timeoutMs && args.timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        abortController.abort();
+      }, args.timeoutMs);
+    }
+
+    try {
+      const response = await fetch("/api/sandbox/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: this.sessionId,
+          command: fullCommand,
+          env: args.env,
+        }),
+        signal: abortController.signal,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: "Unknown" }));
+        throw new Error(
+          (error as { error?: string }).error || "Command execution failed",
+        );
+      }
+
+      return await this.consumeSSEStream(response, args.log);
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        args.log?.(`Command timed out after ${args.timeoutMs}ms.`);
+        return 1;
+      }
+      throw error;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
+    }
+  }
+
+  // ─── Background Commands ───────────────────────────────────────────
+
+  async startBackgroundCommand(args: {
+    key: string;
+    command: string;
+    commandArgs?: string[];
+    env?: Record<string, string>;
+    log?: RuntimeLogWriter;
+  }) {
+    if (this.backgroundCommands.has(args.key)) {
+      args.log?.(`Background command (${args.key}) is already running.`);
+      return;
+    }
+
+    await this.ensureBooted(args.log);
+
+    const fullCommand = [args.command, ...(args.commandArgs ?? [])].join(" ");
+    const abortController = new AbortController();
+
+    this.backgroundCommands.set(args.key, { abortController });
+    this.backgroundLastExits.delete(args.key);
+
+    // Clear sync caches since background commands can modify files
+    this.syncedProjectFileContent.clear();
+    this.syncedProjectFilePaths.clear();
+
+    const exitPromise = (async (): Promise<BackgroundCommandExit> => {
+      try {
+        const response = await fetch("/api/sandbox/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId: this.sessionId,
+            command: fullCommand,
+            env: args.env,
+          }),
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) {
+          const error = await response
+            .json()
+            .catch(() => ({ error: "Unknown" }));
+          return {
+            code: 1,
+            errorMessage:
+              (error as { error?: string }).error || "Failed to start command",
+            at: Date.now(),
+          };
+        }
+
+        const exitCode = await this.consumeSSEStream(response, args.log);
+        return { code: exitCode, errorMessage: null, at: Date.now() };
+      } catch (error) {
+        if (abortController.signal.aborted) {
+          return { code: null, errorMessage: "Stopped manually.", at: Date.now() };
+        }
+        return {
+          code: null,
+          errorMessage: getErrorMessage(error),
+          at: Date.now(),
+        };
+      } finally {
+        this.backgroundCommands.delete(args.key);
+        this.syncedProjectFileContent.clear();
+        this.syncedProjectFilePaths.clear();
+      }
+    })();
+
+    this.backgroundExitPromises.set(args.key, exitPromise);
+
+    void exitPromise.then((exit) => {
+      this.backgroundExitPromises.delete(args.key);
+      this.backgroundLastExits.set(args.key, exit);
+
+      if (exit.errorMessage) {
+        args.log?.(
+          `Background command (${args.key}) failed: ${exit.errorMessage}`,
+        );
+      } else {
+        args.log?.(
+          `Background command (${args.key}) exited with code ${exit.code}.`,
+        );
+      }
+    });
+  }
+
+  stopBackgroundCommand(args: { key: string; log?: RuntimeLogWriter }) {
+    const running = this.backgroundCommands.get(args.key);
+    if (!running) {
+      return false;
+    }
+
+    running.abortController.abort();
+    this.backgroundCommands.delete(args.key);
+    this.syncedProjectFileContent.clear();
+    this.syncedProjectFilePaths.clear();
+    args.log?.(`Stopped background command (${args.key}).`);
+    return true;
+  }
+
+  isBackgroundCommandRunning(key: string) {
+    return this.backgroundCommands.has(key);
+  }
+
+  getBackgroundCommandLastExit(key: string) {
+    return this.backgroundLastExits.get(key) ?? null;
+  }
+
+  async waitForBackgroundCommandExit(args: {
+    key: string;
+    timeoutMs?: number;
+  }) {
+    const runningExitPromise = this.backgroundExitPromises.get(args.key);
+    if (!runningExitPromise) {
+      return this.backgroundLastExits.get(args.key) ?? null;
+    }
+
+    const timeoutMs = args.timeoutMs ?? 0;
+    if (timeoutMs <= 0) {
+      return await runningExitPromise;
+    }
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const timeoutPromise = new Promise<BackgroundCommandExit | null>(
+      (resolve) => {
+        timeoutId = setTimeout(() => {
+          resolve(null);
+        }, timeoutMs);
+      },
+    );
+
+    const result = await Promise.race([runningExitPromise, timeoutPromise]);
+
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    return result;
+  }
+
+  // ─── Filesystem Operations (AI pipeline) ────────────────────────────
+
+  async applyOperation(args: {
+    operation: AiPipelineOperation;
+    readFileContentByPath: (path: string) => string | undefined;
+  }) {
+    const { operation, readFileContentByPath } = args;
+
+    if (operation.type === "create_folder") {
+      // Folders are auto-created by syncFileToContainer
+      return;
+    }
+
+    if (
+      operation.type === "run_command" ||
+      operation.type === "start_background_command"
+    ) {
+      // These are handled separately in the trace loop
+      return;
+    }
+
+    if (!this.sessionId) return;
+
+    if (operation.type === "delete_path") {
+      await fetch("/api/sandbox/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: this.sessionId,
+          command: `rm -rf /workspace/${normalizePath(operation.path)}`,
+        }),
+      });
+      this.syncedProjectFileContent.clear();
+      this.syncedProjectFilePaths.clear();
+      return;
+    }
+
+    if (operation.type === "rename_path") {
+      const source = normalizePath(operation.path);
+      const target = normalizePath(operation.newPath);
+      const parentDir = getParentPath(operation.newPath);
+
+      let command = "";
+      if (parentDir) {
+        command += `mkdir -p /workspace/${parentDir} && `;
+      }
+      command += `mv /workspace/${source} /workspace/${target}`;
+
+      await fetch("/api/sandbox/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: this.sessionId,
+          command,
+        }),
+      });
+      this.syncedProjectFileContent.clear();
+      this.syncedProjectFilePaths.clear();
+      return;
+    }
+
+    // create_file, update_file
+    const content = readFileContentByPath(operation.path);
+    if (content === undefined) {
+      throw new Error(`Missing content snapshot for ${operation.path}`);
+    }
+
+    const normalizedPath = normalizePath(operation.path);
+    await fetch("/api/sandbox/files/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: this.sessionId,
+        filePath: normalizedPath,
+        content,
+      }),
+    });
+
+    this.syncedProjectFilePaths.add(normalizedPath);
+    this.syncedProjectFileContent.set(normalizedPath, content);
+  }
+
+  // ─── Teardown ───────────────────────────────────────────────────────
+
+  teardown() {
+    this.lastServerReady = null;
+
+    // Kill all background commands
+    for (const [key, running] of this.backgroundCommands.entries()) {
+      try {
+        running.abortController.abort();
+      } catch {
+        // Best effort
+      }
+    }
+    this.backgroundCommands.clear();
+    this.backgroundExitPromises.clear();
+    this.backgroundLastExits.clear();
+
+    // Kill the sandbox container
+    if (this.sessionId) {
+      const sessionId = this.sessionId;
+      void fetch("/api/sandbox/kill", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      }).catch(() => {
+        // Fire and forget
+      });
+    }
+
+    this.booted = false;
+    this.bootPromise = null;
+    this.syncedProjectFileContent.clear();
+    this.syncedProjectFilePaths.clear();
+  }
+
+  // ─── Internal: SSE Stream Consumer ──────────────────────────────────
+
+  private async consumeSSEStream(
+    response: Response,
+    log?: RuntimeLogWriter,
+  ): Promise<number> {
+    const reader = response.body?.getReader();
+    if (!reader) return 1;
+
+    const decoder = new TextDecoder();
+    let exitCode = 0;
+    let buffer = "";
+    let detectedPort: number | null = null;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+
+          try {
+            const payload = JSON.parse(line.slice(6)) as {
+              type: string;
+              data: string;
+            };
+
+            if (payload.type === "stdout" || payload.type === "stderr") {
+              const text = normalizeOutputChunk(payload.data);
+              if (!text) continue;
+
+              for (const outputLine of text.split("\n")) {
+                const sanitized = stripAnsiControlSequences(outputLine).trim();
+                if (!sanitized || isSpinnerFrame(sanitized)) continue;
+                log?.(sanitized);
+
+                // Port detection for preview
+                if (detectedPort === null) {
+                  const port = detectPortFromLine(outputLine);
+                  if (port !== null) {
+                    detectedPort = port;
+                    void this.resolvePreviewUrl(port).then((url) => {
+                      if (url) {
+                        this.emitServerReady(port, url);
+                      }
+                    });
+                  }
+                }
+              }
+            } else if (payload.type === "exit") {
+              exitCode = parseInt(payload.data, 10) || 0;
+            }
+          } catch {
+            // Malformed SSE line, skip
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return exitCode;
+  }
+}
+
+// ─── Singleton resolution (same pattern as WebContainer version) ────────
+
+const isRuntimeCompatible = (
+  value: unknown,
+): value is ProjectDockerRuntime => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.ensureBooted === "function" &&
+    typeof record.applyOperation === "function" &&
+    typeof record.syncProjectFiles === "function" &&
+    typeof record.runCommand === "function" &&
+    typeof record.startBackgroundCommand === "function" &&
+    typeof record.waitForBackgroundCommandExit === "function" &&
+    typeof record.getBackgroundCommandLastExit === "function" &&
+    typeof record.stopBackgroundCommand === "function" &&
+    typeof record.teardown === "function"
+  );
+};
+
+declare global {
+  var __orbitProjectDockerRuntime__:
+    | { version: number; runtime: unknown }
+    | undefined;
+}
+
+const resolveProjectDockerRuntime = () => {
+  const existing = globalThis.__orbitProjectDockerRuntime__;
+
+  if (
+    existing?.version === DOCKER_RUNTIME_VERSION &&
+    isRuntimeCompatible(existing.runtime)
+  ) {
+    return existing.runtime;
+  }
+
+  if (isRuntimeCompatible(existing?.runtime)) {
+    existing.runtime.teardown();
+  }
+
+  const runtime = new ProjectDockerRuntime();
+  globalThis.__orbitProjectDockerRuntime__ = {
+    version: DOCKER_RUNTIME_VERSION,
+    runtime,
+  };
+
+  return runtime;
+};
+
+/**
+ * Global singleton — drop-in replacement for `projectWebcontainerRuntime`.
+ * Import this as `projectWebcontainerRuntime` in `project-id-view.tsx`
+ * to swap the backend with zero UI changes.
+ */
+export const projectWebcontainerRuntime = resolveProjectDockerRuntime();

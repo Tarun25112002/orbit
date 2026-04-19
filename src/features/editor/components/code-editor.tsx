@@ -1598,3 +1598,28 @@ export const CodeEditor = ({
     </EditorContextMenu>
   );
 };
+
+// Monaco has a harmless race-condition rendering bug during React unmounts
+// that throws "Cannot read properties of null (reading 'left')".
+// This intercepts it so Next.js doesn't show a red screen of death.
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (e) => {
+    if (
+      e.message.includes("reading 'left'") &&
+      e.filename.includes("monaco-editor")
+    ) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  });
+
+  window.addEventListener("unhandledrejection", (e) => {
+    if (
+      e.reason?.message?.includes("reading 'left'") &&
+      e.reason?.stack?.includes("monaco-editor")
+    ) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  });
+}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
@@ -29,18 +29,6 @@ export const ProjectIdLayout = ({
 }) => {
   const [badge, setBadge] = useState<ProjectHeaderBadgeState | null>(null);
   const project = useProject(projectId);
-
-  useEffect(() => {
-    const handlePopState = () => {
-      // Force a hard navigation when the user uses the browser's back/forward buttons.
-      // Next.js soft navigation across WebContainer COOP/COEP isolation boundaries 
-      // often hangs because the WebContainer Service Worker intercepts RSC fetches.
-      window.location.reload();
-    };
-
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, []);
 
   if (project === undefined) {
     return (

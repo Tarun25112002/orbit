@@ -47,7 +47,7 @@ import { EditorStatusBar } from "../../editor/components/editor-status-bar";
 import { WelcomeTab } from "../../editor/components/welcome-tab";
 import type { CursorState } from "../../editor/store/use-editor-store";
 import { useProjectHeaderContext } from "./project-header-context";
-import { projectWebcontainerRuntime } from "../lib/webcontainer-runtime";
+import { projectWebcontainerRuntime } from "../lib/docker-runtime";
 
 const MIN_SIDEBAR_WIDTH = 200;
 const MAX_SIDEBAR_WIDTH = 800;
@@ -2470,7 +2470,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
       try {
         console.info(
-          "[orbit:runtime] Booting WebContainer and waiting for file sync...",
+          "[orbit:runtime] Booting sandbox and waiting for file sync...",
         );
         const [runtimeFileSyncReady] = await Promise.all([
           waitForRuntimeFileSync(detail.trace),
@@ -3075,7 +3075,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       </p>
                     ) : (
                       <p className="mt-2 text-xs text-[#8f8f8f]">
-                        Preview uses WebContainer and your project dev script.
+                        Preview uses a Docker sandbox and your project dev script.
                       </p>
                     )}
                     <div className="mt-4 flex items-center justify-center gap-2">
@@ -3121,7 +3121,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                   className="h-full w-full"
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
                   src={runtimePreviewUrl}
-                  title="WebContainer preview"
+                  title="Sandbox preview"
                 />
               ) : (
                 <EmptyState label="Runtime preview will appear after a dev server starts." />

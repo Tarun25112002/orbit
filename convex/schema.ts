@@ -51,6 +51,7 @@ export default defineSchema({
       role: v.union(v.literal("user"), v.literal("assistant")),
       content: v.string(),
       reasoning_details: v.optional(v.any()),
+      thinking_logs: v.optional(v.array(v.string())),
       status: v.optional(
         v.union(
           v.literal("processing"),

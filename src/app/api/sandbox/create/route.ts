@@ -1,0 +1,54 @@
+/**
+ * POST /api/sandbox/create — Spin up a new Docker sandbox container.
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+import {
+  createSession,
+  type SandboxRuntime,
+} from "@/lib/docker/session-manager";
+import { ensureCapacity } from "@/lib/docker/resource-guard";
+
+const VALID_RUNTIMES = new Set<SandboxRuntime>(["node", "python", "bash"]);
+
+export async function POST(request: NextRequest) {
+  try {
+    const body = (await request.json()) as {
+      sessionId?: string;
+      runtime?: string;
+    };
+
+    const { sessionId, runtime } = body;
+
+    if (!sessionId || typeof sessionId !== "string") {
+      return NextResponse.json(
+        { error: "sessionId is required" },
+        { status: 400 },
+      );
+    }
+
+    if (!runtime || !VALID_RUNTIMES.has(runtime as SandboxRuntime)) {
+      return NextResponse.json(
+        { error: `runtime must be one of: ${[...VALID_RUNTIMES].join(", ")}` },
+        { status: 400 },
+      );
+    }
+
+    const hasCapacity = await ensureCapacity();
+    if (!hasCapacity) {
+      return NextResponse.json(
+        { error: "Server is at maximum capacity. Try again later." },
+        { status: 503 },
+      );
+    }
+
+    const result = await createSession(sessionId, runtime as SandboxRuntime);
+
+    return NextResponse.json(result);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Failed to create sandbox";
+    console.error("[sandbox/create]", message);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
