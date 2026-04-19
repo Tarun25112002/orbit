@@ -278,6 +278,18 @@ const parseStatus = (value: unknown): AiPipelineOperationStatus | null => {
   return null;
 };
 
+const sanitizeTraceMessage = (value: unknown) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(/\uFFFD/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim();
+};
+
 const parseOperationResult = (
   value: unknown,
 ): AiPipelineOperationResult | null => {
@@ -295,7 +307,7 @@ const parseOperationResult = (
   return {
     operation,
     status,
-    message: typeof value.message === "string" ? value.message : "",
+    message: sanitizeTraceMessage(value.message),
   };
 };
 

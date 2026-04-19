@@ -1469,6 +1469,18 @@ const ensureDependencyInstallOperation = (
     ? plainInstallCommands[plainInstallCommands.length - 1]!
     : buildDefaultInstallOperation(operations, projectFiles);
 
+  const shouldGateInstall =
+    ENABLE_INSTALL_GATE && hasPackageJsonMutation(operations);
+
+  const installCommandToInsert: ConversationFileOperation =
+    shouldGateInstall && selectedInstallCommand.type === "run_command"
+      ? {
+          ...selectedInstallCommand,
+          gatedOnPreviousSuccess:
+            selectedInstallCommand.gatedOnPreviousSuccess ?? true,
+        }
+      : selectedInstallCommand;
+
   const insertionIndex = (() => {
     for (
       let index = withoutPlainInstallCommands.length - 1;
@@ -1489,7 +1501,7 @@ const ensureDependencyInstallOperation = (
   })();
 
   const withInstall = [...withoutPlainInstallCommands];
-  withInstall.splice(insertionIndex, 0, selectedInstallCommand);
+  withInstall.splice(insertionIndex, 0, installCommandToInsert);
 
   return moveManagedDevServerStartToEnd(withInstall);
 };

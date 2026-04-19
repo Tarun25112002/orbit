@@ -9,7 +9,10 @@ import {
   getSession,
   getContainer,
 } from "@/lib/docker/session-manager";
-import { syncProjectToContainer } from "@/lib/docker/file-sync";
+import {
+  syncFileToContainer,
+  syncProjectToContainer,
+} from "@/lib/docker/file-sync";
 import {
   type ConversationFileOperation,
   type ConversationFileOperationExecutionResult,
@@ -38,6 +41,9 @@ const MAX_CONTEXT_FILES = 4;
 const MAX_HISTORY_MESSAGES = 4;
 const SANDBOX_COMMAND_TIMEOUT_MS = 120_000;
 const SANDBOX_MAX_OUTPUT_CHARS = 1_500;
+const SANDBOX_OUTPUT_MAX_BYTES = SANDBOX_MAX_OUTPUT_CHARS * 6;
+const DOCKER_MUX_HEADER_BYTES = 8;
+const DOCKER_MUX_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const ENABLE_CONVERSATION_AI_TITLE = /^(1|true)$/i.test(
   process.env.CONVERSATION_ENABLE_AI_TITLE?.trim() ?? "",
 );
@@ -253,6 +259,118 @@ const buildRelevantProjectFileContext = (args: {
   return selectedBlocks;
 };
 
+const sanitizeCommandOutput = (value: string) => {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .replace(/\uFFFD/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .trim();
+};
+
+const buildCommandOutputPreview = (output: string) => {
+  const normalized = sanitizeCommandOutput(output);
+  if (!normalized) {
+    return "";
+  }
+
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0);
+
+  if (lines.length === 0) {
+    return "";
+  }
+
+  const joined = lines.join("\n");
+  if (joined.length <= SANDBOX_MAX_OUTPUT_CHARS && lines.length <= 20) {
+    return joined;
+  }
+
+  const head = lines.slice(0, 8);
+  const tail = lines.slice(-8);
+  const omitted = Math.max(0, lines.length - head.length - tail.length);
+
+  return [
+    ...head,
+    omitted > 0 ? `... [${omitted} lines omitted] ...` : "",
+    ...tail,
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, SANDBOX_MAX_OUTPUT_CHARS);
+};
+
+const createExecOutputCollector = (maxBytes: number) => {
+  const chunks: Buffer[] = [];
+  let totalLength = 0;
+  let pending = Buffer.alloc(0);
+  let parseAsMux = true;
+
+  const appendChunk = (chunk: Buffer) => {
+    if (chunk.length === 0 || totalLength >= maxBytes) {
+      return;
+    }
+
+    const remaining = maxBytes - totalLength;
+    const nextChunk =
+      chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
+    chunks.push(nextChunk);
+    totalLength += nextChunk.length;
+  };
+
+  const push = (chunk: Buffer) => {
+    if (!parseAsMux) {
+      appendChunk(chunk);
+      return;
+    }
+
+    pending = Buffer.concat([pending, chunk]);
+
+    while (pending.length >= DOCKER_MUX_HEADER_BYTES) {
+      const streamType = pending[0];
+      const hasReservedZeroes =
+        pending[1] === 0 && pending[2] === 0 && pending[3] === 0;
+      const frameSize = pending.readUInt32BE(4);
+
+      const looksLikeHeader =
+        (streamType === 0 || streamType === 1 || streamType === 2) &&
+        hasReservedZeroes &&
+        frameSize >= 0 &&
+        frameSize <= DOCKER_MUX_MAX_FRAME_BYTES;
+
+      if (!looksLikeHeader) {
+        parseAsMux = false;
+        appendChunk(pending);
+        pending = Buffer.alloc(0);
+        return;
+      }
+
+      const fullFrameSize = DOCKER_MUX_HEADER_BYTES + frameSize;
+      if (pending.length < fullFrameSize) {
+        return;
+      }
+
+      appendChunk(pending.subarray(DOCKER_MUX_HEADER_BYTES, fullFrameSize));
+      pending = pending.subarray(fullFrameSize);
+    }
+  };
+
+  const finish = () => {
+    if (pending.length > 0) {
+      appendChunk(pending);
+      pending = Buffer.alloc(0);
+    }
+
+    return sanitizeCommandOutput(Buffer.concat(chunks).toString("utf-8"));
+  };
+
+  return {
+    push,
+    finish,
+  };
+};
+
 /**
  * Execute a shell command inside a Docker container and capture output.
  * Returns the exit code and captured stdout/stderr text.
@@ -277,9 +395,7 @@ const execCommandInContainer = async (args: {
   const execStream = await exec.start({ Detach: false, Tty: false });
 
   return new Promise((resolve) => {
-    const chunks: Buffer[] = [];
-    let totalLength = 0;
-    const maxBytes = SANDBOX_MAX_OUTPUT_CHARS * 2;
+    const outputCollector = createExecOutputCollector(SANDBOX_OUTPUT_MAX_BYTES);
     let timedOut = false;
 
     const timeoutId = setTimeout(() => {
@@ -293,10 +409,7 @@ const execCommandInContainer = async (args: {
     }, args.timeoutMs ?? SANDBOX_COMMAND_TIMEOUT_MS);
 
     execStream.on("data", (chunk: Buffer) => {
-      if (totalLength < maxBytes) {
-        chunks.push(chunk);
-        totalLength += chunk.length;
-      }
+      outputCollector.push(chunk);
     });
 
     execStream.on("end", () => {
@@ -306,14 +419,14 @@ const execCommandInContainer = async (args: {
       exec
         .inspect()
         .then((info) => {
-          const output = Buffer.concat(chunks)
-            .toString("utf-8")
+          const output = outputCollector
+            .finish()
             .slice(0, SANDBOX_MAX_OUTPUT_CHARS);
           resolve({ exitCode: info.ExitCode ?? 0, output });
         })
         .catch(() => {
-          const output = Buffer.concat(chunks)
-            .toString("utf-8")
+          const output = outputCollector
+            .finish()
             .slice(0, SANDBOX_MAX_OUTPUT_CHARS);
           resolve({ exitCode: 1, output });
         });
@@ -322,8 +435,8 @@ const execCommandInContainer = async (args: {
     execStream.on("error", () => {
       if (timedOut) return;
       clearTimeout(timeoutId);
-      const output = Buffer.concat(chunks)
-        .toString("utf-8")
+      const output = outputCollector
+        .finish()
         .slice(0, SANDBOX_MAX_OUTPUT_CHARS);
       resolve({ exitCode: 1, output });
     });
@@ -343,14 +456,18 @@ const ensureSandboxForProject = async (args: {
   // Create session if it doesn't already exist
   const existing = getSession(sessionId);
   if (!existing) {
-    await createSession(sessionId, "node");
+    await createSession(sessionId, "node", {
+      projectKey: String(args.projectId),
+    });
   }
 
   // Sync project files into the container
   const filesToSync = args.projectFiles
     .filter(
-      (file): file is ConversationProjectFile & { type: "file"; content: string } =>
-        file.type === "file" && typeof file.content === "string" && file.content.length > 0,
+      (
+        file,
+      ): file is ConversationProjectFile & { type: "file"; content: string } =>
+        file.type === "file" && typeof file.content === "string",
     )
     .map((file) => ({ path: file.path, content: file.content }));
 
@@ -363,6 +480,146 @@ const ensureSandboxForProject = async (args: {
 
 /** Track sandbox session IDs created during Inngest execution for cleanup. */
 const activeSandboxSessions = new Map<string, string>();
+const sandboxNeedsResync = new Map<string, boolean>();
+
+const markSandboxDirty = (projectId: Id<"projects">) => {
+  sandboxNeedsResync.set(projectId, true);
+};
+
+const loadLatestProjectFilesForSandbox = async (
+  projectId: Id<"projects">,
+): Promise<ConversationProjectFile[]> => {
+  const latestFiles = await convex.query(api.system.getProjectFiles, {
+    projectId,
+  });
+
+  const latestFileNodes: ProjectFileTreeNode[] = latestFiles.map((file) => ({
+    name: file.name,
+    type: file.type,
+    parentId: file.parentId ?? null,
+    _id: file._id,
+    content: file.content,
+  }));
+
+  return buildConversationProjectFiles(latestFileNodes);
+};
+
+const normalizeSandboxPath = (path: string) =>
+  path.trim().replace(/\\/g, "/").replace(/^\/+/g, "");
+
+const toWorkspacePath = (path: string) =>
+  `/workspace/${normalizeSandboxPath(path)}`;
+
+const quoteForShell = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+
+const getParentPath = (path: string) => {
+  const normalized = normalizeSandboxPath(path);
+  const separatorIndex = normalized.lastIndexOf("/");
+  if (separatorIndex <= 0) {
+    return "";
+  }
+
+  return normalized.slice(0, separatorIndex);
+};
+
+const execContainerShell = async (args: {
+  sessionId: string;
+  command: string;
+}) => {
+  const container = getContainer(args.sessionId);
+  if (!container) {
+    throw new Error(`Sandbox session ${args.sessionId} not found`);
+  }
+
+  const exec = await container.exec({
+    Cmd: ["/bin/sh", "-c", args.command],
+    AttachStdout: true,
+    AttachStderr: true,
+    WorkingDir: "/workspace",
+  });
+
+  const stream = await exec.start({ Detach: false, Tty: false });
+  await new Promise<void>((resolve, reject) => {
+    stream.on("end", resolve);
+    stream.on("error", reject);
+    stream.resume();
+  });
+
+  const info = await exec.inspect();
+  if ((info.ExitCode ?? 0) !== 0) {
+    throw new Error(
+      `Container command failed (exit ${info.ExitCode ?? 1}): ${args.command}`,
+    );
+  }
+};
+
+const syncAppliedOperationToActiveSandbox = async (args: {
+  projectId: Id<"projects">;
+  operation: ConversationFileOperation;
+}) => {
+  const sessionId = activeSandboxSessions.get(args.projectId);
+  if (!sessionId) {
+    markSandboxDirty(args.projectId);
+    return;
+  }
+
+  try {
+    if (
+      args.operation.type === "create_file" ||
+      args.operation.type === "update_file"
+    ) {
+      await syncFileToContainer(
+        sessionId,
+        args.operation.path,
+        args.operation.content,
+      );
+      sandboxNeedsResync.set(args.projectId, false);
+      return;
+    }
+
+    if (args.operation.type === "create_folder") {
+      await execContainerShell({
+        sessionId,
+        command: `mkdir -p ${quoteForShell(toWorkspacePath(args.operation.path))}`,
+      });
+      sandboxNeedsResync.set(args.projectId, false);
+      return;
+    }
+
+    if (args.operation.type === "delete_path") {
+      await execContainerShell({
+        sessionId,
+        command: `rm -rf ${quoteForShell(toWorkspacePath(args.operation.path))}`,
+      });
+      sandboxNeedsResync.set(args.projectId, false);
+      return;
+    }
+
+    if (args.operation.type === "rename_path") {
+      const targetParent = getParentPath(args.operation.newPath);
+      if (targetParent && args.operation.createMissingParents !== false) {
+        await execContainerShell({
+          sessionId,
+          command: `mkdir -p ${quoteForShell(`/workspace/${targetParent}`)}`,
+        });
+      }
+
+      await execContainerShell({
+        sessionId,
+        command: `mv ${quoteForShell(toWorkspacePath(args.operation.path))} ${quoteForShell(toWorkspacePath(args.operation.newPath))}`,
+      });
+      sandboxNeedsResync.set(args.projectId, false);
+      return;
+    }
+  } catch (error) {
+    console.warn("conversation.sandbox.sync-operation.failed", {
+      projectId: args.projectId,
+      operationType: args.operation.type,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    markSandboxDirty(args.projectId);
+  }
+};
 
 const executeConversationFileOperation = async (args: {
   projectId: Id<"projects">;
@@ -372,7 +629,10 @@ const executeConversationFileOperation = async (args: {
   const { projectId, operation } = args;
 
   try {
-    if (operation.type === "run_command" || operation.type === "start_background_command") {
+    if (
+      operation.type === "run_command" ||
+      operation.type === "start_background_command"
+    ) {
       const fullCommand = [
         operation.command,
         ...(operation.commandArgs ?? []),
@@ -383,14 +643,21 @@ const executeConversationFileOperation = async (args: {
           : "command";
 
       try {
-        // Ensure sandbox exists (lazy-create on first command)
+        // Ensure sandbox exists and is synced to latest project state.
         let sessionId = activeSandboxSessions.get(projectId);
-        if (!sessionId) {
+        const needsResync =
+          !sessionId || sandboxNeedsResync.get(projectId) !== false;
+
+        if (!sessionId || needsResync) {
+          const latestProjectFiles =
+            await loadLatestProjectFilesForSandbox(projectId);
+
           sessionId = await ensureSandboxForProject({
             projectId: projectId as Id<"projects">,
-            projectFiles: args.projectFiles ?? [],
+            projectFiles: latestProjectFiles,
           });
           activeSandboxSessions.set(projectId, sessionId);
+          sandboxNeedsResync.set(projectId, false);
         }
 
         const result = await execCommandInContainer({
@@ -399,8 +666,11 @@ const executeConversationFileOperation = async (args: {
           timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS,
         });
 
-        const outputPreview = result.output.trim().slice(0, SANDBOX_MAX_OUTPUT_CHARS);
-        const exitLabel = result.exitCode === 0 ? "succeeded" : `failed (exit ${result.exitCode})`;
+        const outputPreview = buildCommandOutputPreview(result.output);
+        const exitLabel =
+          result.exitCode === 0
+            ? "succeeded"
+            : `failed (exit ${result.exitCode})`;
 
         return {
           status: result.exitCode === 0 ? "applied" : "failed",
@@ -434,6 +704,8 @@ const executeConversationFileOperation = async (args: {
         overwrite: operation.overwrite,
       });
 
+      await syncAppliedOperationToActiveSandbox({ projectId, operation });
+
       return {
         status: "applied",
         message:
@@ -448,6 +720,10 @@ const executeConversationFileOperation = async (args: {
         projectId,
         path: operation.path,
       });
+
+      if (result.action === "created") {
+        await syncAppliedOperationToActiveSandbox({ projectId, operation });
+      }
 
       return {
         status: result.action === "created" ? "applied" : "skipped",
@@ -465,6 +741,8 @@ const executeConversationFileOperation = async (args: {
         content: operation.content,
         createIfMissing: operation.createIfMissing,
       });
+
+      await syncAppliedOperationToActiveSandbox({ projectId, operation });
 
       return {
         status: "applied",
@@ -490,6 +768,8 @@ const executeConversationFileOperation = async (args: {
 
       const nestedCount = result.deletedCount - 1;
 
+      await syncAppliedOperationToActiveSandbox({ projectId, operation });
+
       return {
         status: "applied",
         message:
@@ -512,6 +792,8 @@ const executeConversationFileOperation = async (args: {
         message: `Path ${result.path} is already named ${result.newPath}.`,
       };
     }
+
+    await syncAppliedOperationToActiveSandbox({ projectId, operation });
 
     return {
       status: "applied",
@@ -768,10 +1050,7 @@ const describeTraceOperation = (operation: AiPipelineOperation): string => {
 const buildExecutionTraceSummary = (
   reasoningDetails: unknown,
 ): string | null => {
-  if (
-    typeof reasoningDetails !== "object" ||
-    reasoningDetails === null
-  ) {
+  if (typeof reasoningDetails !== "object" || reasoningDetails === null) {
     return null;
   }
 
@@ -797,9 +1076,7 @@ const buildExecutionTraceSummary = (
       .map((r) => describeTraceOperation(r.operation))
       .slice(0, 15);
     const suffix =
-      appliedFiles.length > 15
-        ? ` (+${appliedFiles.length - 15} more)`
-        : "";
+      appliedFiles.length > 15 ? ` (+${appliedFiles.length - 15} more)` : "";
     lines.push(
       `- Created/modified ${appliedFiles.length} files: ${filePaths.join(", ")}${suffix}`,
     );
@@ -825,9 +1102,7 @@ const buildExecutionTraceSummary = (
     if (cmd.status === "applied") {
       lines.push(`- Ran: ${cmdDesc} → OK`);
     } else if (cmd.status === "failed") {
-      lines.push(
-        `- Ran: ${cmdDesc} → FAILED: ${cmd.message.slice(0, 200)}`,
-      );
+      lines.push(`- Ran: ${cmdDesc} → FAILED: ${cmd.message.slice(0, 200)}`);
     } else if (cmd.status === "skipped") {
       lines.push(`- Skipped: ${cmdDesc} — ${cmd.message.slice(0, 100)}`);
     }
