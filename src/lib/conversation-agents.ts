@@ -76,9 +76,13 @@ const parsePositiveInt = (value: string | undefined, fallback: number) => {
   return parsed;
 };
 
-const FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS = parsePositiveInt(
-  process.env.CONVERSATION_FILE_OPS_MAX_OUTPUT_TOKENS?.trim(),
-  65_536,
+const FILE_OPS_PLANNER_MIN_OUTPUT_TOKENS = 8_192;
+const FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS = Math.max(
+  FILE_OPS_PLANNER_MIN_OUTPUT_TOKENS,
+  parsePositiveInt(
+    process.env.CONVERSATION_FILE_OPS_MAX_OUTPUT_TOKENS?.trim(),
+    65_536,
+  ),
 );
 const MAX_PLANNER_CALLS_PER_REQUEST = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_MAX_CALLS_PER_REQUEST?.trim(),
@@ -152,7 +156,7 @@ const STRICT_EXECUTION_ACTION_PATTERN =
 const PROJECT_SCOPED_EXECUTION_PATTERN =
   /\b(in (?:my|the|this) (?:project|workspace|repo|repository|codebase)|on this codebase|in your codebase|for this project)\b/i;
 const EXECUTION_FRUSTRATION_PATTERN =
-  /\b(not\s+execut(?:e|ing)|just\s+giv(?:e|ing)\s+code|only\s+giv(?:e|ing)\s+code|not\s+just\s+code|dont\s+just\s+give\s+code|don't\s+just\s+give\s+code)\b/i;
+  /\b(not\s+execut(?:e|ing)|just\s+giv(?:e|ing)\s+code|only\s+giv(?:e|ing)\s+code|plain\s+code(?:\s+only)?|only\s+plain\s+code|not\s+(?:making|creating|writing)\s+files?|not\s+generat(?:e|ing)\s+files?|not\s+updat(?:e|ing)\s+files?|not\s+just\s+code|dont\s+just\s+give\s+code|don't\s+just\s+give\s+code)\b/i;
 const STRICT_FILE_OPS_GATE_ENABLED = !/^(0|false)$/i.test(
   process.env.CONVERSATION_STRICT_FILE_OPS_GATE?.trim() ?? "true",
 );
@@ -169,9 +173,7 @@ const NEXTJS_REQUIRED_SCAFFOLD_FILE_PATHS = [
   "src/app/globals.css",
 ] as const;
 
-const inferCallBudget = (
-  input: ConversationOrchestrationInput,
-): number => {
+const inferCallBudget = (input: ConversationOrchestrationInput): number => {
   const message = input.message;
   const isComplex =
     ENABLE_COMPLEX_BUILD_CHUNKING &&
@@ -777,7 +779,9 @@ const runAgentTextWithFallback = async (args: {
           content: args.prompt,
         },
       ],
-      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+      ...(args.reasoningEffort
+        ? { reasoningEffort: args.reasoningEffort }
+        : {}),
     });
 
     const fallbackText = fallback.content.trim();
@@ -1423,8 +1427,7 @@ const ensureDependencyInstallOperation = (
 
 const COMMON_IMPORT_PATTERN =
   /(?:^|\n)\s*import\s+(?:[^;]*?)\s+from\s+["']([^"'./][^"']*)["']/g;
-const COMMON_REQUIRE_PATTERN =
-  /\brequire\s*\(\s*["']([^"'./][^"']*)["']\s*\)/g;
+const COMMON_REQUIRE_PATTERN = /\brequire\s*\(\s*["']([^"'./][^"']*)["']\s*\)/g;
 
 const extractImportedPackageNames = (sourceCode: string): Set<string> => {
   const packages = new Set<string>();
@@ -1450,21 +1453,75 @@ const extractImportedPackageNames = (sourceCode: string): Set<string> => {
 };
 
 const NODE_BUILTIN_MODULES = new Set([
-  "assert", "buffer", "child_process", "cluster", "crypto", "dgram", "dns",
-  "events", "fs", "http", "http2", "https", "net", "os", "path", "perf_hooks",
-  "process", "querystring", "readline", "stream", "string_decoder", "timers",
-  "tls", "tty", "url", "util", "v8", "vm", "worker_threads", "zlib",
-  "node:assert", "node:buffer", "node:child_process", "node:cluster",
-  "node:crypto", "node:dgram", "node:dns", "node:events", "node:fs",
-  "node:http", "node:http2", "node:https", "node:net", "node:os", "node:path",
-  "node:perf_hooks", "node:process", "node:querystring", "node:readline",
-  "node:stream", "node:string_decoder", "node:timers", "node:tls", "node:tty",
-  "node:url", "node:util", "node:v8", "node:vm", "node:worker_threads",
-  "node:zlib", "node:test",
+  "assert",
+  "buffer",
+  "child_process",
+  "cluster",
+  "crypto",
+  "dgram",
+  "dns",
+  "events",
+  "fs",
+  "http",
+  "http2",
+  "https",
+  "net",
+  "os",
+  "path",
+  "perf_hooks",
+  "process",
+  "querystring",
+  "readline",
+  "stream",
+  "string_decoder",
+  "timers",
+  "tls",
+  "tty",
+  "url",
+  "util",
+  "v8",
+  "vm",
+  "worker_threads",
+  "zlib",
+  "node:assert",
+  "node:buffer",
+  "node:child_process",
+  "node:cluster",
+  "node:crypto",
+  "node:dgram",
+  "node:dns",
+  "node:events",
+  "node:fs",
+  "node:http",
+  "node:http2",
+  "node:https",
+  "node:net",
+  "node:os",
+  "node:path",
+  "node:perf_hooks",
+  "node:process",
+  "node:querystring",
+  "node:readline",
+  "node:stream",
+  "node:string_decoder",
+  "node:timers",
+  "node:tls",
+  "node:tty",
+  "node:url",
+  "node:util",
+  "node:v8",
+  "node:vm",
+  "node:worker_threads",
+  "node:zlib",
+  "node:test",
 ]);
 
 const FRAMEWORK_IMPLICIT_PACKAGES = new Set([
-  "react", "react-dom", "next", "react/jsx-runtime", "react/jsx-dev-runtime",
+  "react",
+  "react-dom",
+  "next",
+  "react/jsx-runtime",
+  "react/jsx-dev-runtime",
 ]);
 
 const validatePackageJsonDependencies = (
@@ -1482,7 +1539,10 @@ const validatePackageJsonDependencies = (
   if (packageJsonOpIndex === -1) return operations;
 
   const packageJsonOp = operations[packageJsonOpIndex]!;
-  if (packageJsonOp.type !== "create_file" && packageJsonOp.type !== "update_file") {
+  if (
+    packageJsonOp.type !== "create_file" &&
+    packageJsonOp.type !== "update_file"
+  ) {
     return operations;
   }
 
@@ -1527,13 +1587,15 @@ const validatePackageJsonDependencies = (
     if (NODE_BUILTIN_MODULES.has(pkg)) continue;
     if (FRAMEWORK_IMPLICIT_PACKAGES.has(pkg)) continue;
     // Skip path aliases and relative imports that slipped through
-    if (pkg.startsWith("@/") || pkg.startsWith("~/") || pkg.startsWith(".")) continue;
+    if (pkg.startsWith("@/") || pkg.startsWith("~/") || pkg.startsWith("."))
+      continue;
     missingPackages.push(pkg);
   }
 
   // Detect framework-essential dev dependencies that are ALWAYS needed
   // but the AI frequently forgets to include
-  const frameworkEssentialPackages: Array<{ name: string; version: string }> = [];
+  const frameworkEssentialPackages: Array<{ name: string; version: string }> =
+    [];
 
   const hasVite = existingDeps.has("vite") || allImportedPackages.has("vite");
   const hasReactFiles = operations.some(
@@ -1548,8 +1610,16 @@ const validatePackageJsonDependencies = (
   );
 
   // Vite + React → always needs @vitejs/plugin-react
-  if ((hasVite || hasViteConfig) && hasReactFiles && !existingDeps.has("@vitejs/plugin-react") && !existingDeps.has("@vitejs/plugin-react-swc")) {
-    frameworkEssentialPackages.push({ name: "@vitejs/plugin-react", version: "^4" });
+  if (
+    (hasVite || hasViteConfig) &&
+    hasReactFiles &&
+    !existingDeps.has("@vitejs/plugin-react") &&
+    !existingDeps.has("@vitejs/plugin-react-swc")
+  ) {
+    frameworkEssentialPackages.push({
+      name: "@vitejs/plugin-react",
+      version: "^4",
+    });
   }
 
   // Tailwind CSS → always needs postcss and autoprefixer
@@ -1576,17 +1646,22 @@ const validatePackageJsonDependencies = (
   }
 
   // React projects → need @types/react and @types/react-dom
-  if (hasReactFiles && (existingDeps.has("react") || allImportedPackages.has("react"))) {
+  if (
+    hasReactFiles &&
+    (existingDeps.has("react") || allImportedPackages.has("react"))
+  ) {
     if (!existingDeps.has("@types/react")) {
       frameworkEssentialPackages.push({ name: "@types/react", version: "^18" });
     }
     if (!existingDeps.has("@types/react-dom")) {
-      frameworkEssentialPackages.push({ name: "@types/react-dom", version: "^18" });
+      frameworkEssentialPackages.push({
+        name: "@types/react-dom",
+        version: "^18",
+      });
     }
   }
 
   const hasFrameworkEssentialGaps = frameworkEssentialPackages.length > 0;
-
 
   if (missingPackages.length === 0 && !hasFrameworkEssentialGaps) {
     return operations;
@@ -1594,21 +1669,24 @@ const validatePackageJsonDependencies = (
 
   console.info("conversation.planner.dep-prevalidation.fixing", {
     missingPackages,
-    frameworkEssentials: frameworkEssentialPackages.length > 0 ? frameworkEssentialPackages : undefined,
+    frameworkEssentials:
+      frameworkEssentialPackages.length > 0
+        ? frameworkEssentialPackages
+        : undefined,
     existingDepCount: existingDeps.size,
   });
 
   // Add missing packages to dependencies with "latest" version
-  const deps = (
-    typeof packageJson.dependencies === "object" && packageJson.dependencies !== null
+  const deps =
+    typeof packageJson.dependencies === "object" &&
+    packageJson.dependencies !== null
       ? { ...(packageJson.dependencies as Record<string, string>) }
-      : {}
-  );
-  const devDeps = (
-    typeof packageJson.devDependencies === "object" && packageJson.devDependencies !== null
+      : {};
+  const devDeps =
+    typeof packageJson.devDependencies === "object" &&
+    packageJson.devDependencies !== null
       ? { ...(packageJson.devDependencies as Record<string, string>) }
-      : {}
-  );
+      : {};
 
   for (const pkg of missingPackages) {
     deps[pkg] = "latest";
@@ -1636,7 +1714,6 @@ const validatePackageJsonDependencies = (
   result[packageJsonOpIndex] = updatedOp;
   return result;
 };
-
 
 const parseFileOperation = (
   value: unknown,
@@ -2151,6 +2228,39 @@ const inferConversationIntent = (message: string): ConversationIntent => {
   return "analysis";
 };
 
+const COMMAND_ONLY_REQUEST_PATTERN =
+  /\b(run|execute|install|uninstall|upgrade|downgrade|command|commands|terminal|script|scripts|dependency|dependencies|package\.json|npm|pnpm|yarn|bun)\b/i;
+const FILE_MUTATION_REQUEST_PATTERN =
+  /\b(create|add|delete|remove|rename|move|update|edit|modify|write|rewrite|refactor|fix|implement|generate|scaffold|setup|build|component|page|route|endpoint|api|file|files|folder|folders|project|app|codebase)\b/i;
+
+const isExplicitCommandOnlyRequest = (message: string) => {
+  const hasCommandSignal = COMMAND_ONLY_REQUEST_PATTERN.test(message);
+  const hasMutationSignal = FILE_MUTATION_REQUEST_PATTERN.test(message);
+  const hasPathSignal = FILE_OPERATION_PATH_HINT_PATTERN.test(message);
+
+  return hasCommandSignal && !hasMutationSignal && !hasPathSignal;
+};
+
+const hasFilesystemMutationOperation = (
+  operations: ConversationFileOperation[],
+) =>
+  operations.some(
+    (operation) =>
+      operation.type !== "run_command" &&
+      operation.type !== "start_background_command",
+  );
+
+const shouldRequireFilesystemMutationOperations = (
+  input: ConversationOrchestrationInput,
+) => {
+  const intent = inferConversationIntent(input.message);
+  if (intent === "analysis") {
+    return false;
+  }
+
+  return !isExplicitCommandOnlyRequest(input.message);
+};
+
 const validateFileOperationPlan = (operations: ConversationFileOperation[]) => {
   const issues: string[] = [];
 
@@ -2477,16 +2587,20 @@ const shouldPlanFileOperations = (input: ConversationOrchestrationInput) => {
 const shouldRequireExecutableFileOperations = (
   input: ConversationOrchestrationInput,
 ) => {
-  if (!STRICT_FILE_OPS_GATE_ENABLED) {
-    return false;
-  }
-
   const message = input.message;
   const intent = inferConversationIntent(message);
   const hasExecutionFrustrationSignal =
     EXECUTION_FRUSTRATION_PATTERN.test(message);
+
+  if (hasExecutionFrustrationSignal) {
+    return true;
+  }
+
+  if (!STRICT_FILE_OPS_GATE_ENABLED) {
+    return false;
+  }
+
   const hasExplicitExecutionDirective =
-    hasExecutionFrustrationSignal ||
     STRICT_EXECUTION_ACTION_PATTERN.test(message) ||
     /\b(do(?:\s+the)?\s+(?:change|changes|work|implementation)|make(?:\s+the)?\s+changes|apply(?:\s+the)?\s+changes?)\b/i.test(
       message,
@@ -2894,7 +3008,10 @@ const planConversationFileOperations = async (
       input.projectFiles,
     ).slice(0, MAX_FILE_OPERATIONS_PER_RUN);
 
-    return toPlanResult(deterministicOperations, "deterministic-nextjs-scaffold");
+    return toPlanResult(
+      deterministicOperations,
+      "deterministic-nextjs-scaffold",
+    );
   }
 
   const runPlanner = async (args: {
@@ -2971,8 +3088,8 @@ const planConversationFileOperations = async (
   const collectPlanIssues = (
     operations: ConversationFileOperation[],
     validationInput: ConversationOrchestrationInput = input,
-  ) =>
-    Array.from(
+  ) => {
+    const issues = Array.from(
       new Set([
         ...validateFileOperationPlan(operations),
         ...validateNextJsScaffoldPlan({
@@ -2981,6 +3098,19 @@ const planConversationFileOperations = async (
         }),
       ]),
     );
+
+    if (
+      operations.length > 0 &&
+      shouldRequireFilesystemMutationOperations(validationInput) &&
+      !hasFilesystemMutationOperation(operations)
+    ) {
+      issues.push(
+        "Plan must include at least one filesystem operation (create/update/delete/rename file or folder) for this request.",
+      );
+    }
+
+    return Array.from(new Set(issues));
+  };
 
   try {
     console.info("conversation.planner.start", {
@@ -3030,19 +3160,28 @@ const planConversationFileOperations = async (
         const previousKeyFileContents: string[] = [];
         if (workingProjectFiles.length > 0) {
           const keyPatterns = [
-            "package.json", "tsconfig.json", "next.config.mjs", "next.config.mjs",
-            "vite.config.ts", "tailwind.config.ts", "postcss.config.mjs",
-            "src/app/layout.tsx", "src/app/globals.css",
+            "package.json",
+            "tsconfig.json",
+            "next.config.mjs",
+            "next.config.mjs",
+            "vite.config.ts",
+            "tailwind.config.ts",
+            "postcss.config.mjs",
+            "src/app/layout.tsx",
+            "src/app/globals.css",
           ];
           for (const pattern of keyPatterns) {
             const file = workingProjectFiles.find(
               (f) => f.type === "file" && f.path === pattern && f.content,
             );
             if (file?.content) {
-              const truncated = file.content.length > 4_000
-                ? `${file.content.slice(0, 4_000)}\n/* ...truncated... */`
-                : file.content;
-              previousKeyFileContents.push(`--- ${file.path} ---\n${truncated}`);
+              const truncated =
+                file.content.length > 4_000
+                  ? `${file.content.slice(0, 4_000)}\n/* ...truncated... */`
+                  : file.content;
+              previousKeyFileContents.push(
+                `--- ${file.path} ---\n${truncated}`,
+              );
             }
           }
         }
@@ -3106,7 +3245,8 @@ const planConversationFileOperations = async (
         for (
           let retryIndex = 1;
           retryIndex <= maxChunkRetries &&
-          (selectedChunkOperations.length === 0 || selectedChunkIssues.length > 0);
+          (selectedChunkOperations.length === 0 ||
+            selectedChunkIssues.length > 0);
           retryIndex += 1
         ) {
           const retryPrompt = buildFileOperationPlannerRetryPrompt(
@@ -3169,13 +3309,14 @@ const planConversationFileOperations = async (
 
         chunkSummaries.push(`${chunk.title}: ${chunk.goal}`);
         chunkOutputs.push(
-          [
-            `chunk-${chunkIndex + 1}: ${chunk.title}`,
-            selectedChunkOutput,
-          ].join("\n"),
+          [`chunk-${chunkIndex + 1}: ${chunk.title}`, selectedChunkOutput].join(
+            "\n",
+          ),
         );
 
-        if (aggregateChunkOperations.length >= MAX_FILE_OPERATIONS_PER_COMPLEX_RUN) {
+        if (
+          aggregateChunkOperations.length >= MAX_FILE_OPERATIONS_PER_COMPLEX_RUN
+        ) {
           break;
         }
       }
@@ -3188,15 +3329,14 @@ const planConversationFileOperations = async (
             maxOperations: MAX_FILE_OPERATIONS_PER_COMPLEX_RUN,
           },
         );
-        const aggregateIssues = collectPlanIssues(normalizedAggregateOperations);
+        const aggregateIssues = collectPlanIssues(
+          normalizedAggregateOperations,
+        );
 
         if (aggregateIssues.length === 0) {
           return toPlanResult(
             normalizedAggregateOperations,
-            mergePlannerOutputs(
-              "chunked-complex-build",
-              ...chunkOutputs,
-            ),
+            mergePlannerOutputs("chunked-complex-build", ...chunkOutputs),
           );
         }
 
@@ -3222,7 +3362,9 @@ const planConversationFileOperations = async (
     });
 
     let selectedOutput = plannerOutput;
-    let selectedOperations = normalizeOperations(extractOperations(plannerOutput));
+    let selectedOperations = normalizeOperations(
+      extractOperations(plannerOutput),
+    );
     let selectedIssues = collectPlanIssues(selectedOperations);
 
     console.info("conversation.planner.result", {
@@ -3266,7 +3408,9 @@ const planConversationFileOperations = async (
         preferredModel: pickAvailableModel(FILE_OPS_MODEL),
       });
 
-      const retryOperations = normalizeOperations(extractOperations(retryOutput));
+      const retryOperations = normalizeOperations(
+        extractOperations(retryOutput),
+      );
       const retryValidationIssues = collectPlanIssues(retryOperations);
 
       console.info("conversation.planner.retry-result", {
@@ -4150,7 +4294,10 @@ export const runConversationAgentOrchestration = async (
         `fixup-${fixupIteration}`,
         {
           preferredModel: fixupModel,
-          callBudget: { used: plannerCallsUsed, max: MAX_PLANNER_CALLS_PER_REQUEST },
+          callBudget: {
+            used: plannerCallsUsed,
+            max: MAX_PLANNER_CALLS_PER_REQUEST,
+          },
         },
       );
       plannerCallsUsed += 1;
@@ -4183,8 +4330,12 @@ export const runConversationAgentOrchestration = async (
           allOperations = [...allOperations, ...normalizedFixupOps];
           operationResults = [...operationResults, ...fixupResults];
 
-          const fixupApplied = fixupResults.filter((r) => r.status === "applied").length;
-          const fixupFailed = fixupResults.filter((r) => r.status === "failed").length;
+          const fixupApplied = fixupResults.filter(
+            (r) => r.status === "applied",
+          ).length;
+          const fixupFailed = fixupResults.filter(
+            (r) => r.status === "failed",
+          ).length;
 
           console.info("conversation.planner.fixup.applied", {
             iteration: fixupIteration,
@@ -4283,11 +4434,10 @@ export const runConversationAgentOrchestration = async (
     };
   }
 
-  const plannerCallBudgetNearLimit =
-    plannerCallsUsed >= 2;
+  const plannerCallBudgetNearLimit = plannerCallsUsed >= 2;
 
   const useReducedAgentPlan =
-plannerCallBudgetNearLimit ||
+    plannerCallBudgetNearLimit ||
     [SUPERVISOR_MODEL, SPECIALIST_MODEL, SYNTHESIS_MODEL, FILE_OPS_MODEL].some(
       (model) => isGeminiModelCoolingDown(model.trim()),
     );
@@ -4376,7 +4526,6 @@ plannerCallBudgetNearLimit ||
       });
     }
   }
-
 
   let content = "";
 
