@@ -4287,7 +4287,7 @@ export const runConversationAgentOrchestration = async (
     plannerCallsUsed >= 2;
 
   const useReducedAgentPlan =
-    plannerCallBudgetNearLimit ||
+plannerCallBudgetNearLimit ||
     [SUPERVISOR_MODEL, SPECIALIST_MODEL, SYNTHESIS_MODEL, FILE_OPS_MODEL].some(
       (model) => isGeminiModelCoolingDown(model.trim()),
     );
@@ -4349,9 +4349,11 @@ export const runConversationAgentOrchestration = async (
 
   const assignments = normalizeAssignments(parsedPlan, input);
 
-  const settledReports = await Promise.allSettled(
-    assignments.map(async (assignment) => {
-      const agent = specialistAgents[assignment.agent];
+  const reports: SpecialistReport[] = [];
+
+  for (const assignment of assignments) {
+    const agent = specialistAgents[assignment.agent];
+    try {
       const content = await runAgentTextWithFallback({
         agent,
         prompt: buildSpecialistPrompt(input, assignment),
@@ -4361,30 +4363,20 @@ export const runConversationAgentOrchestration = async (
         reasoningEffort: "medium",
       });
 
-      return {
+      reports.push({
         agent: assignment.agent,
         task: assignment.task,
         content,
-      };
-    }),
-  );
+      });
+    } catch (error) {
+      reports.push({
+        agent: assignment.agent ?? "implementation",
+        task: assignment.task ?? "Provide practical implementation guidance.",
+        content: `specialist-error: ${error instanceof Error ? error.message : "unknown error"}`,
+      });
+    }
+  }
 
-  const reports: SpecialistReport[] = settledReports.map(
-    (reportResult, index) => {
-      if (reportResult.status === "fulfilled") {
-        return reportResult.value;
-      }
-
-      const fallbackAssignment = assignments[index];
-      return {
-        agent: fallbackAssignment?.agent ?? "implementation",
-        task:
-          fallbackAssignment?.task ??
-          "Provide practical implementation guidance.",
-        content: classifyError(reportResult.reason).message,
-      };
-    },
-  );
 
   let content = "";
 

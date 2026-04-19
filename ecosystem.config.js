@@ -23,5 +23,14 @@ module.exports = {
       max_memory_restart: "512M",
       exp_backoff_restart_delay: 100,
     },
+    {
+      name: "orbit-proxy",
+      script: "./dist/server/proxy.js",
+      cwd: "./",
+      env: {
+        NODE_ENV: "production",
+        ORBIT_PROXY_PORT: 3002,
+      },
+    },
   ],
 };

@@ -35,10 +35,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // The host URL uses the server's IP/hostname
-    const host = process.env.ORBIT_HOST || "localhost";
-    const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
-    const url = `${protocol}://${host}:${hostPort}`;
+    const proxyBase = process.env.NEXT_PUBLIC_PREVIEW_BASE_URL;
+    let url: string;
+    if (proxyBase) {
+      url = `${proxyBase.replace(/\/$/, "")}/__orbit_proxy_init?sessionId=${encodeURIComponent(sessionId)}&port=${containerPort}`;
+    } else {
+      // Direct access (fallback if no proxy base configured)
+      const host = process.env.ORBIT_HOST || "localhost";
+      const protocol = process.env.NODE_ENV === "production" ? "https" : "http";
+      url = `${protocol}://${host}:${hostPort}`;
+    }
 
     return NextResponse.json({ port: hostPort, url });
   } catch (error) {

@@ -5,6 +5,12 @@ import { generateGeminiCompletion, GEMINI_MODEL_DEFAULT } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
 import { buildWebContextFromText } from "@/lib/web-context";
 import {
+  createSession,
+  getSession,
+  getContainer,
+} from "@/lib/docker/session-manager";
+import { syncProjectToContainer } from "@/lib/docker/file-sync";
+import {
   type ConversationFileOperation,
   type ConversationFileOperationExecutionResult,
   type ConversationProjectFile,
@@ -26,10 +32,12 @@ import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
 const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
-const MAX_FILE_CONTEXT_CHARS = 60_000;
-const MAX_FILE_CONTEXT_CHARS_PER_FILE = 12_000;
-const MAX_CONTEXT_FILES = 24;
-const MAX_HISTORY_MESSAGES = 40;
+const MAX_FILE_CONTEXT_CHARS = 3_000;
+const MAX_FILE_CONTEXT_CHARS_PER_FILE = 1_000;
+const MAX_CONTEXT_FILES = 4;
+const MAX_HISTORY_MESSAGES = 4;
+const SANDBOX_COMMAND_TIMEOUT_MS = 120_000;
+const SANDBOX_MAX_OUTPUT_CHARS = 1_500;
 const ENABLE_CONVERSATION_AI_TITLE = /^(1|true)$/i.test(
   process.env.CONVERSATION_ENABLE_AI_TITLE?.trim() ?? "",
 );
@@ -245,27 +253,177 @@ const buildRelevantProjectFileContext = (args: {
   return selectedBlocks;
 };
 
+/**
+ * Execute a shell command inside a Docker container and capture output.
+ * Returns the exit code and captured stdout/stderr text.
+ */
+const execCommandInContainer = async (args: {
+  sessionId: string;
+  command: string;
+  timeoutMs?: number;
+}): Promise<{ exitCode: number; output: string }> => {
+  const container = getContainer(args.sessionId);
+  if (!container) {
+    throw new Error(`Sandbox session ${args.sessionId} not found`);
+  }
+
+  const exec = await container.exec({
+    Cmd: ["/bin/sh", "-c", args.command],
+    AttachStdout: true,
+    AttachStderr: true,
+    WorkingDir: "/workspace",
+  });
+
+  const execStream = await exec.start({ Detach: false, Tty: false });
+
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let totalLength = 0;
+    const maxBytes = SANDBOX_MAX_OUTPUT_CHARS * 2;
+    let timedOut = false;
+
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      try {
+        execStream.destroy();
+      } catch {
+        // Best effort
+      }
+      resolve({ exitCode: 1, output: "Command timed out." });
+    }, args.timeoutMs ?? SANDBOX_COMMAND_TIMEOUT_MS);
+
+    execStream.on("data", (chunk: Buffer) => {
+      if (totalLength < maxBytes) {
+        chunks.push(chunk);
+        totalLength += chunk.length;
+      }
+    });
+
+    execStream.on("end", () => {
+      if (timedOut) return;
+      clearTimeout(timeoutId);
+
+      exec
+        .inspect()
+        .then((info) => {
+          const output = Buffer.concat(chunks)
+            .toString("utf-8")
+            .slice(0, SANDBOX_MAX_OUTPUT_CHARS);
+          resolve({ exitCode: info.ExitCode ?? 0, output });
+        })
+        .catch(() => {
+          const output = Buffer.concat(chunks)
+            .toString("utf-8")
+            .slice(0, SANDBOX_MAX_OUTPUT_CHARS);
+          resolve({ exitCode: 1, output });
+        });
+    });
+
+    execStream.on("error", () => {
+      if (timedOut) return;
+      clearTimeout(timeoutId);
+      const output = Buffer.concat(chunks)
+        .toString("utf-8")
+        .slice(0, SANDBOX_MAX_OUTPUT_CHARS);
+      resolve({ exitCode: 1, output });
+    });
+  });
+};
+
+/**
+ * Ensure a sandbox session exists for a project and sync its files.
+ * Returns the sessionId to use for subsequent command execution.
+ */
+const ensureSandboxForProject = async (args: {
+  projectId: Id<"projects">;
+  projectFiles: ConversationProjectFile[];
+}): Promise<string> => {
+  const sessionId = `inngest-${args.projectId}`;
+
+  // Create session if it doesn't already exist
+  const existing = getSession(sessionId);
+  if (!existing) {
+    await createSession(sessionId, "node");
+  }
+
+  // Sync project files into the container
+  const filesToSync = args.projectFiles
+    .filter(
+      (file): file is ConversationProjectFile & { type: "file"; content: string } =>
+        file.type === "file" && typeof file.content === "string" && file.content.length > 0,
+    )
+    .map((file) => ({ path: file.path, content: file.content }));
+
+  if (filesToSync.length > 0) {
+    await syncProjectToContainer(sessionId, filesToSync);
+  }
+
+  return sessionId;
+};
+
+/** Track sandbox session IDs created during Inngest execution for cleanup. */
+const activeSandboxSessions = new Map<string, string>();
+
 const executeConversationFileOperation = async (args: {
   projectId: Id<"projects">;
   operation: ConversationFileOperation;
+  projectFiles?: ConversationProjectFile[];
 }): Promise<ConversationFileOperationExecutionResult> => {
   const { projectId, operation } = args;
 
   try {
-    if (operation.type === "run_command") {
-      const argsPreview = operation.commandArgs?.join(" ") ?? "";
-      return {
-        status: "applied",
-        message: `Queued runtime command: ${operation.command}${argsPreview ? ` ${argsPreview}` : ""}`,
-      };
-    }
+    if (operation.type === "run_command" || operation.type === "start_background_command") {
+      const fullCommand = [
+        operation.command,
+        ...(operation.commandArgs ?? []),
+      ].join(" ");
+      const label =
+        operation.type === "start_background_command"
+          ? `background command (${operation.key})`
+          : "command";
 
-    if (operation.type === "start_background_command") {
-      const argsPreview = operation.commandArgs?.join(" ") ?? "";
-      return {
-        status: "applied",
-        message: `Queued background command (${operation.key}): ${operation.command}${argsPreview ? ` ${argsPreview}` : ""}`,
-      };
+      try {
+        // Ensure sandbox exists (lazy-create on first command)
+        let sessionId = activeSandboxSessions.get(projectId);
+        if (!sessionId) {
+          sessionId = await ensureSandboxForProject({
+            projectId: projectId as Id<"projects">,
+            projectFiles: args.projectFiles ?? [],
+          });
+          activeSandboxSessions.set(projectId, sessionId);
+        }
+
+        const result = await execCommandInContainer({
+          sessionId,
+          command: fullCommand,
+          timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS,
+        });
+
+        const outputPreview = result.output.trim().slice(0, SANDBOX_MAX_OUTPUT_CHARS);
+        const exitLabel = result.exitCode === 0 ? "succeeded" : `failed (exit ${result.exitCode})`;
+
+        return {
+          status: result.exitCode === 0 ? "applied" : "failed",
+          message: `Executed ${label}: ${fullCommand} — ${exitLabel}.${outputPreview ? `\n${outputPreview}` : ""}`,
+          commandOutput: outputPreview || undefined,
+          commandExitCode: result.exitCode,
+        };
+      } catch (sandboxError) {
+        // If Docker isn't available, fall back to queueing for client-side execution
+        console.warn("conversation.sandbox.exec.fallback", {
+          projectId,
+          command: fullCommand,
+          error:
+            sandboxError instanceof Error
+              ? sandboxError.message
+              : String(sandboxError),
+        });
+
+        return {
+          status: "applied",
+          message: `Queued ${label} for client-side execution: ${fullCommand}`,
+        };
+      }
     }
 
     if (operation.type === "create_file") {
@@ -949,6 +1107,7 @@ export const conversationMessageRequested = inngest.createFunction(
                 return await executeConversationFileOperation({
                   projectId: conversation.projectId,
                   operation,
+                  projectFiles: conversationProjectFiles,
                 });
               },
               loadProjectFilesAfterOperations: async () => {

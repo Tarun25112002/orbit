@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL =
   typeof window !== "undefined"
-    ? `ws://${window.location.hostname}:${process.env.NEXT_PUBLIC_WS_PORT || "3001"}`
+    ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:${process.env.NEXT_PUBLIC_WS_PORT || "3001"}`
     : "";
 
 interface UseTerminalOptions {

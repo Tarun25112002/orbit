@@ -465,7 +465,7 @@ const generateGroqCompletion = async (args: {
   reasoningEffort?: "low" | "medium" | "high";
 }): Promise<GeminiCompletionResult> => {
   const groq = getGroqClient();
-  const modelId = GROQ_MODEL;
+  const modelId = args.model ?? GROQ_MODEL;
 
   const aiMessages = args.messages.map((msg) => ({
     role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
@@ -556,10 +556,14 @@ export const generateGeminiCompletion = async (args: {
   system?: string;
   reasoningEffort?: "low" | "medium" | "high";
 }): Promise<GeminiCompletionResult> => {
-  // Route through Groq when available (primary provider)
-  if (isGroqEnabled()) {
+  const modelName = (args.model ?? GEMINI_MODEL_DEFAULT).trim();
+  const isExplicitGeminiModel = modelName.toLowerCase().startsWith("gemini-");
+  const shouldUseGroq = isGroqEnabled() && !isExplicitGeminiModel;
+
+  // Route through Groq when available (primary provider) and a Gemini model isn't explicitly requested
+  if (shouldUseGroq) {
     try {
-      return await generateGroqCompletion(args);
+      return await generateGroqCompletion({ ...args, model: modelName });
     } catch (error) {
       // If Groq fails with a non-auth error and Gemini key is available, fall back
       const geminiKey = getGeminiApiKey();
@@ -581,7 +585,7 @@ export const generateGeminiCompletion = async (args: {
 
   // Gemini pathway (original logic or Groq fallback)
   const attemptBudget = getRequestAttemptBudget();
-  const modelName = (args.model ?? GEMINI_MODEL_DEFAULT).trim();
+
   const modelCandidates = applyAttemptCap(
     getGeminiModelCandidates(modelName),
     attemptBudget.maxGeminiModels,

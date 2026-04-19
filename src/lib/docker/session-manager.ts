@@ -86,7 +86,16 @@ const docker = createDockerClient();
 
 // ─── Session store ──────────────────────────────────────────────────────────
 
-const sessions = new Map<string, SandboxSession>();
+declare global {
+  // eslint-disable-next-line no-var
+  var __dockerSessions: Map<string, SandboxSession> | undefined;
+}
+
+const sessions = globalThis.__dockerSessions || new Map<string, SandboxSession>();
+if (process.env.NODE_ENV !== "production") {
+  globalThis.__dockerSessions = sessions;
+}
+
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 let networkEnsured = false;
 
