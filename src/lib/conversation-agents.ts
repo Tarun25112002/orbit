@@ -721,6 +721,7 @@ const runAgentTextWithFallback = async (args: {
   systemPrompt: string;
   model: string;
   label: string;
+  reasoningEffort?: "low" | "medium" | "high";
 }) => {
   let primaryError: unknown;
   const targetModel = args.model.trim();
@@ -769,12 +770,14 @@ const runAgentTextWithFallback = async (args: {
   try {
     const fallback = await generateGeminiCompletion({
       model: targetModel,
+      system: args.systemPrompt,
       messages: [
         {
           role: "user",
-          content: buildFallbackAgentPrompt(args.systemPrompt, args.prompt),
+          content: args.prompt,
         },
       ],
+      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
     });
 
     const fallbackText = fallback.content.trim();
@@ -4325,6 +4328,7 @@ export const runConversationAgentOrchestration = async (
         systemPrompt: SUPERVISOR_SYSTEM_PROMPT,
         model: SUPERVISOR_MODEL,
         label: "supervisor",
+        reasoningEffort: "low",
       });
       supervisorJson = extractJsonObject(supervisorText);
 
@@ -4355,6 +4359,7 @@ export const runConversationAgentOrchestration = async (
         systemPrompt: SPECIALIST_SYSTEM_PROMPTS[assignment.agent],
         model: SPECIALIST_MODEL,
         label: `specialist:${assignment.agent}`,
+        reasoningEffort: "medium",
       });
 
       return {
@@ -4406,6 +4411,7 @@ export const runConversationAgentOrchestration = async (
         systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
         model: SYNTHESIS_MODEL,
         label: "synthesis",
+        reasoningEffort: "medium",
       });
     } catch (error) {
       const classified = classifyError(error);
@@ -4437,6 +4443,7 @@ export const generateConversationTitle = async (message: string) => {
     systemPrompt: TITLE_SYSTEM_PROMPT,
     model: SPECIALIST_MODEL,
     label: "title",
+    reasoningEffort: "low",
   });
 
   return title
