@@ -1,10 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import Image from "next/image";
 import { UserButton } from "@clerk/nextjs";
-import { Plus, Search, Blocks } from "lucide-react";
-import { motion, Variants } from "framer-motion";
+import { Plus, Search, Blocks, Sparkles, Zap } from "lucide-react";
 import {
   adjectives,
   animals,
@@ -16,34 +14,40 @@ import { Kbd } from "@/components/ui/kbd";
 
 import { ProjectsCommandDialog } from "./projects-command-dialog";
 import { ProjectsList } from "./projects-list";
-import { useCreateProject } from "../hooks/use-projects";
+import { UpgradeLimitModal } from "./upgrade-limit-modal";
+import { useCreateProject, useProjects } from "../hooks/use-projects";
+import { useQuery } from "convex/react";
+import { api } from "../../../../convex/_generated/api";
+import { cn } from "@/lib/utils";
+
+const FREE_PROJECT_LIMIT = 3;
 
 export const ProjectsView = () => {
   const createProject = useCreateProject();
+  const projects = useProjects();
+  const activeSub = useQuery(api.subscriptions.getActive);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
 
-  const containerVariants: Variants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.1,
-        delayChildren: 0.1,
-      },
-    },
-  };
+  const isSubscribed = !!activeSub;
+  const projectCount = projects?.length ?? 0;
 
-  const itemVariants: Variants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: {
-      opacity: 1,
-      y: 0,
-      transition: {
-        duration: 0.6,
-        ease: "easeOut",
-      },
-    },
-  };
+  let projectLimit = 3;
+  if (isSubscribed) {
+    if (activeSub.tier === "basic") projectLimit = 10;
+    if (activeSub.tier === "pro") projectLimit = 50;
+    if (activeSub.tier === "advance") projectLimit = Infinity;
+  }
+
+  const isUnlimited = projectLimit === Infinity;
+
+  const usagePercent = isUnlimited
+    ? 0
+    : Math.min(100, (projectCount / projectLimit) * 100);
+
+  const creditsLeft = isUnlimited
+    ? Infinity
+    : Math.max(0, projectLimit - projectCount);
 
   const handleNewProject = useCallback(async () => {
     const projectName = uniqueNamesGenerator({
@@ -52,7 +56,15 @@ export const ProjectsView = () => {
       length: 3,
     });
 
-    await createProject({ name: projectName });
+    try {
+      await createProject({ name: projectName });
+    } catch (err: any) {
+      if (err.message && err.message.includes("PROJECT_LIMIT_REACHED")) {
+        setUpgradeOpen(true);
+      } else {
+        console.error("Failed to create project:", err);
+      }
+    }
   }, [createProject]);
 
   useEffect(() => {
@@ -77,58 +89,35 @@ export const ProjectsView = () => {
 
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden bg-background">
-      {/* Dynamic Background */}
-      <div className="absolute inset-0 z-0">
+      {/* Static Background */}
+      <div className="absolute inset-0 z-0 overflow-hidden">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
-        <motion.div
-          animate={{
-            backgroundPosition: ["0px 0px", "0px -24px"],
-          }}
-          transition={{
-            repeat: Number.POSITIVE_INFINITY,
-            ease: "linear",
-            duration: 5,
-          }}
-          className="absolute inset-x-0 bottom-0 top-[20%] z-0 bg-gradient-to-t from-background via-background/80 to-transparent"
-        />
+        <div className="absolute inset-x-0 bottom-0 top-[20%] z-0 bg-gradient-to-t from-background via-background/80 to-transparent" />
         <div className="absolute left-1/2 top-0 -ml-[50%] -mt-[10%] h-[600px] w-[1000px] rounded-full bg-primary/5 opacity-50 blur-[100px] pointer-events-none" />
       </div>
 
       <header className="relative z-10 flex items-center justify-between p-6 max-w-7xl mx-auto w-full">
-        <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.6 }}
-          className="flex items-center space-x-2"
-        >
+        <div className="flex items-center space-x-2">
           <div className="w-8 h-8 rounded-sm bg-foreground flex items-center justify-center">
             <span className="text-background font-mono font-bold">O</span>
           </div>
           <span className="font-semibold text-lg tracking-tight">Orbit</span>
-        </motion.div>
+          {isSubscribed && (
+            <span className="ml-2 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+              {activeSub.tier} Plan
+            </span>
+          )}
+        </div>
 
-        <motion.div
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.6 }}
-          className="flex items-center space-x-4 font-mono text-sm"
-        >
+        <div className="flex items-center space-x-4 font-mono text-sm">
           <UserButton />
-        </motion.div>
+        </div>
       </header>
 
       <main className="relative z-10 flex flex-1 items-center justify-center px-4 pb-6 mt-[-5vh]">
-        <motion.div
-          variants={containerVariants}
-          initial="hidden"
-          animate="visible"
-          className="w-full max-w-lg"
-        >
+        <div className="w-full max-w-lg">
           <div className="flex flex-col items-center gap-8">
-            <motion.div
-              variants={itemVariants}
-              className="space-y-3 text-center"
-            >
+            <div className="space-y-3 text-center orbit-fade-up">
               <span className="inline-flex items-center rounded-full border border-border bg-muted/50 px-3 py-1 font-mono text-xs text-muted-foreground backdrop-blur-sm">
                 <Blocks className="size-3.5 mr-2" />
                 Workspace
@@ -140,12 +129,9 @@ export const ProjectsView = () => {
                 Create a new agentic workspace or jump right back into an
                 existing one.
               </p>
-            </motion.div>
+            </div>
 
-            <motion.div
-              variants={itemVariants}
-              className="w-full overflow-hidden rounded-[20px] border border-border/80 bg-card/40 shadow-2xl backdrop-blur-xl"
-            >
+            <div className="w-full overflow-hidden rounded-[20px] border border-border/80 bg-card/40 shadow-2xl backdrop-blur-xl orbit-scale-in">
               <div className="p-2 pb-0">
                 <button
                   onClick={handleNewProject}
@@ -157,7 +143,7 @@ export const ProjectsView = () => {
 
                   <div className="min-w-0 flex-1">
                     <span className="text-base font-semibold">New Project</span>
-                    <p className="text-xs text-muted-foreground group-hover:text-background/70 transition-colors">
+                    <p className="text-xs text-muted-foreground group-hover:text-background/70 transition-colors mt-0.5">
                       Scaffold an application instantly
                     </p>
                   </div>
@@ -188,12 +174,80 @@ export const ProjectsView = () => {
               <div className="p-2">
                 <ProjectsList onViewAll={() => setCommandOpen(true)} />
               </div>
-            </motion.div>
+
+              {/* AI Usage Bar */}
+              <div className="border-t border-border/50" />
+              <div className="px-4 py-3">
+                {isUnlimited ? (
+                  <div className="flex items-center gap-2.5">
+                    <div className="rounded-full bg-emerald-500/10 p-1.5">
+                      <Zap className="size-3.5 text-emerald-500" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[12px] font-semibold text-foreground">
+                          {activeSub?.tier.charAt(0).toUpperCase()}{activeSub?.tier.slice(1)} Plan
+                        </span>
+                        <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                          Active
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        Unlimited AI projects
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="rounded-full bg-primary/10 p-1.5">
+                          <Sparkles className="size-3.5 text-primary" />
+                        </div>
+                        <span className="text-[12px] font-semibold text-foreground">
+                          {isSubscribed ? `${activeSub?.tier.charAt(0).toUpperCase()}${activeSub?.tier.slice(1)} Usage` : "AI Usage"}
+                        </span>
+                      </div>
+                      <span className="text-[11px] text-muted-foreground font-medium">
+                        {projectCount} / {projectLimit} projects
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-muted/60 overflow-hidden">
+                      <div
+                        className={cn(
+                          "h-full rounded-full transition-all duration-500",
+                          usagePercent >= 100
+                            ? "bg-red-500"
+                            : usagePercent >= 66
+                              ? "bg-amber-500"
+                              : "bg-primary"
+                        )}
+                        style={{ width: `${usagePercent}%` }}
+                      />
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      {creditsLeft > 0
+                        ? `${creditsLeft} AI project${creditsLeft !== 1 ? "s" : ""} remaining`
+                        : "Limit reached — "}
+                      {creditsLeft === 0 && (
+                        <button
+                          onClick={() => setUpgradeOpen(true)}
+                          className="text-primary font-semibold hover:underline"
+                        >
+                          upgrade now
+                        </button>
+                      )}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-        </motion.div>
+        </div>
       </main>
 
       <ProjectsCommandDialog open={commandOpen} onOpenChange={setCommandOpen} />
+      <UpgradeLimitModal open={upgradeOpen} onOpenChange={setUpgradeOpen} />
     </div>
   );
 };
