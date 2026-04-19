@@ -3154,7 +3154,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       {selectedFile?.type === "file" && (
                         <div className="h-full">
                           <CodeEditor
-                            key={selectedFile._id}
                             value={draftContent}
                             onChange={setDraftContent}
                             filename={selectedFile.name}

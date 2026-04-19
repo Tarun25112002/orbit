@@ -556,18 +556,10 @@ export const CodeEditor = ({
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
 
-      const activeEditor = editorRef.current;
-
       // Clear editor refs on unmount so any lingering Monaco RAF callbacks
       // that fire after unmount find null and bail out gracefully.
       editorRef.current = null;
       monacoRef.current = null;
-
-      try {
-        activeEditor?.dispose();
-      } catch {
-        // Monaco may already be disposed by wrapper internals.
-      }
 
       setSelectionBar(null);
     };
