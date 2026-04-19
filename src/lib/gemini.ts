@@ -99,6 +99,146 @@ const getGroqApiKey = () => getRuntimeEnvValue("GROQ_API_KEY");
 const isGroqEnabled = () => Boolean(getGroqApiKey());
 
 const GROQ_MODEL = getRuntimeEnvValue("GROQ_MODEL") || "openai/gpt-oss-120b";
+const GROQ_TPM_BUDGET =
+  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_TPM_BUDGET")) ?? 7_500;
+const GROQ_TOKEN_SAFETY_MARGIN =
+  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_TOKEN_SAFETY_MARGIN")) ??
+  300;
+const GROQ_DEFAULT_MAX_OUTPUT_TOKENS =
+  parseOptionalPositiveInt(
+    getRuntimeEnvValue("GROQ_DEFAULT_MAX_OUTPUT_TOKENS"),
+  ) ?? 1_200;
+const GROQ_MIN_OUTPUT_TOKENS =
+  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_MIN_OUTPUT_TOKENS")) ?? 256;
+const GROQ_MAX_COMPACTION_ATTEMPTS =
+  parseOptionalPositiveInt(
+    getRuntimeEnvValue("GROQ_MAX_COMPACTION_ATTEMPTS"),
+  ) ?? 3;
+const GROQ_MAX_INPUT_CHARS =
+  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_MAX_INPUT_CHARS")) ??
+  20_000;
+const GROQ_TRUNCATION_MARKER = "\n...[truncated for token budget]...\n";
+
+type GroqAiMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
+const estimateTokensFromGroqPayload = (args: {
+  system?: string;
+  messages: GroqAiMessage[];
+}) => {
+  const systemChars = args.system?.length ?? 0;
+  const messageChars = args.messages.reduce(
+    (sum, message) => sum + message.content.length,
+    0,
+  );
+
+  return Math.ceil((systemChars + messageChars) / 4);
+};
+
+const truncateTextKeepingEdges = (value: string, maxChars: number) => {
+  if (value.length <= maxChars) {
+    return value;
+  }
+
+  if (maxChars <= GROQ_TRUNCATION_MARKER.length + 24) {
+    return value.slice(value.length - maxChars);
+  }
+
+  const contentBudget = maxChars - GROQ_TRUNCATION_MARKER.length;
+  const headLength = Math.max(24, Math.floor(contentBudget * 0.65));
+  const tailLength = Math.max(24, contentBudget - headLength);
+
+  return `${value.slice(0, headLength)}${GROQ_TRUNCATION_MARKER}${value.slice(value.length - tailLength)}`;
+};
+
+const compactGroqPayloadByChars = (args: {
+  system?: string;
+  messages: GroqAiMessage[];
+  maxChars: number;
+}) => {
+  const normalizedMaxChars = Math.max(800, args.maxChars);
+  const system = args.system?.trim();
+  const systemBudget = system
+    ? Math.min(
+        Math.max(180, Math.floor(normalizedMaxChars * 0.22)),
+        Math.floor(normalizedMaxChars * 0.45),
+      )
+    : 0;
+
+  const compactSystem = system
+    ? truncateTextKeepingEdges(system, systemBudget)
+    : undefined;
+
+  const messageBudget = Math.max(
+    400,
+    normalizedMaxChars - (compactSystem?.length ?? 0),
+  );
+  const compactMessages: GroqAiMessage[] = [];
+  let remaining = messageBudget;
+
+  for (let index = args.messages.length - 1; index >= 0; index -= 1) {
+    const message = args.messages[index]!;
+
+    if (remaining <= 0) {
+      break;
+    }
+
+    if (message.content.length <= remaining) {
+      compactMessages.unshift(message);
+      remaining -= message.content.length;
+      continue;
+    }
+
+    compactMessages.unshift({
+      ...message,
+      content: truncateTextKeepingEdges(message.content, remaining),
+    });
+    remaining = 0;
+  }
+
+  if (compactMessages.length === 0 && args.messages.length > 0) {
+    const last = args.messages[args.messages.length - 1]!;
+    compactMessages.push({
+      ...last,
+      content: truncateTextKeepingEdges(last.content, messageBudget),
+    });
+  }
+
+  return {
+    system: compactSystem,
+    messages: compactMessages,
+  };
+};
+
+const isGroqRequestTooLargeError = (message: string) =>
+  /request too large|tokens per minute|\bTPM\b|requested\s+\d+/i.test(message);
+
+const buildGroqTokenPlan = (args: {
+  requestedMaxOutputTokens?: number;
+  promptTokens: number;
+}) => {
+  const requestedOutputTokens =
+    args.requestedMaxOutputTokens ?? GROQ_DEFAULT_MAX_OUTPUT_TOKENS;
+  const availableOutputTokens =
+    GROQ_TPM_BUDGET - GROQ_TOKEN_SAFETY_MARGIN - args.promptTokens;
+
+  if (availableOutputTokens >= GROQ_MIN_OUTPUT_TOKENS) {
+    return {
+      maxOutputTokens: Math.max(
+        GROQ_MIN_OUTPUT_TOKENS,
+        Math.min(requestedOutputTokens, availableOutputTokens),
+      ),
+      requiresCompaction: false,
+    };
+  }
+
+  return {
+    maxOutputTokens: GROQ_MIN_OUTPUT_TOKENS,
+    requiresCompaction: true,
+  };
+};
 
 const getGeminiKeyScope = (apiKey: string) => {
   const trimmed = apiKey.trim();
@@ -466,85 +606,141 @@ const generateGroqCompletion = async (args: {
 }): Promise<GeminiCompletionResult> => {
   const groq = getGroqClient();
   const modelId = args.model ?? GROQ_MODEL;
-
-  const aiMessages = args.messages.map((msg) => ({
+  const originalMessages: GroqAiMessage[] = args.messages.map((msg) => ({
     role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
     content: msg.content,
   }));
 
-  try {
-    const result = await generateText({
-      model: groq(modelId),
-      ...(args.system ? { system: args.system } : {}),
-      messages: aiMessages,
-      maxOutputTokens: args.maxTokens ?? 65536,
-      temperature: args.temperature ?? 0.2,
-      ...(args.reasoningEffort
-        ? {
-            providerOptions: {
-              groq: { reasoningEffort: args.reasoningEffort },
-            },
-          }
-        : {}),
+  const maxAttempts = Math.max(1, GROQ_MAX_COMPACTION_ATTEMPTS);
+  let charBudget = GROQ_MAX_INPUT_CHARS;
+  let lastError: unknown = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const compactPayload = compactGroqPayloadByChars({
+      system: args.system,
+      messages: originalMessages,
+      maxChars: charBudget,
+    });
+    const promptTokens = estimateTokensFromGroqPayload(compactPayload);
+    const tokenPlan = buildGroqTokenPlan({
+      requestedMaxOutputTokens: args.maxTokens,
+      promptTokens,
     });
 
-    const text = result.text?.trim() ?? "";
-    if (!text) {
-      throw new GeminiRequestError({
-        message: "Groq response did not include any content",
-        status: 502,
-      });
+    if (tokenPlan.requiresCompaction) {
+      const promptTokenBudget = Math.max(
+        500,
+        GROQ_TPM_BUDGET - GROQ_TOKEN_SAFETY_MARGIN - GROQ_MIN_OUTPUT_TOKENS,
+      );
+      charBudget = Math.max(
+        1_000,
+        Math.min(charBudget, Math.floor(promptTokenBudget * 4)),
+      );
     }
 
-    return {
-      content: text,
-      model: `groq:${modelId}`,
-    };
-  } catch (error) {
-    if (error instanceof GeminiRequestError) {
-      throw error;
-    }
-
-    const rawMessage = extractRawErrorMessage(error);
-    const structuredStatusCode = extractStructuredStatusCode(error);
-
-    const isRateLimited = isRateLimitedGeminiError({
-      statusCode: structuredStatusCode,
-      message: rawMessage,
+    const retryPayload = compactGroqPayloadByChars({
+      system: args.system,
+      messages: originalMessages,
+      maxChars: charBudget,
     });
 
-    if (isRateLimited) {
-      throw new GeminiRequestError({
-        message: `Groq model ${modelId} is rate-limited. ${rawMessage}`,
-        status: 429,
+    try {
+      const result = await generateText({
+        model: groq(modelId),
+        ...(retryPayload.system ? { system: retryPayload.system } : {}),
+        messages: retryPayload.messages,
+        maxOutputTokens: tokenPlan.maxOutputTokens,
+        temperature: args.temperature ?? 0.2,
+        ...(args.reasoningEffort
+          ? {
+              providerOptions: {
+                groq: { reasoningEffort: args.reasoningEffort },
+              },
+            }
+          : {}),
       });
-    }
 
-    if (
-      /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
-        rawMessage,
-      )
-    ) {
+      const text = result.text?.trim() ?? "";
+      if (!text) {
+        throw new GeminiRequestError({
+          message: "Groq response did not include any content",
+          status: 502,
+        });
+      }
+
+      return {
+        content: text,
+        model: `groq:${modelId}`,
+      };
+    } catch (error) {
+      if (error instanceof GeminiRequestError) {
+        throw error;
+      }
+
+      const rawMessage = extractRawErrorMessage(error);
+      const structuredStatusCode = extractStructuredStatusCode(error);
+
+      if (
+        attempt < maxAttempts &&
+        isRateLimitedGeminiError({
+          statusCode: structuredStatusCode,
+          message: rawMessage,
+        }) &&
+        isGroqRequestTooLargeError(rawMessage)
+      ) {
+        charBudget = Math.max(1_000, Math.floor(charBudget * 0.65));
+        lastError = error;
+        continue;
+      }
+
+      const isRateLimited = isRateLimitedGeminiError({
+        statusCode: structuredStatusCode,
+        message: rawMessage,
+      });
+
+      if (isRateLimited) {
+        throw new GeminiRequestError({
+          message: `Groq model ${modelId} is rate-limited. ${rawMessage}`,
+          status: 429,
+        });
+      }
+
+      if (
+        /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
+          rawMessage,
+        )
+      ) {
+        throw new GeminiRequestError({
+          message:
+            "Unable to reach Groq. Please check your internet connection.",
+          status: 503,
+        });
+      }
+
+      if (
+        /api.?key|permission.?denied|forbidden|unauthorized/i.test(rawMessage)
+      ) {
+        throw new GeminiRequestError({
+          message:
+            "Groq API key is invalid or missing. Please check GROQ_API_KEY.",
+          status: 401,
+        });
+      }
+
       throw new GeminiRequestError({
         message:
-          "Unable to reach Groq. Please check your internet connection.",
-        status: 503,
+          rawMessage || "Groq service encountered an error. Please try again.",
+        status: structuredStatusCode ?? 500,
       });
     }
-
-    if (/api.?key|permission.?denied|forbidden|unauthorized/i.test(rawMessage)) {
-      throw new GeminiRequestError({
-        message:
-          "Groq API key is invalid or missing. Please check GROQ_API_KEY.",
-        status: 401,
-      });
-    }
-
-    throw new GeminiRequestError({
-      message: rawMessage || "Groq service encountered an error. Please try again.",
-      status: structuredStatusCode ?? 500,
-    });
   }
+
+  const fallbackMessage = extractRawErrorMessage(lastError);
+  throw new GeminiRequestError({
+    message:
+      fallbackMessage || "Groq service encountered an error. Please try again.",
+    status: extractStructuredStatusCode(lastError) ?? 429,
+  });
 };
 
 export const generateGeminiCompletion = async (args: {

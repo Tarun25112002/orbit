@@ -110,6 +110,17 @@ export async function POST(request: NextRequest) {
     const message =
       error instanceof Error ? error.message : "Failed to execute command";
     console.error("[sandbox/exec]", message);
+
+    if (
+      /\bsession\b[\s\S]*\bnot found\b/i.test(message) ||
+      /\bno such container\b|\bcontainer\b[\s\S]*\bnot found\b/i.test(message)
+    ) {
+      return new Response(JSON.stringify({ error: message }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     return new Response(JSON.stringify({ error: message }), {
       status: 500,
       headers: { "Content-Type": "application/json" },

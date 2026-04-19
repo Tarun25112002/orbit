@@ -35,8 +35,14 @@ class RuntimeRequestError extends Error {
   }
 }
 
-const DOCKER_RUNTIME_VERSION = 2;
+const DOCKER_RUNTIME_VERSION = 3;
 const SESSION_NOT_FOUND_PATTERN = /\bsession\b[\s\S]*\bnot found\b/i;
+const CONTAINER_NOT_FOUND_PATTERN =
+  /\bno such container\b|\bcontainer\b[\s\S]*\bnot found\b/i;
+const FILE_SYNC_MAX_BATCH_FILES = 40;
+const FILE_SYNC_MAX_BATCH_CHARS = 180_000;
+const FILE_SYNC_PAYLOAD_TOO_LARGE_PATTERN =
+  /payload|entity too large|request body|body exceeded|request too large|413|content length|too large/i;
 
 const normalizePath = (rawPath: string) =>
   rawPath
@@ -70,6 +76,60 @@ const getErrorMessage = (error: unknown) =>
 const generateSessionId = () =>
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+const splitFileSyncBatches = (
+  files: Array<{ path: string; content: string }>,
+) => {
+  const batches: Array<Array<{ path: string; content: string }>> = [];
+  let currentBatch: Array<{ path: string; content: string }> = [];
+  let currentBatchChars = 0;
+
+  for (const file of files) {
+    const fileChars = file.path.length + file.content.length;
+    const shouldFlushCurrentBatch =
+      currentBatch.length > 0 &&
+      (currentBatch.length >= FILE_SYNC_MAX_BATCH_FILES ||
+        currentBatchChars + fileChars > FILE_SYNC_MAX_BATCH_CHARS);
+
+    if (shouldFlushCurrentBatch) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentBatchChars = 0;
+    }
+
+    currentBatch.push(file);
+    currentBatchChars += fileChars;
+
+    // Keep very large files isolated so fallback logic can target them directly.
+    if (fileChars >= FILE_SYNC_MAX_BATCH_CHARS) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentBatchChars = 0;
+    }
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches;
+};
+
+const normalizeProjectKey = (value: string | null | undefined) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "")
+    .slice(0, 80);
+
+  return normalized || null;
+};
+
 /** Port patterns to detect server-ready messages in output */
 const PORT_PATTERNS: RegExp[] = [
   /(?:listening|started|running)\s+(?:on|at)\s+(?:port\s+)?(\d{2,5})/i,
@@ -90,6 +150,7 @@ function detectPortFromLine(line: string): number | null {
 
 class ProjectDockerRuntime {
   private sessionId: string | null = null;
+  private projectKey: string | null = null;
   private booted = false;
   private bootPromise: Promise<void> | null = null;
   private sessionRecoveryPromise: Promise<void> | null = null;
@@ -112,6 +173,19 @@ class ProjectDockerRuntime {
 
   // ─── Boot ───────────────────────────────────────────────────────────
 
+  setProjectKey(projectKey: string | null | undefined) {
+    const normalizedProjectKey = normalizeProjectKey(projectKey);
+    if (this.projectKey === normalizedProjectKey) {
+      return;
+    }
+
+    if (this.sessionId) {
+      this.teardown();
+    }
+
+    this.projectKey = normalizedProjectKey;
+  }
+
   async ensureBooted(log?: RuntimeLogWriter): Promise<void> {
     if (this.booted && this.sessionId) {
       return;
@@ -132,6 +206,7 @@ class ProjectDockerRuntime {
           body: JSON.stringify({
             sessionId: this.sessionId,
             runtime: "node",
+            ...(this.projectKey ? { projectKey: this.projectKey } : {}),
           }),
         });
 
@@ -254,23 +329,72 @@ class ProjectDockerRuntime {
     response: Response,
     fallbackMessage: string,
   ): Promise<RuntimeRequestError> {
-    const payload = (await response.json().catch(() => null)) as {
-      error?: string;
-    } | null;
+    const rawBody = await response.text().catch(() => "");
+    let message = `${fallbackMessage} (status ${response.status})`;
 
-    const message = payload?.error?.trim() || fallbackMessage;
+    if (rawBody.trim()) {
+      try {
+        const payload = JSON.parse(rawBody) as {
+          error?: string;
+          message?: string;
+        };
+        message = payload.error?.trim() || payload.message?.trim() || message;
+      } catch {
+        message = rawBody.trim().slice(0, 500) || fallbackMessage;
+      }
+    }
+
     return new RuntimeRequestError(message, response.status);
+  }
+
+  private isPayloadTooLargeError(error: unknown): boolean {
+    if (error instanceof RuntimeRequestError) {
+      return (
+        error.status === 413 ||
+        FILE_SYNC_PAYLOAD_TOO_LARGE_PATTERN.test(error.message)
+      );
+    }
+
+    if (error instanceof Error) {
+      return FILE_SYNC_PAYLOAD_TOO_LARGE_PATTERN.test(error.message);
+    }
+
+    return false;
+  }
+
+  private async postFileBatchToSandbox(args: {
+    sessionId: string;
+    files: Array<{ path: string; content: string }>;
+    fallbackMessage: string;
+  }): Promise<void> {
+    const response = await fetch("/api/sandbox/files/write", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: args.sessionId,
+        files: args.files,
+      }),
+    });
+
+    if (!response.ok) {
+      throw await this.createResponseError(response, args.fallbackMessage);
+    }
   }
 
   private isMissingSessionError(error: unknown): boolean {
     if (error instanceof RuntimeRequestError) {
       return (
-        error.status === 404 || SESSION_NOT_FOUND_PATTERN.test(error.message)
+        error.status === 404 ||
+        SESSION_NOT_FOUND_PATTERN.test(error.message) ||
+        CONTAINER_NOT_FOUND_PATTERN.test(error.message)
       );
     }
 
     if (error instanceof Error) {
-      return SESSION_NOT_FOUND_PATTERN.test(error.message);
+      return (
+        SESSION_NOT_FOUND_PATTERN.test(error.message) ||
+        CONTAINER_NOT_FOUND_PATTERN.test(error.message)
+      );
     }
 
     return false;
@@ -432,17 +556,59 @@ class ProjectDockerRuntime {
       actionLabel: "syncing project files",
       log: args.log,
       execute: async (sessionId) => {
-        const response = await fetch("/api/sandbox/files/write", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionId,
-            files,
-          }),
-        });
+        const batches = splitFileSyncBatches(files);
 
-        if (!response.ok) {
-          throw await this.createResponseError(response, "File sync failed");
+        for (const [batchIndex, batch] of batches.entries()) {
+          try {
+            await this.postFileBatchToSandbox({
+              sessionId,
+              files: batch,
+              fallbackMessage: "File sync failed",
+            });
+          } catch (error) {
+            if (batch.length <= 1) {
+              throw error;
+            }
+
+            const errorReason = this.isPayloadTooLargeError(error)
+              ? "exceeded payload limits"
+              : `failed (${getErrorMessage(error)})`;
+
+            args.log?.(
+              `Sync batch ${batchIndex + 1}/${batches.length} ${errorReason}; retrying per file.`,
+            );
+
+            for (const file of batch) {
+              const singleFileResponse = await fetch(
+                "/api/sandbox/files/write",
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    sessionId,
+                    filePath: file.path,
+                    content: file.content,
+                  }),
+                },
+              );
+
+              if (!singleFileResponse.ok) {
+                const singleFileError = await this.createResponseError(
+                  singleFileResponse,
+                  `File sync failed for ${file.path}`,
+                );
+
+                if (this.isPayloadTooLargeError(singleFileError)) {
+                  throw new RuntimeRequestError(
+                    `File sync failed for ${file.path}: payload too large (${file.content.length} chars).`,
+                    413,
+                  );
+                }
+
+                throw singleFileError;
+              }
+            }
+          }
         }
       },
     });
@@ -496,6 +662,40 @@ class ProjectDockerRuntime {
     } catch {
       return null;
     }
+  }
+
+  async writeSandboxFile(args: {
+    path: string;
+    content: string;
+    log?: RuntimeLogWriter;
+  }) {
+    const normalizedPath = normalizePath(args.path);
+    if (!normalizedPath) {
+      throw new Error("Sandbox file path is required.");
+    }
+
+    await this.executeWithSessionRetry({
+      actionLabel: `writing ${normalizedPath}`,
+      log: args.log,
+      execute: async (sessionId) => {
+        const response = await fetch("/api/sandbox/files/write", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId,
+            filePath: normalizedPath,
+            content: args.content,
+          }),
+        });
+
+        if (!response.ok) {
+          throw await this.createResponseError(
+            response,
+            "Failed to write sandbox file",
+          );
+        }
+      },
+    });
   }
 
   // ─── Command Execution ──────────────────────────────────────────────
@@ -830,7 +1030,7 @@ class ProjectDockerRuntime {
     this.lastServerReady = null;
 
     // Kill all background commands
-    for (const [key, running] of this.backgroundCommands.entries()) {
+    for (const running of this.backgroundCommands.values()) {
       try {
         running.abortController.abort();
       } catch {
@@ -855,6 +1055,8 @@ class ProjectDockerRuntime {
 
     this.booted = false;
     this.bootPromise = null;
+    this.sessionId = null;
+    this.sessionRecoveryPromise = null;
     this.syncedProjectFileContent.clear();
     this.syncedProjectFilePaths.clear();
   }
@@ -940,9 +1142,11 @@ const isRuntimeCompatible = (value: unknown): value is ProjectDockerRuntime => {
   const record = value as Record<string, unknown>;
   return (
     typeof record.ensureBooted === "function" &&
+    typeof record.setProjectKey === "function" &&
     typeof record.applyOperation === "function" &&
     typeof record.syncProjectFiles === "function" &&
     typeof record.runCommand === "function" &&
+    typeof record.writeSandboxFile === "function" &&
     typeof record.startBackgroundCommand === "function" &&
     typeof record.waitForBackgroundCommandExit === "function" &&
     typeof record.getBackgroundCommandLastExit === "function" &&

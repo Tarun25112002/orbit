@@ -16,9 +16,10 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as {
       sessionId?: string;
       runtime?: string;
+      projectKey?: string;
     };
 
-    const { sessionId, runtime } = body;
+    const { sessionId, runtime, projectKey } = body;
 
     if (!sessionId || typeof sessionId !== "string") {
       return NextResponse.json(
@@ -42,7 +43,14 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await createSession(sessionId, runtime as SandboxRuntime);
+    const normalizedProjectKey =
+      typeof projectKey === "string" && projectKey.trim().length > 0
+        ? projectKey.trim().slice(0, 120)
+        : undefined;
+
+    const result = await createSession(sessionId, runtime as SandboxRuntime, {
+      projectKey: normalizedProjectKey,
+    });
 
     return NextResponse.json(result);
   } catch (error) {

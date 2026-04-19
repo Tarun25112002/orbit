@@ -86,6 +86,8 @@ const RUNTIME_COMMAND_SYNC_PATH_CANDIDATES = [
   "tsconfig.node.json",
   "jsconfig.json",
 ] as const;
+const RUNTIME_DEP_FINGERPRINT_MARKER_PATH =
+  "node_modules/.orbit-deps-fingerprint";
 
 const RUNTIME_TSCONFIG_FILENAME = "tsconfig.json";
 const RUNTIME_TSCONFIG_NODE_FILENAME = "tsconfig.node.json";
@@ -151,17 +153,33 @@ const detectPackageManager = (filesByPath: Map<string, string>) => {
   return "npm" as const;
 };
 
+const hashRuntimeDependencySource = (source: string) => {
+  // FNV-1a 32-bit hash for compact deterministic fingerprinting.
+  let hash = 0x811c9dc5;
+
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+
+  return (hash >>> 0).toString(16).padStart(8, "0");
+};
+
 const buildRuntimeDependencyFingerprint = (filesByPath: Map<string, string>) =>
-  [
-    "package.json",
-    "package-lock.json",
-    "pnpm-lock.yaml",
-    "yarn.lock",
-    "bun.lock",
-    "bun.lockb",
-  ]
-    .map((path) => `${path}:${filesByPath.get(path) ?? ""}`)
-    .join("\n");
+  (() => {
+    const source = [
+      "package.json",
+      "package-lock.json",
+      "pnpm-lock.yaml",
+      "yarn.lock",
+      "bun.lock",
+      "bun.lockb",
+    ]
+      .map((path) => `${path}:${filesByPath.get(path) ?? ""}`)
+      .join("\n");
+
+    return `orbit-deps-v1:${hashRuntimeDependencySource(source)}:${source.length}`;
+  })();
 
 const buildInstallCommand = (
   packageManager: RuntimePackageManager,
@@ -488,7 +506,9 @@ const isInlineHtmlPreviewFile = (pathOrName: string) => {
   return lower.endsWith(".html") || lower.endsWith(".htm");
 };
 
-const shouldInjectRuntimeTsconfigNodeShim = (filesByPath: Map<string, string>) => {
+const shouldInjectRuntimeTsconfigNodeShim = (
+  filesByPath: Map<string, string>,
+) => {
   if (filesByPath.has(RUNTIME_TSCONFIG_NODE_FILENAME)) {
     return false;
   }
@@ -510,7 +530,10 @@ const buildRuntimeSnapshotWithCompat = (filesByPath: Map<string, string>) => {
   }
 
   const compatSnapshot = new Map(filesByPath);
-  compatSnapshot.set(RUNTIME_TSCONFIG_NODE_FILENAME, RUNTIME_TSCONFIG_NODE_SHIM);
+  compatSnapshot.set(
+    RUNTIME_TSCONFIG_NODE_FILENAME,
+    RUNTIME_TSCONFIG_NODE_SHIM,
+  );
 
   return {
     filesByPath: compatSnapshot,
@@ -1080,6 +1103,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const persistFileContentRef = useRef<
     (fileId: Id<"files">, content: string) => Promise<void>
   >(async () => {});
+
+  useEffect(() => {
+    projectWebcontainerRuntime.setProjectKey(String(projectId));
+  }, [projectId]);
 
   useEffect(() => {
     lastSavedContentRef.current = lastSavedContent;
@@ -2105,8 +2132,41 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     }
   }, [runtimeBackgroundCommands, stopRuntimeBackgroundCommand]);
 
+  const readCachedRuntimeDependencyFingerprint = useCallback(async () => {
+    const cachedFingerprint = await projectWebcontainerRuntime.readFileIfExists(
+      RUNTIME_DEP_FINGERPRINT_MARKER_PATH,
+    );
+
+    if (!cachedFingerprint) {
+      return null;
+    }
+
+    const normalized = cachedFingerprint.trim();
+    return normalized || null;
+  }, []);
+
+  const persistRuntimeDependencyFingerprint = useCallback(
+    async (dependencyFingerprint: string) => {
+      try {
+        await projectWebcontainerRuntime.writeSandboxFile({
+          path: RUNTIME_DEP_FINGERPRINT_MARKER_PATH,
+          content: `${dependencyFingerprint}\n`,
+          log: appendRuntimeLog,
+        });
+      } catch (error) {
+        appendRuntimeLog(
+          `Dependency cache marker update failed: ${getErrorMessage(error)}.`,
+        );
+      }
+    },
+    [appendRuntimeLog],
+  );
+
   const installRuntimeDependenciesWithRetry = useCallback(
-    async (preferredPackageManager: RuntimePackageManager) => {
+    async (
+      preferredPackageManager: RuntimePackageManager,
+      options?: { dependencyFingerprint?: string },
+    ) => {
       const candidates = buildInstallCommandCandidates(preferredPackageManager);
 
       for (const install of candidates) {
@@ -2131,6 +2191,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             );
 
             if (installExitCode === 0) {
+              if (options?.dependencyFingerprint) {
+                await persistRuntimeDependencyFingerprint(
+                  options.dependencyFingerprint,
+                );
+              }
+
               return install.packageManager;
             }
 
@@ -2167,7 +2233,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
       return null;
     },
-    [appendRuntimeLog, syncProjectSnapshotToRuntime],
+    [
+      appendRuntimeLog,
+      persistRuntimeDependencyFingerprint,
+      syncProjectSnapshotToRuntime,
+    ],
   );
 
   const maybeStartRuntimeDevServer = useCallback(async () => {
@@ -2250,23 +2320,36 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       buildRuntimeDependencyFingerprint(filesByPath);
 
     if (runtimeDependenciesFingerprintRef.current !== dependenciesFingerprint) {
-      const installedWithPackageManager =
-        await installRuntimeDependenciesWithRetry(detectedPackageManager);
+      const cachedRuntimeDependencyFingerprint =
+        await readCachedRuntimeDependencyFingerprint();
 
-      if (!installedWithPackageManager) {
-        recordRuntimeDevServerFailure(
-          "Dependency install failed after retry attempts.",
+      if (cachedRuntimeDependencyFingerprint === dependenciesFingerprint) {
+        runtimeDependenciesFingerprintRef.current = dependenciesFingerprint;
+        runtimeResolvedPackageManagerRef.current = packageManager;
+        appendRuntimeLog(
+          "Reusing persisted node_modules cache for this project (install skipped).",
         );
-        return false;
-      }
+      } else {
+        const installedWithPackageManager =
+          await installRuntimeDependenciesWithRetry(detectedPackageManager, {
+            dependencyFingerprint: dependenciesFingerprint,
+          });
 
-      packageManager = installedWithPackageManager;
-      runtimeDependenciesFingerprintRef.current = dependenciesFingerprint;
-      runtimeResolvedPackageManagerRef.current = installedWithPackageManager;
-      appendRuntimeLog("Dependencies installed successfully.");
-      await syncRuntimeCommandChangesToProjectSafely("Dependency install", {
-        paths: Array.from(RUNTIME_COMMAND_SYNC_PATH_CANDIDATES),
-      });
+        if (!installedWithPackageManager) {
+          recordRuntimeDevServerFailure(
+            "Dependency install failed after retry attempts.",
+          );
+          return false;
+        }
+
+        packageManager = installedWithPackageManager;
+        runtimeDependenciesFingerprintRef.current = dependenciesFingerprint;
+        runtimeResolvedPackageManagerRef.current = installedWithPackageManager;
+        appendRuntimeLog("Dependencies installed successfully.");
+        await syncRuntimeCommandChangesToProjectSafely("Dependency install", {
+          paths: Array.from(RUNTIME_COMMAND_SYNC_PATH_CANDIDATES),
+        });
+      }
     } else if (runtimeResolvedPackageManagerRef.current) {
       packageManager = runtimeResolvedPackageManagerRef.current;
     }
@@ -2354,6 +2437,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     appendRuntimeLog,
     installRuntimeDependenciesWithRetry,
     isRuntimeDevServerCircuitOpen,
+    readCachedRuntimeDependencyFingerprint,
     recordRuntimeDevServerFailure,
     resetRuntimeDevServerFailures,
     syncRuntimeCommandChangesToProjectSafely,
@@ -2579,9 +2663,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               const preferredPackageManager =
                 toRuntimePackageManager(operation.command) ??
                 detectPackageManager(projectFileContentByPathRef.current);
+              const dependenciesFingerprint = buildRuntimeDependencyFingerprint(
+                projectFileContentByPathRef.current,
+              );
               const installedWithPackageManager =
                 await installRuntimeDependenciesWithRetry(
                   preferredPackageManager,
+                  {
+                    dependencyFingerprint: dependenciesFingerprint,
+                  },
                 );
 
               if (!installedWithPackageManager) {
@@ -2600,9 +2690,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                 },
               );
               runtimeDependenciesFingerprintRef.current =
-                buildRuntimeDependencyFingerprint(
-                  projectFileContentByPathRef.current,
-                );
+                dependenciesFingerprint;
               appendRuntimeLog(
                 `Dependencies installed with ${installedWithPackageManager}.`,
               );
@@ -3075,7 +3163,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       </p>
                     ) : (
                       <p className="mt-2 text-xs text-[#8f8f8f]">
-                        Preview uses a Docker sandbox and your project dev script.
+                        Preview uses a Docker sandbox and your project dev
+                        script.
                       </p>
                     )}
                     <div className="mt-4 flex items-center justify-center gap-2">
@@ -3143,61 +3232,65 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                           ? "border-primary/20 bg-primary/10 text-primary shadow-[inset_0_2px_10px_-4px_rgba(var(--primary),0.3)]"
                           : "border-border/30 bg-background/50 text-muted-foreground hover:bg-muted/50 hover:text-foreground",
                       )}
-                      onClick={() => setActiveRuntimeTabKey(MAIN_RUNTIME_TAB_KEY)}
+                      onClick={() =>
+                        setActiveRuntimeTabKey(MAIN_RUNTIME_TAB_KEY)
+                      }
                       type="button"
                     >
                       <TerminalSquareIcon className="size-4" />
-                      <span className="font-mono text-[12px] font-medium">orbit-runtime</span>
+                      <span className="font-mono text-[12px] font-medium">
+                        orbit-runtime
+                      </span>
                     </button>
 
-                  {runtimeBackgroundCommands.slice(0, 6).map((item) => (
-                    <div
-                      key={item.key}
-                      className={cn(
-                        "flex h-8 items-center gap-2 rounded-t-lg border border-b-0 px-3 cursor-pointer ",
-                        activeRuntimeTabKey === item.key
-                          ? "border-border/60 bg-card text-foreground shadow-[0_-2px_10px_rgba(0,0,0,0.05)] border-t-[2px] border-t-primary"
-                          : item.status === "running"
-                            ? "border-border/30 bg-background/50 text-foreground/80 hover:bg-muted/50"
-                            : item.status === "idle"
-                              ? "border-border/30 bg-background/50 text-blue-400 hover:bg-muted/50"
-                              : "border-border/30 bg-background/50 text-muted-foreground hover:bg-muted/50",
-                      )}
-                      onClick={() => setActiveRuntimeTabKey(item.key)}
-                    >
-                      <span
+                    {runtimeBackgroundCommands.slice(0, 6).map((item) => (
+                      <div
+                        key={item.key}
                         className={cn(
-                          "size-2 rounded-full shadow-[0_0_10px_currentColor]",
-                          item.status === "running"
-                            ? "bg-green-500 text-green-500/50"
-                            : item.status === "idle"
-                              ? "bg-blue-400 text-blue-400/50"
-                              : "bg-muted-foreground text-transparent",
+                          "flex h-8 items-center gap-2 rounded-t-lg border border-b-0 px-3 cursor-pointer ",
+                          activeRuntimeTabKey === item.key
+                            ? "border-border/60 bg-card text-foreground shadow-[0_-2px_10px_rgba(0,0,0,0.05)] border-t-[2px] border-t-primary"
+                            : item.status === "running"
+                              ? "border-border/30 bg-background/50 text-foreground/80 hover:bg-muted/50"
+                              : item.status === "idle"
+                                ? "border-border/30 bg-background/50 text-blue-400 hover:bg-muted/50"
+                                : "border-border/30 bg-background/50 text-muted-foreground hover:bg-muted/50",
                         )}
-                      />
-                      <span className="max-w-48 truncate font-mono text-[12px] font-medium">
-                        {item.commandLine}
-                      </span>
-                      {item.status === "running" && (
-                        <button
-                          className="ml-1 rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground "
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            stopRuntimeBackgroundCommand(item.key);
-                          }}
-                          title={`Stop ${item.commandLine}`}
-                          type="button"
-                        >
-                          <XIcon className="size-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                        onClick={() => setActiveRuntimeTabKey(item.key)}
+                      >
+                        <span
+                          className={cn(
+                            "size-2 rounded-full shadow-[0_0_10px_currentColor]",
+                            item.status === "running"
+                              ? "bg-green-500 text-green-500/50"
+                              : item.status === "idle"
+                                ? "bg-blue-400 text-blue-400/50"
+                                : "bg-muted-foreground text-transparent",
+                          )}
+                        />
+                        <span className="max-w-48 truncate font-mono text-[12px] font-medium">
+                          {item.commandLine}
+                        </span>
+                        {item.status === "running" && (
+                          <button
+                            className="ml-1 rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground "
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              stopRuntimeBackgroundCommand(item.key);
+                            }}
+                            title={`Stop ${item.commandLine}`}
+                            type="button"
+                          >
+                            <XIcon className="size-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <div className="flex h-11 items-center justify-between border border-border/40 border-t-0 bg-card/80 backdrop-blur-xl px-3 border-b-0">
+              <div className="flex h-11 items-center justify-between border border-border/40 border-t-0 bg-card/80 backdrop-blur-xl px-3 border-b-0">
                 <div className="flex items-center gap-1.5 ml-auto">
                   <Button
                     className="h-8 w-8 px-0 text-muted-foreground hover:bg-muted hover:text-foreground rounded-lg "

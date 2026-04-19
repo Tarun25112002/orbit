@@ -31,6 +31,9 @@ const RATE_LIMIT_PATTERNS = [
   /rate.?limit/i,
   /too many requests/i,
   /429/,
+  /tokens?\s+per\s+minute/i,
+  /\bTPM\b/i,
+  /request\s+too\s+large/i,
   /free.?models?.?per.?(min|minute|day)/i,
   /throttl/i,
 ];

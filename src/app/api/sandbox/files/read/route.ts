@@ -33,7 +33,10 @@ export async function GET(request: NextRequest) {
       error instanceof Error ? error.message : "Failed to read file";
     console.error("[sandbox/files/read]", message);
 
-    if (/\bsession\b[\s\S]*\bnot found\b/i.test(message)) {
+    if (
+      /\bsession\b[\s\S]*\bnot found\b/i.test(message) ||
+      /\bno such container\b|\bcontainer\b[\s\S]*\bnot found\b/i.test(message)
+    ) {
       return NextResponse.json({ error: message }, { status: 404 });
     }
 

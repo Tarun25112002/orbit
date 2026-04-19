@@ -28,6 +28,7 @@ export interface SandboxSession {
   sessionId: string;
   containerId: string;
   runtime: SandboxRuntime;
+  projectKey: string | null;
   workspacePath: string;
   createdAt: number;
   lastActivityAt: number;
@@ -46,6 +47,9 @@ const CONTAINER_PREFIX = "orbit-session-";
 const NETWORK_NAME = "orbit-network";
 const WORKSPACE_BASE =
   process.env.ORBIT_WORKSPACE_BASE || join(tmpdir(), "orbit-workspaces");
+const NODE_MODULES_CACHE_BASE =
+  process.env.ORBIT_NODE_MODULES_CACHE_BASE ||
+  join(tmpdir(), "orbit-node-modules-cache");
 const CONTAINER_WORKSPACE = "/workspace";
 
 const MEMORY_LIMIT = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
@@ -91,7 +95,8 @@ declare global {
   var __dockerSessions: Map<string, SandboxSession> | undefined;
 }
 
-const sessions = globalThis.__dockerSessions || new Map<string, SandboxSession>();
+const sessions =
+  globalThis.__dockerSessions || new Map<string, SandboxSession>();
 if (process.env.NODE_ENV !== "production") {
   globalThis.__dockerSessions = sessions;
 }
@@ -129,6 +134,28 @@ function workspacePath(sessionId: string): string {
   return join(WORKSPACE_BASE, `workspace-${sessionId}`);
 }
 
+/** Build the host path for persisted node_modules cache for a project key */
+function nodeModulesCachePath(projectKey: string): string {
+  return join(NODE_MODULES_CACHE_BASE, `node-modules-${projectKey}`);
+}
+
+/** Normalize project key to a safe path segment */
+function normalizeProjectKey(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "")
+    .slice(0, 80);
+
+  return normalized || null;
+}
+
 /** Ensure the host workspace directory exists */
 function ensureWorkspaceDir(dirPath: string): void {
   if (!existsSync(dirPath)) {
@@ -163,7 +190,10 @@ function removeWorkspaceDir(dirPath: string): void {
 export async function createSession(
   sessionId: string,
   runtime: SandboxRuntime,
+  options?: { projectKey?: string },
 ): Promise<CreateSessionResult> {
+  const projectKey = normalizeProjectKey(options?.projectKey);
+
   // Guard: already exists
   const existing = sessions.get(sessionId);
   if (existing) {
@@ -193,6 +223,17 @@ export async function createSession(
   const hostWorkspace = workspacePath(sessionId);
   ensureWorkspaceDir(hostWorkspace);
 
+  let hostNodeModulesCache: string | null = null;
+  if (runtime === "node" && projectKey) {
+    hostNodeModulesCache = nodeModulesCachePath(projectKey);
+    ensureWorkspaceDir(hostNodeModulesCache);
+  }
+
+  const binds = [`${hostWorkspace}:${CONTAINER_WORKSPACE}`];
+  if (hostNodeModulesCache) {
+    binds.push(`${hostNodeModulesCache}:${CONTAINER_WORKSPACE}/node_modules`);
+  }
+
   const image = RUNTIME_IMAGES[runtime];
   const name = containerName(sessionId);
 
@@ -208,7 +249,7 @@ export async function createSession(
       CpuQuota: CPU_QUOTA,
       CpuPeriod: CPU_PERIOD,
       NetworkMode: NETWORK_NAME,
-      Binds: [`${hostWorkspace}:${CONTAINER_WORKSPACE}`],
+      Binds: binds,
       SecurityOpt: ["no-new-privileges"],
       CapDrop: ["ALL"],
       CapAdd: ["CHOWN", "SETUID", "SETGID"],
@@ -228,6 +269,7 @@ export async function createSession(
     Labels: {
       "orbit.session": sessionId,
       "orbit.runtime": runtime,
+      ...(projectKey ? { "orbit.project_key": projectKey } : {}),
       "orbit.created": String(Date.now()),
     },
   });
@@ -239,6 +281,7 @@ export async function createSession(
     sessionId,
     containerId: container.id,
     runtime,
+    projectKey,
     workspacePath: hostWorkspace,
     createdAt: now,
     lastActivityAt: now,
@@ -328,10 +371,14 @@ export function getDockerClient(): Docker {
  */
 export function getContainer(sessionId: string): Docker.Container | null {
   const session = sessions.get(sessionId);
-  if (!session) return null;
+  if (session) {
+    session.lastActivityAt = Date.now();
+    return docker.getContainer(session.containerId);
+  }
 
-  session.lastActivityAt = Date.now();
-  return docker.getContainer(session.containerId);
+  // Fallback path for multi-worker dev mode where the in-memory map may not
+  // contain a session created by another worker. Container name is deterministic.
+  return docker.getContainer(containerName(sessionId));
 }
 
 /**
@@ -388,8 +435,7 @@ export async function cleanupOrphanedContainers(): Promise<void> {
     });
 
     for (const containerInfo of containers) {
-      const name =
-        containerInfo.Names[0]?.replace(/^\//, "") ?? "";
+      const name = containerInfo.Names[0]?.replace(/^\//, "") ?? "";
       if (!name.startsWith(CONTAINER_PREFIX)) continue;
 
       const sessionId = name.replace(CONTAINER_PREFIX, "");
@@ -462,7 +508,11 @@ function startCleanupTimer(): void {
   }, CLEANUP_INTERVAL_MS);
 
   // Don't keep the Node.js process alive just for this timer
-  if (cleanupTimer && typeof cleanupTimer === "object" && "unref" in cleanupTimer) {
+  if (
+    cleanupTimer &&
+    typeof cleanupTimer === "object" &&
+    "unref" in cleanupTimer
+  ) {
     cleanupTimer.unref();
   }
 }

@@ -27,7 +27,7 @@ import {
 } from "../utils/language-detection";
 import { EditorContextMenu } from "./editor-context-menu";
 import { EditorSelectionAiBar } from "./editor-selection-ai-bar";
-import { getErrorMessage, getFriendlyErrorMessage } from "@/lib/errors";
+import { getFriendlyErrorMessage } from "@/lib/errors";
 import {
   type SuggestionApiResponse,
   type SuggestionRequestBody,
@@ -67,6 +67,86 @@ const INLINE_SUGGESTION_ERROR_TOAST_COOLDOWN_MS = 8_000;
 const INLINE_SUGGESTION_PROVIDER_COOLDOWN_FALLBACK_MS = 30_000;
 const INLINE_SUGGESTION_PROVIDER_RATE_LIMIT_PATTERN =
   /(free-models-per-(?:min|minute|day)|rate limit exceeded|too many requests)/i;
+const MONACO_TRANSIENT_LEFT_ERROR_PATTERN =
+  /cannot read properties of null \(reading 'left'\)/i;
+const MONACO_SOURCE_HINT_PATTERN = /monaco-editor|editor\.api/i;
+
+type MonacoErrorGuardWindow = Window & {
+  __orbit_monaco_left_error_guard_installed__?: boolean;
+};
+
+const shouldSuppressMonacoTransientError = (args: {
+  message?: string;
+  source?: string;
+}) => {
+  const message = args.message ?? "";
+  const source = args.source ?? "";
+
+  return (
+    MONACO_TRANSIENT_LEFT_ERROR_PATTERN.test(message) &&
+    MONACO_SOURCE_HINT_PATTERN.test(source)
+  );
+};
+
+const installMonacoTransientErrorGuard = () => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const guardedWindow = window as MonacoErrorGuardWindow;
+  if (guardedWindow.__orbit_monaco_left_error_guard_installed__) {
+    return;
+  }
+
+  guardedWindow.__orbit_monaco_left_error_guard_installed__ = true;
+
+  window.addEventListener(
+    "error",
+    (event) => {
+      const stack =
+        event.error instanceof Error ? (event.error.stack ?? "") : "";
+      if (
+        shouldSuppressMonacoTransientError({
+          message: event.message,
+          source: `${event.filename ?? ""}\n${stack}`,
+        })
+      ) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+      }
+    },
+    { capture: true },
+  );
+
+  window.addEventListener(
+    "unhandledrejection",
+    (event) => {
+      const reason = event.reason;
+      const message =
+        reason instanceof Error
+          ? reason.message
+          : typeof reason === "string"
+            ? reason
+            : "";
+      const source =
+        reason instanceof Error
+          ? reason.stack ?? ""
+          : typeof reason === "string"
+            ? reason
+            : "";
+
+      if (shouldSuppressMonacoTransientError({ message, source })) {
+        event.stopImmediatePropagation();
+        event.preventDefault();
+      }
+    },
+    { capture: true },
+  );
+};
+
+if (typeof window !== "undefined") {
+  installMonacoTransientErrorGuard();
+}
 
 const initializeEmmet = (monacoApi: typeof Monaco) => {
   const globalState = globalThis as typeof globalThis & {
@@ -202,6 +282,7 @@ export const CodeEditor = ({
 }: CodeEditorProps) => {
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
+  const editorContainerRef = useRef<HTMLDivElement | null>(null);
   const disposablesRef = useRef<Monaco.IDisposable[]>([]);
   const lastCursorStateRef = useRef<CursorState | null>(null);
   const lastMetaRef = useRef<EditorRuntimeMeta | null>(null);
@@ -382,6 +463,75 @@ export const CodeEditor = ({
     });
   }, [readOnly]);
 
+  const layoutEditor = useCallback(() => {
+    const editor = editorRef.current;
+    const container = editorContainerRef.current;
+    if (!editor || !container || !container.isConnected) {
+      return;
+    }
+
+    const rect = container.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) {
+      return;
+    }
+
+    try {
+      editor.layout({
+        width: Math.floor(rect.width),
+        height: Math.floor(rect.height),
+      });
+    } catch {
+      // Best effort: Monaco can throw during teardown races.
+    }
+  }, []);
+
+  useEffect(() => {
+    const container = editorContainerRef.current;
+    if (!container) {
+      return;
+    }
+
+    let rafId: number | null = null;
+    const scheduleLayout = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        layoutEditor();
+      });
+    };
+
+    scheduleLayout();
+
+    const observer = new ResizeObserver(() => {
+      scheduleLayout();
+    });
+    observer.observe(container);
+
+    const handleWindowResize = () => {
+      scheduleLayout();
+    };
+
+    const handleVisibilityChange = () => {
+      scheduleLayout();
+    };
+
+    window.addEventListener("resize", handleWindowResize);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+      }
+
+      observer.disconnect();
+      window.removeEventListener("resize", handleWindowResize);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [layoutEditor]);
+
   useEffect(() => {
     if (readOnly || !selectionBar) {
       return;
@@ -406,10 +556,18 @@ export const CodeEditor = ({
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
 
+      const activeEditor = editorRef.current;
+
       // Clear editor refs on unmount so any lingering Monaco RAF callbacks
       // that fire after unmount find null and bail out gracefully.
       editorRef.current = null;
       monacoRef.current = null;
+
+      try {
+        activeEditor?.dispose();
+      } catch {
+        // Monaco may already be disposed by wrapper internals.
+      }
 
       setSelectionBar(null);
     };
@@ -762,13 +920,15 @@ export const CodeEditor = ({
             typeof retryAfterSeconds === "number" && retryAfterSeconds > 0
               ? ` Retry in ${Math.ceil(retryAfterSeconds)}s.`
               : "";
+          const detailSuffix = detail ? ` ${detail}` : "";
+          const fallbackMessage =
+            "Inline suggestions are unavailable right now.";
 
           return {
             outcome: "error",
             suggestion: "",
             retryAfterSeconds,
-            message:
-              payload?.error ?? "Inline suggestions are unavailable right now.",
+            message: `${payload?.error ?? fallbackMessage}${detailSuffix}${retryHint}`,
           } satisfies InlineSuggestionFetchResult;
         }
 
@@ -779,12 +939,13 @@ export const CodeEditor = ({
           !(payload.suggestion ?? payload.sugegstions ?? "").trim()
         ) {
           const detail = payload.detail?.trim();
+          const detailSuffix = detail ? ` ${detail}` : "";
 
           return {
             outcome: "error",
             suggestion: "",
             retryAfterSeconds: payload.retryAfterSeconds,
-            message: payload.error,
+            message: `${payload.error}${detailSuffix}`,
           } satisfies InlineSuggestionFetchResult;
         }
 
@@ -1400,7 +1561,10 @@ export const CodeEditor = ({
       ];
 
       restoreInitialState(editor, monacoApi);
-      updateSelectionBarLayout();
+      requestAnimationFrame(() => {
+        layoutEditor();
+        updateSelectionBarLayout();
+      });
     },
     [
       buildAutocompleteRequest,
@@ -1408,6 +1572,7 @@ export const CodeEditor = ({
       emitState,
       areInlineSuggestionsEnabled,
       isInlineSuggestionCoolingDown,
+      layoutEditor,
       language,
       onBlur,
       pauseInlineSuggestions,
@@ -1421,7 +1586,7 @@ export const CodeEditor = ({
 
   const options = useMemo<Monaco.editor.IStandaloneEditorConstructionOptions>(
     () => ({
-      automaticLayout: true,
+      automaticLayout: false,
       readOnly,
       wordWrap: settings.wordWrap ? "on" : "off",
       lineNumbers: settings.lineNumbers,
@@ -1567,7 +1732,7 @@ export const CodeEditor = ({
       onUnfoldAll={() => runEditorAction("editor.unfoldAll")}
       onFormatDocument={() => runEditorAction("editor.action.formatDocument")}
     >
-      <div className="size-full overflow-hidden">
+      <div ref={editorContainerRef} className="size-full overflow-hidden">
         <MonacoEditor
           key={currentFileReference}
           beforeMount={handleBeforeMount}
@@ -1598,28 +1763,3 @@ export const CodeEditor = ({
     </EditorContextMenu>
   );
 };
-
-// Monaco has a harmless race-condition rendering bug during React unmounts
-// that throws "Cannot read properties of null (reading 'left')".
-// This intercepts it so Next.js doesn't show a red screen of death.
-if (typeof window !== "undefined") {
-  window.addEventListener("error", (e) => {
-    if (
-      e.message.includes("reading 'left'") &&
-      e.filename.includes("monaco-editor")
-    ) {
-      e.stopImmediatePropagation();
-      e.preventDefault();
-    }
-  });
-
-  window.addEventListener("unhandledrejection", (e) => {
-    if (
-      e.reason?.message?.includes("reading 'left'") &&
-      e.reason?.stack?.includes("monaco-editor")
-    ) {
-      e.stopImmediatePropagation();
-      e.preventDefault();
-    }
-  });
-}
