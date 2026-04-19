@@ -25,7 +25,18 @@ type BackgroundCommandExit = {
   at: number;
 };
 
-const DOCKER_RUNTIME_VERSION = 1;
+class RuntimeRequestError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "RuntimeRequestError";
+    this.status = status;
+  }
+}
+
+const DOCKER_RUNTIME_VERSION = 2;
+const SESSION_NOT_FOUND_PATTERN = /\bsession\b[\s\S]*\bnot found\b/i;
 
 const normalizePath = (rawPath: string) =>
   rawPath
@@ -81,6 +92,7 @@ class ProjectDockerRuntime {
   private sessionId: string | null = null;
   private booted = false;
   private bootPromise: Promise<void> | null = null;
+  private sessionRecoveryPromise: Promise<void> | null = null;
 
   private serverReadyHandlers = new Set<ServerReadyHandler>();
   private lastServerReady: ServerReadyState | null = null;
@@ -238,6 +250,150 @@ class ProjectDockerRuntime {
     });
   }
 
+  private async createResponseError(
+    response: Response,
+    fallbackMessage: string,
+  ): Promise<RuntimeRequestError> {
+    const payload = (await response.json().catch(() => null)) as {
+      error?: string;
+    } | null;
+
+    const message = payload?.error?.trim() || fallbackMessage;
+    return new RuntimeRequestError(message, response.status);
+  }
+
+  private isMissingSessionError(error: unknown): boolean {
+    if (error instanceof RuntimeRequestError) {
+      return (
+        error.status === 404 || SESSION_NOT_FOUND_PATTERN.test(error.message)
+      );
+    }
+
+    if (error instanceof Error) {
+      return SESSION_NOT_FOUND_PATTERN.test(error.message);
+    }
+
+    return false;
+  }
+
+  private resetRuntimeStateForRecovery(options?: {
+    abortBackgroundCommands?: boolean;
+  }) {
+    this.lastServerReady = null;
+    this.booted = false;
+    this.bootPromise = null;
+
+    if (options?.abortBackgroundCommands ?? true) {
+      for (const [, running] of this.backgroundCommands.entries()) {
+        try {
+          running.abortController.abort();
+        } catch {
+          // Best effort
+        }
+      }
+
+      this.backgroundCommands.clear();
+      this.backgroundExitPromises.clear();
+    }
+  }
+
+  private async recoverMissingSession(
+    log?: RuntimeLogWriter,
+    options?: { abortBackgroundCommands?: boolean },
+  ): Promise<void> {
+    if (this.sessionRecoveryPromise) {
+      return this.sessionRecoveryPromise;
+    }
+
+    this.sessionRecoveryPromise = (async () => {
+      const recoverableFiles: Array<{ path: string; content: string }> = [];
+
+      for (const path of this.syncedProjectFilePaths) {
+        const content = this.syncedProjectFileContent.get(path);
+        if (typeof content === "string") {
+          recoverableFiles.push({ path, content });
+        }
+      }
+
+      this.resetRuntimeStateForRecovery(options);
+      this.sessionId = generateSessionId();
+
+      log?.("Sandbox session expired. Recreating sandbox...");
+      await this.ensureBooted(log);
+
+      if (!this.sessionId) {
+        throw new Error("Failed to recreate sandbox session.");
+      }
+
+      if (recoverableFiles.length === 0) {
+        log?.("Recovered sandbox session.");
+        return;
+      }
+
+      const response = await fetch("/api/sandbox/files/write", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: this.sessionId,
+          files: recoverableFiles,
+        }),
+      });
+
+      if (!response.ok) {
+        throw await this.createResponseError(
+          response,
+          "Failed to restore files after sandbox recovery",
+        );
+      }
+
+      this.syncedProjectFilePaths = new Set(
+        recoverableFiles.map((file) => file.path),
+      );
+      log?.(
+        `Recovered sandbox session and restored ${recoverableFiles.length} file(s).`,
+      );
+    })();
+
+    try {
+      await this.sessionRecoveryPromise;
+    } finally {
+      this.sessionRecoveryPromise = null;
+    }
+  }
+
+  private async executeWithSessionRetry<T>(args: {
+    actionLabel: string;
+    log?: RuntimeLogWriter;
+    execute: (sessionId: string) => Promise<T>;
+  }): Promise<T> {
+    await this.ensureBooted(args.log);
+
+    const currentSessionId = this.sessionId;
+    if (!currentSessionId) {
+      throw new Error("Sandbox session is not initialized.");
+    }
+
+    try {
+      return await args.execute(currentSessionId);
+    } catch (error) {
+      if (!this.isMissingSessionError(error)) {
+        throw error;
+      }
+
+      args.log?.(
+        `Sandbox session was lost while ${args.actionLabel}; retrying once with a new session.`,
+      );
+      await this.recoverMissingSession(args.log);
+
+      const recoveredSessionId = this.sessionId;
+      if (!recoveredSessionId) {
+        throw error;
+      }
+
+      return await args.execute(recoveredSessionId);
+    }
+  }
+
   // ─── File Sync ──────────────────────────────────────────────────────
 
   async syncProjectFiles(args: {
@@ -263,29 +419,33 @@ class ProjectDockerRuntime {
       files.push({ path: normalizedPath, content });
     }
 
-    if (files.length === 0 && this.syncedProjectFilePaths.size === nextPaths.size) {
+    if (
+      files.length === 0 &&
+      this.syncedProjectFilePaths.size === nextPaths.size
+    ) {
       return;
     }
 
     args.log?.(`Syncing ${files.length} file(s) to sandbox...`);
 
-    const response = await fetch("/api/sandbox/files/write", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: this.sessionId,
-        files,
-      }),
-    });
+    await this.executeWithSessionRetry({
+      actionLabel: "syncing project files",
+      log: args.log,
+      execute: async (sessionId) => {
+        const response = await fetch("/api/sandbox/files/write", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId,
+            files,
+          }),
+        });
 
-    if (!response.ok) {
-      const error = await response
-        .json()
-        .catch(() => ({ error: "Unknown" }));
-      throw new Error(
-        (error as { error?: string }).error || "File sync failed",
-      );
-    }
+        if (!response.ok) {
+          throw await this.createResponseError(response, "File sync failed");
+        }
+      },
+    });
 
     // Update caches
     for (const file of files) {
@@ -295,18 +455,44 @@ class ProjectDockerRuntime {
   }
 
   async readFileIfExists(path: string): Promise<string | null> {
-    if (!this.sessionId) return null;
+    const normalizedPath = normalizePath(path);
+    if (!normalizedPath) {
+      return null;
+    }
 
     try {
-      const normalizedPath = normalizePath(path);
-      const response = await fetch(
-        `/api/sandbox/files/read?sessionId=${encodeURIComponent(this.sessionId)}&filePath=${encodeURIComponent(normalizedPath)}`,
-      );
+      return await this.executeWithSessionRetry({
+        actionLabel: `reading ${normalizedPath}`,
+        execute: async (sessionId) => {
+          const response = await fetch(
+            `/api/sandbox/files/read?sessionId=${encodeURIComponent(sessionId)}&filePath=${encodeURIComponent(normalizedPath)}`,
+          );
 
-      if (!response.ok) return null;
+          if (response.status === 404) {
+            const payload = (await response.json().catch(() => null)) as {
+              error?: string;
+              content?: string | null;
+            } | null;
+            const message = payload?.error?.trim() || "File not found";
 
-      const data = (await response.json()) as { content?: string | null };
-      return data.content ?? null;
+            if (SESSION_NOT_FOUND_PATTERN.test(message)) {
+              throw new RuntimeRequestError(message, response.status);
+            }
+
+            return null;
+          }
+
+          if (!response.ok) {
+            throw await this.createResponseError(
+              response,
+              "Failed to read file",
+            );
+          }
+
+          const data = (await response.json()) as { content?: string | null };
+          return data.content ?? null;
+        },
+      });
     } catch {
       return null;
     }
@@ -321,48 +507,55 @@ class ProjectDockerRuntime {
     log?: RuntimeLogWriter;
     timeoutMs?: number;
   }): Promise<number> {
-    await this.ensureBooted(args.log);
-
     const fullCommand = [args.command, ...(args.commandArgs ?? [])].join(" ");
 
-    const abortController = new AbortController();
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    return await this.executeWithSessionRetry({
+      actionLabel: `running "${fullCommand}"`,
+      log: args.log,
+      execute: async (sessionId) => {
+        const abortController = new AbortController();
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-    if (args.timeoutMs && args.timeoutMs > 0) {
-      timeoutId = setTimeout(() => {
-        abortController.abort();
-      }, args.timeoutMs);
-    }
+        if (args.timeoutMs && args.timeoutMs > 0) {
+          timeoutId = setTimeout(() => {
+            abortController.abort();
+          }, args.timeoutMs);
+        }
 
-    try {
-      const response = await fetch("/api/sandbox/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: this.sessionId,
-          command: fullCommand,
-          env: args.env,
-        }),
-        signal: abortController.signal,
-      });
+        try {
+          const response = await fetch("/api/sandbox/exec", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId,
+              command: fullCommand,
+              env: args.env,
+            }),
+            signal: abortController.signal,
+          });
 
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({ error: "Unknown" }));
-        throw new Error(
-          (error as { error?: string }).error || "Command execution failed",
-        );
-      }
+          if (!response.ok) {
+            throw await this.createResponseError(
+              response,
+              "Command execution failed",
+            );
+          }
 
-      return await this.consumeSSEStream(response, args.log);
-    } catch (error) {
-      if (abortController.signal.aborted) {
-        args.log?.(`Command timed out after ${args.timeoutMs}ms.`);
-        return 1;
-      }
-      throw error;
-    } finally {
-      if (timeoutId) clearTimeout(timeoutId);
-    }
+          return await this.consumeSSEStream(response, args.log);
+        } catch (error) {
+          if (abortController.signal.aborted) {
+            args.log?.(`Command timed out after ${args.timeoutMs}ms.`);
+            return 1;
+          }
+
+          throw error;
+        } finally {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+          }
+        }
+      },
+    });
   }
 
   // ─── Background Commands ───────────────────────────────────────────
@@ -420,7 +613,11 @@ class ProjectDockerRuntime {
         return { code: exitCode, errorMessage: null, at: Date.now() };
       } catch (error) {
         if (abortController.signal.aborted) {
-          return { code: null, errorMessage: "Stopped manually.", at: Date.now() };
+          return {
+            code: null,
+            errorMessage: "Stopped manually.",
+            at: Date.now(),
+          };
         }
         return {
           code: null,
@@ -531,14 +728,27 @@ class ProjectDockerRuntime {
     if (!this.sessionId) return;
 
     if (operation.type === "delete_path") {
-      await fetch("/api/sandbox/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: this.sessionId,
-          command: `rm -rf /workspace/${normalizePath(operation.path)}`,
-        }),
+      await this.executeWithSessionRetry({
+        actionLabel: `deleting ${normalizePath(operation.path)}`,
+        execute: async (sessionId) => {
+          const response = await fetch("/api/sandbox/exec", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId,
+              command: `rm -rf /workspace/${normalizePath(operation.path)}`,
+            }),
+          });
+
+          if (!response.ok) {
+            throw await this.createResponseError(
+              response,
+              "Failed to delete path",
+            );
+          }
+        },
       });
+
       this.syncedProjectFileContent.clear();
       this.syncedProjectFilePaths.clear();
       return;
@@ -555,14 +765,27 @@ class ProjectDockerRuntime {
       }
       command += `mv /workspace/${source} /workspace/${target}`;
 
-      await fetch("/api/sandbox/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: this.sessionId,
-          command,
-        }),
+      await this.executeWithSessionRetry({
+        actionLabel: `renaming ${source} to ${target}`,
+        execute: async (sessionId) => {
+          const response = await fetch("/api/sandbox/exec", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sessionId,
+              command,
+            }),
+          });
+
+          if (!response.ok) {
+            throw await this.createResponseError(
+              response,
+              "Failed to rename path",
+            );
+          }
+        },
       });
+
       this.syncedProjectFileContent.clear();
       this.syncedProjectFilePaths.clear();
       return;
@@ -575,14 +798,26 @@ class ProjectDockerRuntime {
     }
 
     const normalizedPath = normalizePath(operation.path);
-    await fetch("/api/sandbox/files/write", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        sessionId: this.sessionId,
-        filePath: normalizedPath,
-        content,
-      }),
+    await this.executeWithSessionRetry({
+      actionLabel: `writing ${normalizedPath}`,
+      execute: async (sessionId) => {
+        const response = await fetch("/api/sandbox/files/write", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sessionId,
+            filePath: normalizedPath,
+            content,
+          }),
+        });
+
+        if (!response.ok) {
+          throw await this.createResponseError(
+            response,
+            "Failed to write file",
+          );
+        }
+      },
     });
 
     this.syncedProjectFilePaths.add(normalizedPath);
@@ -697,9 +932,7 @@ class ProjectDockerRuntime {
 
 // ─── Singleton resolution (same pattern as WebContainer version) ────────
 
-const isRuntimeCompatible = (
-  value: unknown,
-): value is ProjectDockerRuntime => {
+const isRuntimeCompatible = (value: unknown): value is ProjectDockerRuntime => {
   if (typeof value !== "object" || value === null) {
     return false;
   }
