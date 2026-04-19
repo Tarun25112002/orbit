@@ -13,6 +13,9 @@ import {
 import { useAuth, UserButton } from "@clerk/nextjs";
 import { useCreateProject } from "@/features/projects/hooks/use-projects";
 import { OrbitAnimation } from "@/components/ui/orbit-animation";
+import { UpgradeLimitModal } from "@/features/projects/components/upgrade-limit-modal";
+import { useQuery } from "convex/react";
+import { api } from "../../convex/_generated/api";
 
 const orbitFeatureCards = [
   {
@@ -42,7 +45,9 @@ export default function Home() {
   const { isLoaded, isSignedIn } = useAuth();
   const router = useRouter();
   const createProject = useCreateProject();
+  const aiAccess = useQuery(api.projects.checkAiAccess);
   const [isCreating, setIsCreating] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const currentYear = new Date().getFullYear();
 
   const handleInitialize = async () => {
@@ -50,6 +55,11 @@ export default function Home() {
 
     if (!isSignedIn) {
       router.push("/sign-in");
+      return;
+    }
+
+    if (aiAccess && !aiAccess.allowed) {
+      setUpgradeOpen(true);
       return;
     }
 
@@ -66,9 +76,17 @@ export default function Home() {
       if (projectId) {
         router.push(`/projects/${projectId}`);
       }
-    } catch (error) {
-      console.error("Failed to create project:", error);
+    } catch (error: any) {
       setIsCreating(false);
+      const isLimitReached = 
+        error?.message?.includes("PROJECT_LIMIT_REACHED") ||
+        error?.data === "PROJECT_LIMIT_REACHED";
+
+      if (isLimitReached) {
+        setUpgradeOpen(true);
+      } else {
+        console.error("Failed to create project:", error);
+      }
     }
   };
 
@@ -86,12 +104,12 @@ export default function Home() {
       </div>
 
       <nav className="relative z-10 flex items-center justify-between p-6 max-w-7xl mx-auto w-full">
-        <div className="flex items-center space-x-2">
+        <Link href="/" className="flex items-center space-x-2 hover:opacity-80 transition-opacity">
           <div className="w-8 h-8 rounded-sm bg-foreground flex items-center justify-center">
             <span className="text-background font-mono font-bold">O</span>
           </div>
           <span className="font-semibold text-lg tracking-tight">Orbit</span>
-        </div>
+        </Link>
 
         <div className="flex items-center space-x-4 font-mono text-sm">
           {isLoaded && !isSignedIn && (
@@ -241,6 +259,13 @@ export default function Home() {
             </div>
             
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-xs text-muted-foreground">
+              <Link 
+                href="/pricing"
+                className="hover:text-foreground transition-colors flex items-center gap-1.5"
+              >
+                View plan
+              </Link>
+
               <a
                 href="https://www.linkedin.com/in/tarun-kumar-jha-721761248/"
                 target="_blank"
@@ -281,6 +306,7 @@ export default function Home() {
           </div>
         </div>
       </footer>
+      <UpgradeLimitModal open={upgradeOpen} onOpenChange={setUpgradeOpen} />
     </div>
   );
 }

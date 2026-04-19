@@ -50,6 +50,11 @@ export const ProjectsView = () => {
     : Math.max(0, projectLimit - projectCount);
 
   const handleNewProject = useCallback(async () => {
+    if (projectCount >= projectLimit) {
+      setUpgradeOpen(true);
+      return;
+    }
+
     const projectName = uniqueNamesGenerator({
       dictionaries: [adjectives, animals, colors],
       separator: "_",
@@ -59,13 +64,17 @@ export const ProjectsView = () => {
     try {
       await createProject({ name: projectName });
     } catch (err: any) {
-      if (err.message && err.message.includes("PROJECT_LIMIT_REACHED")) {
+      const isLimitReached = 
+        err?.message?.includes("PROJECT_LIMIT_REACHED") ||
+        err?.data === "PROJECT_LIMIT_REACHED";
+
+      if (isLimitReached) {
         setUpgradeOpen(true);
       } else {
         console.error("Failed to create project:", err);
       }
     }
-  }, [createProject]);
+  }, [createProject, projectCount, projectLimit]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -228,13 +237,13 @@ export const ProjectsView = () => {
                     <p className="text-[10px] text-muted-foreground">
                       {creditsLeft > 0
                         ? `${creditsLeft} AI project${creditsLeft !== 1 ? "s" : ""} remaining`
-                        : "Limit reached — "}
+                        : "Limit Reached — "}
                       {creditsLeft === 0 && (
                         <button
                           onClick={() => setUpgradeOpen(true)}
                           className="text-primary font-semibold hover:underline"
                         >
-                          upgrade now
+                          Upgrade Now
                         </button>
                       )}
                     </p>
