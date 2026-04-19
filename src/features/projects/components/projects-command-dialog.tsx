@@ -83,14 +83,14 @@ const ProjectResultItem = ({
   <CommandItem
     value={`${project.name}-${project._id}`}
     onSelect={() => onSelect(project._id)}
-    className="group flex items-center gap-3 rounded-lg px-3 py-2.5 data-selected:bg-white/5"
+    className="group flex items-center gap-3 rounded-lg px-3 py-2.5 mb-1.5 last:mb-0 data-[selected=true]:bg-white/5"
   >
-    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-white/3   group-data-selected:border-ring/20 group-data-selected:bg-ring/8">
+    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-white/8 bg-white/3 group-data-[selected=true]:border-ring/20 group-data-[selected=true]:bg-ring/8">
       {getProjectIcon(project)}
     </div>
 
     <div className="min-w-0 flex-1">
-      <span className="truncate text-sm font-medium text-foreground/85 group-data-selected:text-foreground">
+      <span className="truncate text-sm font-medium text-foreground/85 group-data-[selected=true]:text-foreground">
         {project.name}
       </span>
       <div className="mt-0.5 font-mono text-[11px] text-muted-foreground/50">
@@ -127,11 +127,11 @@ export const ProjectsCommandDialog = ({
       {projects === undefined ? (
         <LoadingState />
       ) : (
-        <CommandList className="max-h-90 px-1">
+        <CommandList className="max-h-90 px-1 pt-1.5">
           <EmptyState />
           <CommandGroup
             heading={
-              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground/40">
+              <span className="font-mono text-[10px] uppercase tracking-[0.15em] text-muted-foreground/40 block pb-1">
                 Projects · {projects.length}
               </span>
             }
@@ -147,7 +147,7 @@ export const ProjectsCommandDialog = ({
         </CommandList>
       )}
 
-      <div className="flex items-center gap-4 border-t border-white/6 px-4 py-2">
+      <div className="flex items-center gap-4 border-t border-white/6 px-4 py-2 mt-1">
         <div className="flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground/30">
           <Kbd className="h-4.5 border border-white/6 bg-white/3 text-[9px]">
             ↑↓

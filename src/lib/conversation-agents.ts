@@ -2826,14 +2826,16 @@ const runFileOpsPlannerDirect = async (
 
   const result = await generateGeminiCompletion({
     model: targetModel,
+    system: FILE_OPS_PLANNER_SYSTEM_PROMPT,
     messages: [
       {
         role: "user",
-        content: `${FILE_OPS_PLANNER_SYSTEM_PROMPT}\n\n${prompt}`,
+        content: prompt,
       },
     ],
     maxTokens: FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS,
-    temperature: 0.1,
+    temperature: 0.05,
+    reasoningEffort: "high",
     responseMimeType: "application/json",
   });
 

@@ -1,9 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
-import { ArrowRight, Github, Loader2 } from "lucide-react";
-import Image from "next/image";
+import { useState } from "react";
+import { ArrowRight, Loader2, Github, Linkedin, Twitter } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -14,135 +12,47 @@ import {
 } from "unique-names-generator";
 import { useAuth, UserButton } from "@clerk/nextjs";
 import { useCreateProject } from "@/features/projects/hooks/use-projects";
+import { OrbitAnimation } from "@/components/ui/orbit-animation";
 
-const featureCards = [
+const orbitFeatureCards = [
   {
-    id: "agents",
-    label: "01",
-    title: "Agentic Build Pipeline",
-    summary: "Plan, code, run, and repair project work from one focused flow.",
-    detail:
-      "Orbit coordinates implementation, code quality, architecture checks, and runtime actions so generated work moves through a practical build loop.",
-    metric: "Multi-agent",
+    node: "Node 01",
+    title: "Planning",
+    description:
+      "Map tasks, architecture, and file changes before execution starts.",
+    metric: "Structured graph inputs",
   },
   {
-    id: "workspace",
-    label: "02",
-    title: "Live Coding Workspace",
-    summary: "Edit files, manage project structure, and keep context close.",
-    detail:
-      "The coding panel brings file navigation, Monaco editing, AI transforms, status metadata, and workspace state into a clean developer surface.",
-    metric: "Editor ready",
+    node: "Node 02",
+    title: "Generation",
+    description:
+      "Generate and edit code in-context with workspace-aware AI actions.",
+    metric: "Context-native code output",
   },
   {
-    id: "runtime",
-    label: "03",
-    title: "Runtime Preview",
-    summary: "Launch app output and inspect logs without leaving the project.",
-    detail:
-      "Orbit can sync files into a runtime, install dependencies, start dev servers, show previews, and keep terminal output available for diagnosis.",
-    metric: "Preview loop",
+    node: "Node 03",
+    title: "Verification",
+    description:
+      "Run and validate outputs with consistent build and runtime checks.",
+    metric: "Fast iteration loop",
   },
-  {
-    id: "github",
-    label: "04",
-    title: "GitHub Connected",
-    summary: "Move from generated workspace to repository handoff faster.",
-    detail:
-      "Import repositories, export generated work, and keep authenticated GitHub workflows close to the development experience.",
-    metric: "Repo flow",
-  },
-];
-
-const easeOutExpo = [0.16, 1, 0.3, 1] as const;
+] as const;
 
 export default function Home() {
   const { isLoaded, isSignedIn } = useAuth();
   const router = useRouter();
   const createProject = useCreateProject();
   const [isCreating, setIsCreating] = useState(false);
-  const [flippedFeatureId, setFlippedFeatureId] = useState<string | null>(null);
-  const [githubUser, setGithubUser] = useState<{
-    login: string;
-    html_url: string;
-  } | null>(null);
-  const [githubStatus, setGithubStatus] = useState<
-    "idle" | "loading" | "connected" | "disconnected"
-  >("idle");
   const currentYear = new Date().getFullYear();
 
-  useEffect(() => {
-    if (!isLoaded) return;
-
-    if (!isSignedIn) {
-      setGithubStatus("idle");
-      setGithubUser(null);
-      return;
-    }
-
-    let isMounted = true;
-    setGithubStatus("loading");
-
-    fetch("/api/github/connection")
-      .then((res) => res.json())
-      .then(
-        (data: {
-          connected?: boolean;
-          user?: { login?: string; html_url?: string };
-        }) => {
-          if (!isMounted) return;
-
-          if (data.connected && data.user?.login && data.user?.html_url) {
-            setGithubUser({
-              login: data.user.login,
-              html_url: data.user.html_url,
-            });
-            setGithubStatus("connected");
-            return;
-          }
-
-          setGithubUser(null);
-          setGithubStatus("disconnected");
-        },
-      )
-      .catch(() => {
-        if (!isMounted) return;
-        setGithubUser(null);
-        setGithubStatus("disconnected");
-      });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [isLoaded, isSignedIn]);
-
-  const handleConnectGitHub = () => {
-    const clientId =
-      process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID || "Ov23liI9ATfQSAf59Szj";
-    const redirectUri = `${window.location.origin}/api/auth/github/callback`;
-    const returnPath = `${window.location.pathname}${window.location.search}`;
-
-    window.location.href =
-      `https://github.com/login/oauth/authorize?client_id=${clientId}&scope=repo` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}&state=${encodeURIComponent(returnPath)}`;
-  };
-
-  const handleGitHubAction = () => {
-    if (githubStatus === "connected" && githubUser) {
-      window.open(githubUser.html_url, "_blank", "noopener,noreferrer");
-      return;
-    }
+  const handleInitialize = async () => {
+    if (isCreating) return;
 
     if (!isSignedIn) {
       router.push("/sign-in");
       return;
     }
 
-    handleConnectGitHub();
-  };
-
-  const handleInitialize = async () => {
-    if (isCreating) return;
     setIsCreating(true);
 
     try {
@@ -163,21 +73,19 @@ export default function Home() {
   };
 
   return (
-    <div className="relative min-h-screen bg-background overflow-x-hidden selection:bg-primary/20 flex flex-col">
-      {/* Static background */}
-      <div className="absolute inset-0 z-0">
+    <div className="relative flex min-h-screen flex-col overflow-x-clip bg-background selection:bg-primary/20">
+      <div
+        className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
+        aria-hidden="true"
+      >
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
+        <OrbitAnimation />
         <div className="absolute inset-x-0 bottom-0 top-[20%] z-0 bg-gradient-to-t from-background via-background/80 to-transparent" />
         <div className="absolute right-0 top-0 -mr-[50%] -mt-[25%] h-[1000px] w-[1000px] rounded-full bg-primary/5 opacity-50 blur-[100px] pointer-events-none" />
         <div className="absolute left-0 bottom-0 -ml-[50%] -mb-[25%] h-[800px] w-[800px] rounded-full bg-foreground/5 opacity-50 blur-[100px] pointer-events-none" />
       </div>
 
-      <motion.nav
-        className="relative z-10 flex items-center justify-between p-6 max-w-7xl mx-auto w-full"
-        initial={{ opacity: 0, y: -14 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.55, ease: easeOutExpo }}
-      >
+      <nav className="relative z-10 flex items-center justify-between p-6 max-w-7xl mx-auto w-full">
         <div className="flex items-center space-x-2">
           <div className="w-8 h-8 rounded-sm bg-foreground flex items-center justify-center">
             <span className="text-background font-mono font-bold">O</span>
@@ -186,38 +94,6 @@ export default function Home() {
         </div>
 
         <div className="flex items-center space-x-4 font-mono text-sm">
-          {isLoaded ? (
-            githubStatus === "loading" ? (
-              <span className="hidden sm:flex items-center space-x-2 text-muted-foreground">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                <span>GitHub</span>
-              </span>
-            ) : githubStatus === "connected" && githubUser ? (
-              <button
-                type="button"
-                onClick={handleGitHubAction}
-                className="text-muted-foreground hover:text-foreground hidden sm:flex items-center space-x-2"
-              >
-                <Github className="w-4 h-4" />
-                <span>GitHub</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleGitHubAction}
-                className="text-muted-foreground hover:text-foreground hidden sm:flex items-center space-x-2"
-              >
-                <Github className="w-4 h-4" />
-                <span>Connect GitHub</span>
-              </button>
-            )
-          ) : (
-            <span className="hidden sm:flex items-center space-x-2 text-muted-foreground">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span>GitHub</span>
-            </span>
-          )}
-
           {isLoaded && !isSignedIn && (
             <>
               <Link
@@ -249,15 +125,10 @@ export default function Home() {
             </>
           )}
         </div>
-      </motion.nav>
+      </nav>
 
-      <main className="relative z-10 flex flex-col items-center px-6 pb-20">
-        <motion.div
-          className="mx-auto flex min-h-[72svh] max-w-4xl flex-col items-center justify-center text-center"
-          initial={{ opacity: 0, y: 28, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ duration: 0.72, delay: 0.08, ease: easeOutExpo }}
-        >
+      <main className="relative z-10 flex flex-1 flex-col items-center px-6 pb-14">
+        <div className="mx-auto flex min-h-[66svh] max-w-4xl flex-col items-center justify-center text-center">
           <div className="mb-6">
             <span className="inline-flex items-center rounded-full border border-border bg-muted/50 px-3 py-1 font-mono text-xs text-muted-foreground backdrop-blur-sm">
               <span className="w-2 h-2 rounded-full bg-emerald-500 mr-2" />
@@ -281,7 +152,7 @@ export default function Home() {
             <button
               onClick={handleInitialize}
               disabled={isCreating}
-              className="group flex items-center justify-center space-x-2 bg-foreground text-background px-8 py-4 rounded-md font-medium disabled:opacity-80 disabled:cursor-not-allowed w-full sm:w-auto"
+              className="group flex items-center justify-center space-x-2 bg-foreground text-background px-8 py-4 rounded-md font-medium disabled:opacity-80 disabled:cursor-not-allowed w-full sm:w-auto transition-transform hover:scale-[1.02] active:scale-[0.98]"
             >
               {isCreating ? (
                 <>
@@ -296,242 +167,120 @@ export default function Home() {
               )}
             </button>
           </div>
-        </motion.div>
+        </div>
 
-        <motion.section
-          className="mx-auto w-full max-w-7xl py-8 sm:py-12"
-          initial={{ opacity: 0, y: 36 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true, amount: 0.18 }}
-          transition={{ duration: 0.7, ease: easeOutExpo }}
-        >
-          <div className="mb-8 flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
-            <div className="flex items-start gap-4">
-              <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-md border border-border bg-card p-2">
-                <Image
-                  src="/apple-touch-icon.png"
-                  alt="Orbit mark"
-                  fill
-                  sizes="48px"
-                  className="object-contain p-1"
-                  priority={false}
-                />
-              </div>
-              <div className="max-w-2xl">
-                <p className="mb-2 font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                  Orbit Features
-                </p>
-                <h2 className="text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                  Flip through the core workflow.
-                </h2>
-              </div>
-            </div>
-            <p className="max-w-sm font-mono text-xs leading-relaxed text-muted-foreground sm:text-right">
-              Tap or click a card to reveal the operational detail behind each
-              Orbit feature.
+        <section className="mx-auto w-full max-w-6xl pb-8">
+          <div className="mb-12 text-center">
+            <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+              Orbit Features
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-foreground md:text-3xl">
+              Graph-style execution flow built for engineers.
+            </h2>
+            <p className="mx-auto mt-3 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+              A connected workflow from planning to generation to verification,
+              with clear node-level visibility across your build lifecycle.
             </p>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {featureCards.map((feature, index) => {
-              const isFlipped = flippedFeatureId === feature.id;
+          <div className="relative">
+            <div className="pointer-events-none absolute inset-x-[8%] top-1/2 hidden border-t border-dashed border-border/70 lg:block" />
+            <div className="pointer-events-none absolute left-1/2 top-[-14px] hidden h-12 -translate-x-1/2 border-l border-dashed border-border/70 lg:block" />
 
-              return (
-                <motion.button
-                  key={feature.id}
-                  type="button"
-                  aria-pressed={isFlipped}
-                  onClick={() =>
-                    setFlippedFeatureId((current) =>
-                      current === feature.id ? null : feature.id,
-                    )
-                  }
-                  className="h-[260px] w-full text-left [perspective:1200px]"
-                  initial={{ opacity: 0, y: 22 }}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  viewport={{ once: true, amount: 0.25 }}
-                  transition={{
-                    duration: 0.52,
-                    delay: index * 0.08,
-                    ease: easeOutExpo,
-                  }}
+            <div className="grid gap-4 md:grid-cols-3">
+              {orbitFeatureCards.map((card) => (
+                <article
+                  key={card.node}
+                  className="relative overflow-hidden rounded-xl border border-border/70 bg-card/70 p-5 shadow-sm backdrop-blur-sm transition-colors hover:bg-card/90"
                 >
-                  <motion.span
-                    className="relative block h-full w-full [transform-style:preserve-3d]"
-                    animate={{ rotateY: isFlipped ? 180 : 0 }}
-                    transition={{ duration: 0.58, ease: "easeInOut" }}
-                  >
-                    <span className="orbit-feature-card-face absolute inset-0 flex h-full flex-col justify-between rounded-md border border-border/80 bg-card p-5 shadow-sm">
-                      <span>
-                        <span className="mb-6 flex items-center justify-between">
-                          <span className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                            {feature.label}
-                          </span>
-                          <span className="rounded border border-border bg-background px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
-                            {feature.metric}
-                          </span>
-                        </span>
-                        <span className="block text-xl font-semibold tracking-tight text-foreground">
-                          {feature.title}
-                        </span>
-                        <span className="mt-3 block text-sm leading-6 text-muted-foreground">
-                          {feature.summary}
-                        </span>
+                  <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,oklch(0.2_0_0_/_0.08),transparent_48%)]" />
+                  <div className="relative">
+                    <div className="mb-4 flex items-center justify-between">
+                      <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                        {card.node}
                       </span>
-                      <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-                        Click to flip
-                      </span>
-                    </span>
+                      <span className="size-2 rounded-full bg-foreground/60" />
+                    </div>
 
-                    <span className="orbit-feature-card-face absolute inset-0 flex h-full flex-col justify-between rounded-md border border-foreground/20 bg-foreground p-5 text-background shadow-sm [transform:rotateY(180deg)]">
-                      <span>
-                        <span className="mb-6 flex items-center justify-between">
-                          <span className="font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-background/70">
-                            {feature.label}
-                          </span>
-                          <span className="rounded border border-background/20 px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-background/70">
-                            Detail
-                          </span>
-                        </span>
-                        <span className="block text-xl font-semibold tracking-tight">
-                          {feature.title}
-                        </span>
-                        <span className="mt-3 block text-sm leading-6 text-background/75">
-                          {feature.detail}
-                        </span>
-                      </span>
-                      <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-background/65">
-                        Click to return
-                      </span>
-                    </span>
-                  </motion.span>
-                </motion.button>
-              );
-            })}
+                    <h3 className="text-lg font-semibold tracking-tight text-foreground">
+                      {card.title}
+                    </h3>
+                    <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                      {card.description}
+                    </p>
+
+                    <div className="mt-4 border-t border-dashed border-border/70 pt-3 font-mono text-[11px] text-muted-foreground">
+                      {card.metric}
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
           </div>
-        </motion.section>
+        </section>
       </main>
 
-      <motion.footer
-        className="relative z-10 mt-auto w-full border-t border-border/70 bg-background/70 px-6 py-6 backdrop-blur-sm"
-        initial={{ opacity: 0, y: 24 }}
-        whileInView={{ opacity: 1, y: 0 }}
-        viewport={{ once: true, amount: 0.2 }}
-        transition={{ duration: 0.6, ease: easeOutExpo }}
-      >
-        <div className="mx-auto flex max-w-7xl flex-col gap-5">
-          <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex items-start gap-3">
+      <footer className="relative z-10 mt-auto w-full border-t border-border/70 bg-background/75 px-6 py-6 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
               <div className="flex h-8 w-8 items-center justify-center rounded-sm bg-foreground">
                 <span className="font-mono text-xs font-bold text-background">
                   O
                 </span>
               </div>
 
-              <div className="space-y-1">
+              <div>
                 <p className="text-sm font-semibold tracking-tight text-foreground">
                   Orbit
                 </p>
-                <p className="max-w-xs font-mono text-[11px] leading-relaxed text-muted-foreground">
-                  Agentic workspaces for faster, more reliable software
-                  delivery.
+                <p className="font-mono text-[11px] text-muted-foreground">
+                  Agentic workspace platform for production-grade shipping.
                 </p>
               </div>
             </div>
+            
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-xs text-muted-foreground">
+              <a
+                href="https://www.linkedin.com/in/tarun-kumar-jha-721761248/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-foreground transition-colors flex items-center gap-1.5"
+              >
+                <Linkedin className="w-4 h-4" />
+                LinkedIn
+              </a>
 
-            <div className="flex flex-col gap-2 text-xs text-muted-foreground sm:items-end">
-              <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground/80">
-                Developer
-              </p>
-              <p className="text-sm font-medium tracking-tight text-foreground">
-                Tarun Kumar Jha
-              </p>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 font-mono">
-                {isLoaded ? (
-                  githubStatus === "connected" && githubUser ? (
-                    <button
-                      type="button"
-                      onClick={handleGitHubAction}
-                      className="transition-colors hover:text-foreground"
-                    >
-                      GitHub
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleGitHubAction}
-                      className="transition-colors hover:text-foreground"
-                    >
-                      Connect GitHub
-                    </button>
-                  )
-                ) : (
-                  <span className="inline-flex items-center gap-2 text-muted-foreground">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    GitHub
-                  </span>
-                )}
-                <a
-                  href="https://www.linkedin.com/in/tarun-kumar-jha-721761248/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="transition-colors hover:text-foreground"
-                >
-                  LinkedIn
-                </a>
-                <a
-                  href="https://x.com/TarunJha2002"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="transition-colors hover:text-foreground"
-                >
-                  X
-                </a>
-              </div>
-              <span className="font-mono text-[11px] text-muted-foreground/80">
-                Pipeline v2.0
-              </span>
+              <a
+                href="https://x.com/TarunJha2002"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-foreground transition-colors flex items-center gap-1.5"
+              >
+                <Twitter className="w-4 h-4" />
+                X
+              </a>
+
+              <a
+                href="https://github.com/Tarun25112002"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-foreground transition-colors flex items-center gap-1.5"
+              >
+                <Github className="w-4 h-4" />
+                GitHub
+              </a>
             </div>
           </div>
 
           <div className="h-px w-full bg-border/70" />
 
-          <div className="grid gap-3 rounded-md border border-border/70 bg-background/40 p-3 sm:grid-cols-3">
-            <div className="space-y-1">
-              <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground/80">
-                Runtime
-              </p>
-              <p className="text-xs text-foreground">
-                Autonomous multi-agent execution, tuned for rapid iteration.
-              </p>
-            </div>
-
-            <div className="space-y-1">
-              <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground/80">
-                Collaboration
-              </p>
-              <p className="text-xs text-foreground">
-                Shared workspaces with instant sync across projects and files.
-              </p>
-            </div>
-
-            <div className="space-y-1">
-              <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground/80">
-                Security
-              </p>
-              <p className="text-xs text-foreground">
-                Authenticated sessions and access controls built into every
-                workspace.
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-2 font-mono text-[11px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-            <span>&copy; {currentYear} Orbit. Crafted by Tarun Kumar Jha.</span>
-            <span>Secure by default.</span>
+          <div className="flex flex-col gap-1 font-mono text-[11px] text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+            <span>&copy; {currentYear} Orbit. All rights reserved.</span>
+            <span>Developed by Tarun Kumar Jha.</span>
           </div>
         </div>
-      </motion.footer>
+      </footer>
     </div>
   );
 }

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
-import { decryptToken } from "@/lib/github-crypto";
+import { getAuthenticatedGitHubTokenWithConvex } from "@/lib/github-helpers";
 import { GitHubClient } from "@/lib/github-client";
 import { api } from "../../../../../convex/_generated/api";
 import type { Id } from "../../../../../convex/_generated/dataModel";
@@ -39,43 +38,26 @@ const buildFilePaths = (
 };
 
 export async function POST(request: NextRequest) {
-  const encryptedToken = request.cookies.get("github_token")?.value;
+  const authResult = await getAuthenticatedGitHubTokenWithConvex(request);
+  if (!authResult.ok) return authResult.response;
 
-  if (!encryptedToken) {
-    return NextResponse.json(
-      { error: "GitHub not connected" },
-      { status: 401 },
-    );
-  }
-
-  const { getToken } = await auth();
-  const convexToken = await getToken({ template: "convex" });
-  if (!convexToken) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  convex.setAuth(convexToken);
+  convex.setAuth(authResult.convexToken);
 
   try {
     const body = (await request.json()) as { projectId: string };
     const { projectId } = body;
 
     if (!projectId) {
-      return NextResponse.json(
-        { error: "Missing projectId" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "Missing projectId" }, { status: 400 });
     }
 
-    // Get project info to find linked repo
+    // Get project info (Convex verifies ownership)
     const project = await convex.query(api.projects.getById, {
       id: projectId as Id<"projects">,
     });
 
     if (!project) {
-      return NextResponse.json(
-        { error: "Project not found" },
-        { status: 404 },
-      );
+      return NextResponse.json({ error: "Project not found" }, { status: 404 });
     }
 
     const repoUrl = project.exportRepoUrl || project.importRepoUrl;
@@ -98,8 +80,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const token = decryptToken(encryptedToken);
-    const client = new GitHubClient(token);
+    const client = new GitHubClient(authResult.token);
+
+    // Verify the authenticated user has access to the target repo
+    // (this will throw if the user's token doesn't have permission)
+    try {
+      await client.getRepo(owner, repo);
+    } catch {
+      return NextResponse.json(
+        { error: "You don't have access to the linked repository. The repo may belong to a different GitHub account." },
+        { status: 403 },
+      );
+    }
 
     // Get all project files from Convex
     const allFiles = (await convex.query(api.files.getFiles, {
@@ -109,10 +101,7 @@ export async function POST(request: NextRequest) {
     const filesToCommit = buildFilePaths(allFiles, undefined, "");
 
     if (filesToCommit.length === 0) {
-      return NextResponse.json(
-        { error: "No files to push" },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "No files to push" }, { status: 400 });
     }
 
     const result = await client.commitFiles({

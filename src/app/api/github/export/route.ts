@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
-import { decryptToken } from "@/lib/github-crypto";
+import { getAuthenticatedGitHubTokenWithConvex } from "@/lib/github-helpers";
 import { GitHubClient } from "@/lib/github-client";
 import { api } from "../../../../../convex/_generated/api";
 import type { Id } from "../../../../../convex/_generated/dataModel";
@@ -40,21 +39,10 @@ const buildFilePaths = (
 };
 
 export async function POST(request: NextRequest) {
-  const encryptedToken = request.cookies.get("github_token")?.value;
+  const authResult = await getAuthenticatedGitHubTokenWithConvex(request);
+  if (!authResult.ok) return authResult.response;
 
-  if (!encryptedToken) {
-    return NextResponse.json(
-      { error: "GitHub not connected" },
-      { status: 401 },
-    );
-  }
-
-  const { getToken } = await auth();
-  const convexToken = await getToken({ template: "convex" });
-  if (!convexToken) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  convex.setAuth(convexToken);
+  convex.setAuth(authResult.convexToken);
 
   try {
     const body = (await request.json()) as {
@@ -73,16 +61,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Mark export as started
+    // Mark export as started (Convex verifies project ownership)
     await convex.mutation(api.projects.startGithubExport, {
       projectId: projectId as Id<"projects">,
     });
 
-    const token = decryptToken(encryptedToken);
-    const client = new GitHubClient(token);
+    const client = new GitHubClient(authResult.token);
     const user = await client.getUser();
 
-    // Create the GitHub repository
+    // Create the GitHub repository under the authenticated user's account
     const repo = await client.createRepo({
       name: repoName,
       description: description || "Exported from Orbit",
@@ -92,7 +79,7 @@ export async function POST(request: NextRequest) {
     // Wait briefly for GitHub to initialize the repo
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // Get all project files from Convex
+    // Get all project files from Convex (verifies ownership)
     const allFiles = (await convex.query(api.files.getFiles, {
       projectId: projectId as Id<"projects">,
     })) as FileDoc[];
@@ -100,7 +87,7 @@ export async function POST(request: NextRequest) {
     const filesToCommit = buildFilePaths(allFiles, undefined, "");
 
     if (filesToCommit.length > 0) {
-      // Commit all files
+      // Commit all files to the user's new repo
       await client.commitFiles({
         owner: user.login,
         repo: repo.name,

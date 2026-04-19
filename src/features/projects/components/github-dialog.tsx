@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useUser } from "@clerk/nextjs";
+import { useSearchParams } from "next/navigation";
 import { GithubIcon, ExternalLinkIcon, DownloadCloudIcon, UploadCloudIcon } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery } from "convex/react";
@@ -32,45 +34,97 @@ type GitHubRepo = {
   default_branch: string;
 };
 
-export function GitHubConnectButton() {
+/**
+ * Shared hook for GitHub connection state.
+ * Re-checks whenever the Clerk user changes or after OAuth redirect.
+ */
+function useGitHubConnection() {
+  const { user: clerkUser, isLoaded: isClerkLoaded } = useUser();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState<GitHubUser | null>(null);
+  const [ghUser, setGhUser] = useState<GitHubUser | null>(null);
+  const prevUserIdRef = useRef<string | null | undefined>(undefined);
 
-  useEffect(() => {
-    fetch("/api/github/connection")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.connected && data.user) {
-          setUser(data.user);
-        }
-      })
-      .finally(() => setLoading(false));
+  const checkConnection = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/github/connection", { cache: "no-store" });
+      const data = await res.json();
+      if (data.connected && data.user) {
+        setGhUser(data.user);
+      } else {
+        setGhUser(null);
+      }
+    } catch {
+      setGhUser(null);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  // Re-check when Clerk user changes (login, logout, switch)
+  useEffect(() => {
+    if (!isClerkLoaded) return;
+
+    const currentId = clerkUser?.id ?? null;
+
+    // If user switched or signed out, clear immediately before fetching
+    if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== currentId) {
+      setGhUser(null);
+    }
+    prevUserIdRef.current = currentId;
+
+    if (currentId) {
+      checkConnection();
+    } else {
+      setGhUser(null);
+      setLoading(false);
+    }
+  }, [isClerkLoaded, clerkUser?.id, checkConnection]);
+
+  // Re-check after GitHub OAuth redirect (github_connected=1 in URL)
+  useEffect(() => {
+    const connected = searchParams.get("github_connected");
+    if (connected === "1") {
+      checkConnection();
+    }
+  }, [searchParams, checkConnection]);
+
+  return { ghUser, loading: !isClerkLoaded || loading, checkConnection };
+}
+
+export function GitHubConnectButton() {
+  const { ghUser, loading, checkConnection } = useGitHubConnection();
+
   const handleConnect = () => {
-    // Generate a random state to deter CSRF if they care, but simpler is just sending to auth callback route
-    window.location.href = `https://github.com/login/oauth/authorize?client_id=${process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID || "Ov23liI9ATfQSAf59Szj"}&scope=repo&redirect_uri=${window.location.origin}/api/auth/github/callback`;
+    const currentPath = window.location.pathname;
+    window.location.href = `/api/auth/github/connect?redirect=${encodeURIComponent(currentPath)}`;
   };
 
   const handleDisconnect = async () => {
-    await fetch("/api/auth/github/disconnect", { method: "POST" });
-    setUser(null);
-    window.location.reload();
+    try {
+      await fetch("/api/auth/github/disconnect", { method: "POST" });
+      toast.success("GitHub account disconnected");
+      // Re-check connection state immediately
+      await checkConnection();
+    } catch {
+      toast.error("Failed to disconnect GitHub");
+    }
   };
 
   if (loading) {
     return <Spinner className="size-4" />;
   }
 
-  if (user) {
+  if (ghUser) {
     return (
       <div className="flex items-center gap-2">
         <img
-          src={user.avatar_url}
-          alt={user.login}
+          src={ghUser.avatar_url}
+          alt={ghUser.login}
           className="size-5 rounded-full"
         />
-        <span className="text-sm font-medium">{user.login}</span>
+        <span className="text-sm font-medium">{ghUser.login}</span>
         <Button variant="ghost" size="sm" onClick={handleDisconnect} className="h-6 px-2 text-[10px]">
           Disconnect
         </Button>
@@ -114,10 +168,16 @@ export function GitHubDialog({
   const fetchRepos = async () => {
     setLoadingRepos(true);
     try {
-      const res = await fetch("/api/github/repos");
+      const res = await fetch("/api/github/repos", { cache: "no-store" });
+      if (res.status === 401) {
+        toast.error("GitHub not connected. Please connect your account first.");
+        return;
+      }
       const data = await res.json();
       if (data.repos) {
         setRepos(data.repos);
+      } else if (data.error) {
+        toast.error(data.error);
       }
     } catch {
       toast.error("Failed to fetch repositories");
@@ -165,7 +225,7 @@ export function GitHubDialog({
       } else {
         toast.error(data.error || "Import failed", { id: loadingToast });
       }
-    } catch (e) {
+    } catch {
       toast.error("An unexpected error occurred", { id: loadingToast });
     } finally {
       setImporting(false);
@@ -197,7 +257,7 @@ export function GitHubDialog({
       } else {
         toast.error(data.error || "Export failed", { id: loadingToast });
       }
-    } catch (e) {
+    } catch {
       toast.error("An unexpected error occurred", { id: loadingToast });
     } finally {
       setExporting(false);
@@ -223,7 +283,7 @@ export function GitHubDialog({
       } else {
         toast.error(data.error || "Push failed", { id: loadingToast });
       }
-    } catch (e) {
+    } catch {
       toast.error("An unexpected error occurred", { id: loadingToast });
     } finally {
       setPushing(false);

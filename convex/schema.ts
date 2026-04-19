@@ -60,6 +60,15 @@ export default defineSchema({
         ),
       )
     }).index("by_conversation", ["conversationId"])
-    .index("by_project_status", ["projectId", "status"])
+    .index("by_project_status", ["projectId", "status"]),
     
+    subscriptions: defineTable({
+      ownerId: v.string(),
+      tier: v.union(v.literal("basic"), v.literal("pro"), v.literal("advance")),
+      stripeSessionId: v.optional(v.string()),
+      stripePaymentIntentId: v.optional(v.string()),
+      status: v.union(v.literal("pending"), v.literal("active"), v.literal("failed")),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_owner", ["ownerId"]),
 });

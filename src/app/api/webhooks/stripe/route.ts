@@ -1,0 +1,57 @@
+import { NextResponse, NextRequest } from "next/server";
+import Stripe from "stripe";
+import { fetchMutation } from "convex/nextjs";
+import { api } from "../../../../../convex/_generated/api";
+
+export async function POST(req: NextRequest) {
+  const rawBody = await req.text();
+  const signature = req.headers.get("stripe-signature");
+
+  if (!signature) {
+    return NextResponse.json({ error: "No signature" }, { status: 400 });
+  }
+
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+    apiVersion: "2025-03-31.basil",
+  });
+
+  let event: Stripe.Event;
+  try {
+    event = stripe.webhooks.constructEvent(
+      rawBody,
+      signature,
+      process.env.STRIPE_WEBHOOK_SECRET!
+    );
+  } catch (err: any) {
+    console.error("Stripe webhook signature verification failed:", err.message);
+    return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
+  }
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object as Stripe.Checkout.Session;
+
+    const userId = session.metadata?.userId;
+    const tier = session.metadata?.tier as
+      | "basic"
+      | "pro"
+      | "advance"
+      | undefined;
+
+    if (!userId || !tier) {
+      console.error("Missing metadata in Stripe session:", session.id);
+      return NextResponse.json({ error: "Missing metadata" }, { status: 400 });
+    }
+
+    await fetchMutation(api.subscriptions.activate, {
+      ownerId: userId,
+      tier,
+      stripeSessionId: session.id,
+      stripePaymentIntentId:
+        typeof session.payment_intent === "string"
+          ? session.payment_intent
+          : undefined,
+    });
+  }
+
+  return NextResponse.json({ received: true });
+}

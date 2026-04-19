@@ -118,6 +118,11 @@
     @apply border-border outline-ring/50;
   }
 
+  html,
+  body {
+    @apply antialiased;
+  }
+
   body {
     @apply bg-background text-foreground;
   }
@@ -125,10 +130,6 @@
 
 @layer base {
   @media (prefers-reduced-motion: no-preference) {
-    html {
-      scroll-behavior: smooth;
-    }
-
     button,
     a,
     input,
@@ -166,11 +167,6 @@
 }
 
 @layer components {
-  .orbit-feature-card-face {
-    backface-visibility: hidden;
-    -webkit-backface-visibility: hidden;
-  }
-
   .orbit-fade-up {
     animation: orbit-fade-up 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
@@ -222,4 +218,10 @@
 
 ::-webkit-scrollbar-thumb {
   @apply rounded-full bg-border border border-transparent border-solid bg-clip-padding;
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
 }

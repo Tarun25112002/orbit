@@ -18,24 +18,29 @@ export default function SignInPage() {
           <ArrowLeft className="mr-2 h-4 w-4  group-hover:-translate-x-1" />
           Back to home
         </Link>
-        
-        <SignIn 
-          appearance={{
-            baseTheme: dark,
-            elements: {
-              card: "bg-card border border-border shadow-2xl rounded-2xl",
-              headerTitle: "text-foreground",
-              headerSubtitle: "text-muted-foreground",
-              socialButtonsBlockButton: "border-border hover:bg-muted text-foreground",
-              formButtonPrimary: "bg-foreground text-background hover:bg-foreground/90 ",
-              formFieldInput: "bg-background border-border text-foreground",
-              formFieldLabel: "text-foreground",
-              footerActionLink: "text-foreground hover:opacity-80 ",
-              identityPreviewText: "text-foreground",
-              identityPreviewEditButton: "text-muted-foreground hover:text-foreground",
-            }
-          }}
-        />
+
+        {/* Loading indicator while Clerk initializes */}
+        <div className="min-h-[400px] flex items-start">
+          <SignIn 
+            appearance={{
+              baseTheme: dark,
+              elements: {
+                card: "bg-card border border-border shadow-2xl rounded-2xl",
+                headerTitle: "text-foreground",
+                headerSubtitle: "text-muted-foreground",
+                socialButtonsBlockButton: "border-border hover:bg-muted text-foreground",
+                formButtonPrimary: "bg-foreground text-background hover:bg-foreground/90 ",
+                formFieldInput: "bg-background border-border text-foreground",
+                formFieldLabel: "text-foreground",
+                footerActionLink: "text-foreground hover:opacity-80 ",
+                identityPreviewText: "text-foreground",
+                identityPreviewEditButton: "text-muted-foreground hover:text-foreground",
+                rootBox: "w-full",
+              }
+            }}
+            fallbackRedirectUrl="/dashboard"
+          />
+        </div>
       </div>
     </div>
   );

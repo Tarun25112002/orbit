@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
 import { ConvexHttpClient } from "convex/browser";
-import { decryptToken } from "@/lib/github-crypto";
+import { getAuthenticatedGitHubTokenWithConvex } from "@/lib/github-helpers";
 import { GitHubClient } from "@/lib/github-client";
 import { api } from "../../../../../convex/_generated/api";
 import type { Id } from "../../../../../convex/_generated/dataModel";
@@ -9,21 +8,10 @@ import type { Id } from "../../../../../convex/_generated/dataModel";
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export async function POST(request: NextRequest) {
-  const encryptedToken = request.cookies.get("github_token")?.value;
+  const authResult = await getAuthenticatedGitHubTokenWithConvex(request);
+  if (!authResult.ok) return authResult.response;
 
-  if (!encryptedToken) {
-    return NextResponse.json(
-      { error: "GitHub not connected" },
-      { status: 401 },
-    );
-  }
-
-  const { getToken } = await auth();
-  const convexToken = await getToken({ template: "convex" });
-  if (!convexToken) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  convex.setAuth(convexToken);
+  convex.setAuth(authResult.convexToken);
 
   try {
     const body = (await request.json()) as {
@@ -42,19 +30,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Mark import as started
+    // Mark import as started (Convex verifies project ownership)
     await convex.mutation(api.projects.startGithubImport, {
       projectId: projectId as Id<"projects">,
       githubUrl: `https://github.com/${owner}/${repo}`,
     });
 
-    const token = decryptToken(encryptedToken);
-    const client = new GitHubClient(token);
+    const client = new GitHubClient(authResult.token);
 
-    // Fetch all files from GitHub
+    // Fetch all files from the user's GitHub repo
     const files = await client.fetchRepoFiles(owner, repo, branch);
 
-    // Write files to Convex
+    // Write files to Convex (createFile auto-creates folder hierarchy)
     for (const file of files) {
       try {
         await convex.mutation(api.files.createFile, {
@@ -98,8 +85,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(
       {
-        error:
-          error instanceof Error ? error.message : "Import failed",
+        error: error instanceof Error ? error.message : "Import failed",
       },
       { status: 500 },
     );

@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
+import { useQuery } from "convex/react";
 import {
   AlertTriangleIcon,
   BotIcon,
+  LockIcon,
   MessageSquareIcon,
   PencilIcon,
   PlusIcon,
@@ -21,6 +24,7 @@ import {
   type OrbitAiExecutionTraceEventDetail,
 } from "@/lib/ai-execution";
 import type { Id } from "../../../../convex/_generated/dataModel";
+import { api } from "../../../../convex/_generated/api";
 
 import {
   Conversation,
@@ -295,6 +299,9 @@ const ChatView = ({
   const messages = useMessages(conversationId);
   const sendMessage = useSendMessage();
   const { getToken } = useAuth();
+  const router = useRouter();
+  const aiAccess = useQuery(api.projects.checkAiAccess);
+  const isLimitReached = aiAccess ? !aiAccess.allowed : false;
   const [isSending, setIsSending] = useState(false);
   const [pendingAssistantMessageId, setPendingAssistantMessageId] =
     useState<Id<"messages"> | null>(null);
@@ -677,55 +684,83 @@ const ChatView = ({
       )}
 
       {/* Input */}
-      <div className="border-t border-border/60 bg-background/80 backdrop-blur-xl p-3 z-20">
-        <PromptInput
-          onSubmit={(msg) => {
-            void handleSend(msg.text);
-          }}
-          className="w-full relative shadow-sm"
-        >
-          <PromptInputTextarea
-            placeholder="Ask Orbit AI..."
-            onKeyDown={(event) => {
-              if (
-                event.key === "Enter" &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing &&
-                activeAssistantMessageId
-              ) {
-                event.preventDefault();
-                handleCancelActiveMessage();
-              }
-            }}
-            className="min-h-12 max-h-32 text-[13px] bg-card border border-border text-foreground placeholder:text-muted-foreground focus:border-primary focus:ring-1 focus:ring-primary/20 rounded-xl px-3 py-2  shadow-inner"
-          />
-          <PromptInputFooter className="mt-2.5 px-1">
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground/70">
-              <SparklesIcon className="size-3.5 text-primary/70" />
-              <span>Orbit AI</span>
+      {isLimitReached ? (
+        <div className="border-t border-amber-500/30 bg-amber-500/5 backdrop-blur-xl p-4 z-20">
+          <div className="flex items-start gap-3">
+            <div className="rounded-full bg-amber-500/10 p-2 shrink-0">
+              <LockIcon className="size-4 text-amber-500" />
             </div>
-            <PromptInputSubmit
-              status={activeAssistantMessageId ? "streaming" : undefined}
-              onStop={
-                activeAssistantMessageId ? handleCancelActiveMessage : undefined
-              }
-              disabled={
-                !activeAssistantMessageId && isSending
-                  ? true
-                  : isCancellingActiveAssistant
-              }
-              className={cn(
-                "text-primary-foreground font-medium rounded-lg h-8  shadow-sm",
-                activeAssistantMessageId
-                  ? "bg-muted hover:bg-muted/80 text-foreground w-auto px-3 text-[11px] border border-border"
-                  : "bg-primary hover:bg-primary/90 w-8",
-              )}
-            >
-              {activeAssistantMessageId ? undefined : undefined}
-            </PromptInputSubmit>
-          </PromptInputFooter>
-        </PromptInput>
-      </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[13px] font-semibold text-foreground">
+                AI Limit Reached
+              </p>
+              <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
+                You&apos;ve used {aiAccess?.count}/{aiAccess?.limit} projects on the{" "}
+                <span className="font-semibold text-foreground capitalize">{aiAccess?.tier}</span> plan.
+                Upgrade to continue using AI.
+              </p>
+              <button
+                type="button"
+                onClick={() => router.push("/pricing")}
+                className="mt-2.5 inline-flex items-center gap-1.5 rounded-lg bg-primary px-3.5 py-1.5 text-[11px] font-bold text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm"
+              >
+                <SparklesIcon className="size-3" />
+                Upgrade Plan
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="border-t border-border/60 bg-background/80 backdrop-blur-xl p-3 z-20">
+          <PromptInput
+            onSubmit={(msg) => {
+              void handleSend(msg.text);
+            }}
+            className="w-full relative shadow-sm"
+          >
+            <PromptInputTextarea
+              placeholder="Ask Orbit AI..."
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing &&
+                  activeAssistantMessageId
+                ) {
+                  event.preventDefault();
+                  handleCancelActiveMessage();
+                }
+              }}
+              className="min-h-12 max-h-32 text-[13px] bg-transparent text-foreground placeholder:text-muted-foreground px-3 py-2"
+            />
+            <PromptInputFooter className="mt-2.5 px-1">
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground/70">
+                <SparklesIcon className="size-3.5 text-primary/70" />
+                <span>Orbit AI</span>
+              </div>
+              <PromptInputSubmit
+                status={activeAssistantMessageId ? "streaming" : undefined}
+                onStop={
+                  activeAssistantMessageId ? handleCancelActiveMessage : undefined
+                }
+                disabled={
+                  !activeAssistantMessageId && isSending
+                    ? true
+                    : isCancellingActiveAssistant
+                }
+                className={cn(
+                  "text-primary-foreground font-medium rounded-lg h-8  shadow-sm",
+                  activeAssistantMessageId
+                    ? "bg-muted hover:bg-muted/80 text-foreground w-auto px-3 text-[11px] border border-border"
+                    : "bg-primary hover:bg-primary/90 w-8",
+                )}
+              >
+                {activeAssistantMessageId ? undefined : undefined}
+              </PromptInputSubmit>
+            </PromptInputFooter>
+          </PromptInput>
+        </div>
+      )}
     </div>
   );
 };

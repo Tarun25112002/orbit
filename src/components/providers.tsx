@@ -51,7 +51,7 @@ const ConvexUnauthenticatedState = () => {
 
 export const Providers = ({ children }: { children: React.ReactNode }) => {
   return (
-    <ClerkProvider>
+    <ClerkProvider afterSignOutUrl="/">
       <ConvexProviderWithClerk client={convex} useAuth={useAuth}>
         <ThemeProvider
           attribute="class"

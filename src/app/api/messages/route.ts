@@ -96,6 +96,18 @@ export async function POST(request: Request) {
       );
     }
 
+    // ── Check AI usage limits ──────────────────────────────────────────────
+    const aiAccess = await userConvex.query(api.projects.checkAiAccess, {});
+    if (!aiAccess.allowed) {
+      return NextResponse.json(
+        {
+          error: `AI limit reached. You've used ${aiAccess.count}/${aiAccess.limit} projects on the ${aiAccess.tier} plan. Please upgrade to continue using AI.`,
+          code: "AI_LIMIT_REACHED",
+        },
+        { status: 403 },
+      );
+    }
+
     const conversationMessages = await userConvex.query(
       api.conversations.getMessages,
       {

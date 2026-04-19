@@ -37,7 +37,7 @@ import { buildSuggestionProjectContext } from "../utils/codebase-context";
 
 const DEFAULT_SETTINGS: EditorSettings = {
   wordWrap: false,
-  minimap: false,
+  minimap: true,
   fontSize: 13,
   tabSize: 2,
   insertSpaces: true,

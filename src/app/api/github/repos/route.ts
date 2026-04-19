@@ -1,20 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { decryptToken } from "@/lib/github-crypto";
+import { getAuthenticatedGitHubToken } from "@/lib/github-helpers";
 import { GitHubClient } from "@/lib/github-client";
 
 export async function GET(request: NextRequest) {
-  const encryptedToken = request.cookies.get("github_token")?.value;
-
-  if (!encryptedToken) {
-    return NextResponse.json(
-      { error: "GitHub not connected" },
-      { status: 401 },
-    );
-  }
+  const authResult = await getAuthenticatedGitHubToken(request);
+  if (!authResult.ok) return authResult.response;
 
   try {
-    const token = decryptToken(encryptedToken);
-    const client = new GitHubClient(token);
+    const client = new GitHubClient(authResult.token);
 
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get("page") || "1", 10);
