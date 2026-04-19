@@ -343,6 +343,18 @@ export const CodeEditor = ({
       return;
     }
 
+    // Guard: ensure the editor DOM node is still attached to the document.
+    // If the editor was unmounted (e.g. file tab switch) but a scheduled
+    // requestAnimationFrame or Monaco internal render cycle fires after
+    // unmount, getDomNode() may still return the detached element while
+    // getBoundingClientRect() returns all-zero values or throws because
+    // Monaco's internal layout state is already torn down.
+    const dom = editor.getDomNode();
+    if (!dom || !dom.isConnected) {
+      setSelectionBar(null);
+      return;
+    }
+
     const model = editor.getModel();
     const sel = editor.getSelection();
     if (!model || !sel || sel.isEmpty()) {
@@ -353,12 +365,6 @@ export const CodeEditor = ({
     const endPos = sel.getEndPosition();
     const coords = editor.getScrolledVisiblePosition(endPos);
     if (!coords) {
-      setSelectionBar(null);
-      return;
-    }
-
-    const dom = editor.getDomNode();
-    if (!dom) {
       setSelectionBar(null);
       return;
     }
@@ -399,6 +405,13 @@ export const CodeEditor = ({
 
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
+
+      // Clear editor refs on unmount so any lingering Monaco RAF callbacks
+      // that fire after unmount find null and bail out gracefully.
+      editorRef.current = null;
+      monacoRef.current = null;
+
+      setSelectionBar(null);
     };
   }, []);
 
@@ -1556,6 +1569,7 @@ export const CodeEditor = ({
     >
       <div className="size-full overflow-hidden">
         <MonacoEditor
+          key={currentFileReference}
           beforeMount={handleBeforeMount}
           height="100%"
           width="100%"
@@ -1566,6 +1580,7 @@ export const CodeEditor = ({
           options={options}
           onMount={handleMount}
           onChange={handleChange}
+          loading={null}
         />
       </div>
       {!readOnly && selectionBar && (
