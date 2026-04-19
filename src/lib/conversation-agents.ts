@@ -46,8 +46,8 @@ const MAX_FILE_OPERATIONS_PER_RUN = Number.parseInt(
   process.env.CONVERSATION_MAX_FILE_OPERATIONS?.trim() || "60",
   10,
 );
-const MAX_PROJECT_FILE_INVENTORY = 220;
-const MAX_STRUCTURED_TREE_ENTRIES = 220;
+const MAX_PROJECT_FILE_INVENTORY = 500;
+const MAX_STRUCTURED_TREE_ENTRIES = 500;
 const STEPWISE_TASK_INTENT_PATTERN =
   /\b(step|steps|task|tasks|crud|create|read|update|delete|rename|move|folder|file|install|dependency|dependencies|run|execute|command|terminal)\b/i;
 const COMMAND_CHAINING_TOKEN_PATTERN = /^(?:&&|\|\||[|;])$/;
@@ -78,11 +78,11 @@ const parsePositiveInt = (value: string | undefined, fallback: number) => {
 
 const FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_MAX_OUTPUT_TOKENS?.trim(),
-  65_000,
+  65_536,
 );
 const MAX_PLANNER_CALLS_PER_REQUEST = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_MAX_CALLS_PER_REQUEST?.trim(),
-  8,
+  12,
 );
 const FILE_OPS_PLANNER_MAX_RETRIES = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_MAX_RETRIES?.trim(),
@@ -97,23 +97,23 @@ const ENABLE_COMPLEX_BUILD_CHUNKING = !/^(0|false)$/i.test(
 );
 const MAX_COMPLEX_BUILD_CHUNKS = parsePositiveInt(
   process.env.CONVERSATION_COMPLEX_BUILD_MAX_CHUNKS?.trim(),
-  4,
+  6,
 );
 const MAX_FILE_OPERATIONS_PER_COMPLEX_RUN = parsePositiveInt(
   process.env.CONVERSATION_MAX_COMPLEX_FILE_OPERATIONS?.trim(),
-  120,
+  200,
 );
 const MAX_PLANNER_HISTORY_CHARS = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_HISTORY_CHARS?.trim(),
-  6_000,
+  20_000,
 );
 const MAX_PLANNER_PROJECT_CONTEXT_CHARS = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_PROJECT_CONTEXT_CHARS?.trim(),
-  24_000,
+  60_000,
 );
 const MAX_PLANNER_KEY_FILE_CHARS = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_KEY_FILE_CHARS?.trim(),
-  12_000,
+  30_000,
 );
 const MAX_FIXUP_ITERATIONS = parsePositiveInt(
   process.env.CONVERSATION_MAX_FIXUP_ITERATIONS?.trim(),
