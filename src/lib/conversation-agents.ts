@@ -24,6 +24,10 @@ const SYNTHESIS_MODEL =
   process.env.CONVERSATION_SYNTHESIS_MODEL?.trim() || GEMINI_MODEL_DEFAULT;
 const FILE_OPS_MODEL =
   process.env.CONVERSATION_FILE_OPS_MODEL?.trim() || SPECIALIST_MODEL;
+const FILE_OPS_FAST_MODEL =
+  process.env.CONVERSATION_FILE_OPS_FAST_MODEL?.trim() ||
+  process.env.CONVERSATION_FAST_MODEL?.trim() ||
+  SPECIALIST_MODEL;
 const PLANNER_MODEL_ROTATION = Array.from(
   new Set(
     [FILE_OPS_MODEL, SPECIALIST_MODEL, SUPERVISOR_MODEL]
@@ -43,7 +47,7 @@ const CODE_UPDATE_INTENT_PATTERN =
 const COMMAND_OPERATION_INTENT_PATTERN =
   /\b(run|execute|install|uninstall|upgrade|downgrade|command|commands|terminal|script|scripts|dependency|dependencies|package\.json|npm|pnpm|yarn|bun)\b/i;
 const MAX_FILE_OPERATIONS_PER_RUN = Number.parseInt(
-  process.env.CONVERSATION_MAX_FILE_OPERATIONS?.trim() || "60",
+  process.env.CONVERSATION_MAX_FILE_OPERATIONS?.trim() || "120",
   10,
 );
 const MAX_PROJECT_FILE_INVENTORY = 500;
@@ -86,46 +90,46 @@ const FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS = Math.max(
 );
 const MAX_PLANNER_CALLS_PER_REQUEST = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_MAX_CALLS_PER_REQUEST?.trim(),
-  12,
+  15,
 );
 const FILE_OPS_PLANNER_MAX_RETRIES = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_MAX_RETRIES?.trim(),
-  2,
+  3,
 );
 const FILE_OPS_PLANNER_CHUNK_MAX_RETRIES = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_CHUNK_MAX_RETRIES?.trim(),
-  1,
+  2,
 );
 const ENABLE_COMPLEX_BUILD_CHUNKING = !/^(0|false)$/i.test(
   process.env.CONVERSATION_ENABLE_COMPLEX_BUILD_CHUNKING?.trim() ?? "true",
 );
 const MAX_COMPLEX_BUILD_CHUNKS = parsePositiveInt(
   process.env.CONVERSATION_COMPLEX_BUILD_MAX_CHUNKS?.trim(),
-  6,
+  8,
 );
 const MAX_FILE_OPERATIONS_PER_COMPLEX_RUN = parsePositiveInt(
   process.env.CONVERSATION_MAX_COMPLEX_FILE_OPERATIONS?.trim(),
-  200,
+  300,
 );
 const MAX_PLANNER_HISTORY_CHARS = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_HISTORY_CHARS?.trim(),
-  20_000,
+  16_000,
 );
 const MAX_PLANNER_PROJECT_CONTEXT_CHARS = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_PROJECT_CONTEXT_CHARS?.trim(),
-  60_000,
+  40_000,
 );
 const MAX_PLANNER_KEY_FILE_CHARS = parsePositiveInt(
   process.env.CONVERSATION_FILE_OPS_KEY_FILE_CHARS?.trim(),
-  30_000,
+  16_000,
 );
 const MAX_FIXUP_ITERATIONS = parsePositiveInt(
   process.env.CONVERSATION_MAX_FIXUP_ITERATIONS?.trim(),
-  3,
+  5,
 );
 const MAX_FIXUP_OUTPUT_CHARS = parsePositiveInt(
   process.env.CONVERSATION_FIXUP_MAX_OUTPUT_CHARS?.trim(),
-  2_000,
+  8_000,
 );
 const ENABLE_DEP_PREVALIDATION = !/^(0|false)$/i.test(
   process.env.CONVERSATION_ENABLE_DEP_PREVALIDATION?.trim() ?? "true",
@@ -157,6 +161,10 @@ const PROJECT_SCOPED_EXECUTION_PATTERN =
   /\b(in (?:my|the|this) (?:project|workspace|repo|repository|codebase)|on this codebase|in your codebase|for this project)\b/i;
 const EXECUTION_FRUSTRATION_PATTERN =
   /\b(not\s+execut(?:e|ing)|just\s+giv(?:e|ing)\s+code|only\s+giv(?:e|ing)\s+code|plain\s+code(?:\s+only)?|only\s+plain\s+code|not\s+(?:making|creating|writing)\s+files?|not\s+generat(?:e|ing)\s+files?|not\s+updat(?:e|ing)\s+files?|not\s+just\s+code|dont\s+just\s+give\s+code|don't\s+just\s+give\s+code)\b/i;
+const FAST_EXECUTION_INTENT_PATTERN =
+  /\b(immediate(?:ly)?|immediatly|immideately|right\s+away|asap|step\s*by\s*step|execute\s+now|start\s+execut(?:e|ing)|execute\s+pipeline|run\s+pipeline|pipeline\s+(?:first|execution))\b/i;
+const FRONTEND_PLANNER_STYLE_HINT_PATTERN =
+  /\b(ui|ux|frontend|front-end|react|next(?:\.js|js)?|component|page|layout|css|tailwind|design|style|styling)\b/i;
 const STRICT_FILE_OPS_GATE_ENABLED = !/^(0|false)$/i.test(
   process.env.CONVERSATION_STRICT_FILE_OPS_GATE?.trim() ?? "true",
 );
@@ -173,7 +181,50 @@ const NEXTJS_REQUIRED_SCAFFOLD_FILE_PATHS = [
   "src/app/globals.css",
 ] as const;
 
+const isFastExecutionRequest = (input: ConversationOrchestrationInput) => {
+  const message = input.message;
+
+  if (EXECUTION_FRUSTRATION_PATTERN.test(message)) {
+    return true;
+  }
+
+  if (!FAST_EXECUTION_INTENT_PATTERN.test(message)) {
+    return false;
+  }
+
+  return (
+    STRICT_EXECUTION_ACTION_PATTERN.test(message) ||
+    FILE_OPERATION_INTENT_PATTERN.test(message) ||
+    COMMAND_OPERATION_INTENT_PATTERN.test(message)
+  );
+};
+
+const shouldUseFastPlannerMode = (input: ConversationOrchestrationInput) => {
+  const message = input.message;
+
+  // Fast mode ONLY for explicit urgency/frustration patterns — NOT for normal
+  // project generation requests. Words like "create", "build", "file" appear in
+  // virtually every real prompt and must NOT trigger fast (low-reasoning) mode.
+  if (EXECUTION_FRUSTRATION_PATTERN.test(message)) {
+    return true;
+  }
+
+  if (
+    FAST_EXECUTION_INTENT_PATTERN.test(message) &&
+    STRICT_EXECUTION_ACTION_PATTERN.test(message)
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
 const inferCallBudget = (input: ConversationOrchestrationInput): number => {
+  // Fast mode still gets a generous budget since it only triggers on explicit urgency
+  if (shouldUseFastPlannerMode(input)) {
+    return Math.min(5, MAX_PLANNER_CALLS_PER_REQUEST);
+  }
+
   const message = input.message;
   const isComplex =
     ENABLE_COMPLEX_BUILD_CHUNKING &&
@@ -190,8 +241,8 @@ const inferCallBudget = (input: ConversationOrchestrationInput): number => {
       FILE_OPERATION_PATH_HINT_PATTERN.test(message));
 
   if (isComplex) return MAX_PLANNER_CALLS_PER_REQUEST;
-  if (isMedium) return Math.min(5, MAX_PLANNER_CALLS_PER_REQUEST);
-  return Math.min(3, MAX_PLANNER_CALLS_PER_REQUEST);
+  if (isMedium) return Math.min(8, MAX_PLANNER_CALLS_PER_REQUEST);
+  return Math.min(6, MAX_PLANNER_CALLS_PER_REQUEST);
 };
 
 const pickAvailableModel = (preferredModel: string): string => {
@@ -282,6 +333,12 @@ type ConversationOrchestrationInput = {
   projectFiles?: ConversationProjectFile[];
   executeFileOperation?: ConversationFileOperationExecutor;
   loadProjectFilesAfterOperations?: ConversationProjectFilesLoader;
+  /** Called after each operation completes with the running results so far.
+   *  Used to stream real-time progress to the user. */
+  onOperationProgress?: (
+    completed: ConversationFileOperationResult[],
+    total: number,
+  ) => Promise<void> | void;
 };
 
 export type ConversationProjectFile = {
@@ -597,6 +654,20 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "",
   "Return ONLY valid JSON. No markdown. No explanations. No ```json fences.",
   '{"operations":[...]}',
+  "",
+  "═══════════════════════════════════════════════════",
+  "TOKEN UTILIZATION & COMPLETENESS",
+  "═══════════════════════════════════════════════════",
+  "",
+  "YOU HAVE A LARGE OUTPUT BUDGET. USE IT. Do NOT cut corners to save tokens.",
+  "- Generate COMPLETE files with ALL imports, ALL functions, ALL styles, ALL exports.",
+  "- A PARTIAL file that crashes is WORSE than fewer complete files.",
+  "- If the project has 10 files, generate all 10. Do NOT generate 3 and leave 7 missing.",
+  "- package.json MUST include ALL dependencies on the FIRST pass — missing deps cause npm install failures that waste fixup iterations.",
+  "- For create_file: include the ENTIRE file content even if it is long (200+ lines is fine).",
+  "- For update_file: include the FULL new file, not a partial patch.",
+  "- When generating a full project: ALWAYS include config files (tsconfig.json, next.config.mjs, postcss.config, etc.) — missing configs cause build failures.",
+  "- ALWAYS end with npm install + dev server start for new projects.",
 ].join("\n");
 
 const SPECIALIST_SYSTEM_PROMPTS: Record<SpecialistKey, string> = {
@@ -2393,14 +2464,13 @@ const isExplicitCommandOnlyRequest = (message: string) => {
   return hasCommandSignal && !hasMutationSignal && !hasPathSignal;
 };
 
+const isFilesystemMutationOperation = (operation: ConversationFileOperation) =>
+  operation.type !== "run_command" &&
+  operation.type !== "start_background_command";
+
 const hasFilesystemMutationOperation = (
   operations: ConversationFileOperation[],
-) =>
-  operations.some(
-    (operation) =>
-      operation.type !== "run_command" &&
-      operation.type !== "start_background_command",
-  );
+) => operations.some((operation) => isFilesystemMutationOperation(operation));
 
 const shouldRequireFilesystemMutationOperations = (
   input: ConversationOrchestrationInput,
@@ -2524,6 +2594,15 @@ const PLANNER_KEY_FILE_PATTERNS = [
   "tailwind.config.js",
   "postcss.config.mjs",
   "postcss.config.js",
+  // Main source files — critical for follow-up changes
+  "src/app/layout.tsx",
+  "src/app/page.tsx",
+  "src/app/globals.css",
+  "src/main.tsx",
+  "src/App.tsx",
+  "src/index.tsx",
+  "src/index.css",
+  "index.html",
 ] as const;
 
 const buildPlannerKeyFileContext = (files: ConversationProjectFile[] = []) => {
@@ -2556,6 +2635,9 @@ const buildFileOperationPlannerPrompt = (
 ) => {
   const fileInventory = buildProjectFileInventory(input.projectFiles);
   const keyFileBlocks = buildPlannerKeyFileContext(input.projectFiles);
+  const includeFrontendStyleGuidance = FRONTEND_PLANNER_STYLE_HINT_PATTERN.test(
+    input.message,
+  );
   const hasPackageJson = input.projectFiles?.some(
     (f) => f.path === "package.json" || f.path.endsWith("/package.json"),
   );
@@ -2590,17 +2672,15 @@ const buildFileOperationPlannerPrompt = (
     '- To start dev server: {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
     "- For Next.js scaffolds, include at minimum: package.json, next.config.mjs, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css.",
     "- Create ALL files needed for the task. Do not leave gaps or TODOs.",
-    "",
-    "CODE QUALITY — CRITICAL:",
-    "- EVERY UI file MUST include polished, modern CSS. NEVER create plain unstyled HTML.",
-    "- Use beautiful gradients, rounded corners (12px), subtle shadows, and instant state changes.",
-    "- Use a professional color palette: dark theme (#0f172a bg, #1e293b surface, #6366f1 accent) or light theme (#f8fafc bg, #fff surface, #6366f1 accent).",
-    "- Include CSS custom properties (--background, --surface, --accent, --text, --border) in globals.css.",
-    "- Style EVERY component: buttons with hover effects, inputs with focus rings, cards with shadows.",
-    "- Add static loading states, error states (callouts), and empty states (centered messages).",
-    "- Use font-family: 'Inter', system-ui, sans-serif with proper weights (400/500/600).",
-    "- Write MORE code, not less. Each component should be 50-200 lines of quality code.",
-    "- Your code should make users say 'WOW this looks professional' at first glance.",
+    ...(includeFrontendStyleGuidance
+      ? [
+          "",
+          "CODE QUALITY — FRONTEND:",
+          "- UI files must include polished, modern CSS. Avoid plain unstyled markup.",
+          "- Include responsive states (loading/error/empty) and accessible controls.",
+          "- Keep styling cohesive with clear color tokens and reusable classes.",
+        ]
+      : []),
     "",
     'Return ONLY valid JSON: {"operations":[...]}',
   ]
@@ -2811,6 +2891,10 @@ const shouldUseChunkedComplexBuildPlanning = (
     return false;
   }
 
+  if (isFastExecutionRequest(input)) {
+    return false;
+  }
+
   const message = input.message;
   const intent = inferConversationIntent(message);
   if (intent === "analysis") {
@@ -2835,7 +2919,7 @@ const shouldUseChunkedComplexBuildPlanning = (
     return true;
   }
 
-  return EXECUTION_FRUSTRATION_PATTERN.test(message) && hasTrigger;
+  return false;
 };
 
 const buildComplexBuildChunkPlannerPrompt = (
@@ -3066,6 +3150,7 @@ const runFileOpsPlannerDirect = async (
   args?: {
     preferredModel?: string;
     callBudget?: PlannerCallBudget;
+    fastMode?: boolean;
   },
 ): Promise<string> => {
   const callBudget = args?.callBudget;
@@ -3090,6 +3175,7 @@ const runFileOpsPlannerDirect = async (
     model: targetModel,
     plannerCallsUsed: callBudget?.used,
     plannerCallsMax: callBudget?.max,
+    fastMode: args?.fastMode === true,
   });
 
   const result = await generateGeminiCompletion({
@@ -3103,7 +3189,7 @@ const runFileOpsPlannerDirect = async (
     ],
     maxTokens: FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS,
     temperature: 0.05,
-    reasoningEffort: "high",
+    reasoningEffort: args?.fastMode ? "medium" : "high",
     responseMimeType: "application/json",
   });
 
@@ -3119,9 +3205,15 @@ const runFileOpsPlannerDirect = async (
 const planConversationFileOperations = async (
   input: ConversationOrchestrationInput,
 ): Promise<PlannedFileOperationBatch> => {
+  const requiresExecutablePlan = shouldRequireExecutableFileOperations(input);
+  const fastExecutionMode = shouldUseFastPlannerMode(input);
+  const plannerCallBudgetMax = fastExecutionMode
+    ? Math.min(2, inferCallBudget(input))
+    : inferCallBudget(input);
+
   const plannerCallBudget: PlannerCallBudget = {
     used: 0,
-    max: inferCallBudget(input),
+    max: plannerCallBudgetMax,
   };
 
   const toPlanResult = (
@@ -3174,6 +3266,7 @@ const planConversationFileOperations = async (
     runFileOpsPlannerDirect(args.prompt, args.label, {
       preferredModel: args.preferredModel,
       callBudget: plannerCallBudget,
+      fastMode: fastExecutionMode,
     });
 
   const mergePlannerOutputs = (...parts: string[]) =>
@@ -3268,6 +3361,8 @@ const planConversationFileOperations = async (
       message: input.message.slice(0, 100),
       projectFileCount: input.projectFiles?.length ?? 0,
       plannerCallsMax: plannerCallBudget.max,
+      fastExecutionMode,
+      requiresExecutablePlan,
     });
 
     let chunkedPlannerOutput = "";
@@ -3290,9 +3385,10 @@ const planConversationFileOperations = async (
       let aggregateChunkOperations: ConversationFileOperation[] = [];
       const chunkOutputs: string[] = [];
 
-      const maxChunkRetries = isGeminiModelCoolingDown(FILE_OPS_MODEL.trim())
-        ? 0
-        : FILE_OPS_PLANNER_CHUNK_MAX_RETRIES;
+      const maxChunkRetries =
+        fastExecutionMode || isGeminiModelCoolingDown(FILE_OPS_MODEL.trim())
+          ? 0
+          : FILE_OPS_PLANNER_CHUNK_MAX_RETRIES;
 
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
         const chunk = chunks[chunkIndex]!;
@@ -3509,7 +3605,9 @@ const planConversationFileOperations = async (
     const plannerOutput = await runPlanner({
       prompt: plannerPrompt,
       label: "primary",
-      preferredModel: pickAvailableModel(FILE_OPS_MODEL),
+      preferredModel: pickAvailableModel(
+        fastExecutionMode ? FILE_OPS_FAST_MODEL : FILE_OPS_MODEL,
+      ),
     });
 
     let selectedOutput = plannerOutput;
@@ -3533,9 +3631,10 @@ const planConversationFileOperations = async (
       );
     }
 
-    const maxRetries = isGeminiModelCoolingDown(FILE_OPS_MODEL.trim())
-      ? 0
-      : FILE_OPS_PLANNER_MAX_RETRIES;
+    const maxRetries =
+      fastExecutionMode || isGeminiModelCoolingDown(FILE_OPS_MODEL.trim())
+        ? 0
+        : FILE_OPS_PLANNER_MAX_RETRIES;
 
     for (let retryIndex = 1; retryIndex <= maxRetries; retryIndex += 1) {
       const retryIssues =
@@ -3556,7 +3655,9 @@ const planConversationFileOperations = async (
       const retryOutput = await runPlanner({
         prompt: retryPrompt,
         label: `retry-${retryIndex}`,
-        preferredModel: pickAvailableModel(FILE_OPS_MODEL),
+        preferredModel: pickAvailableModel(
+          fastExecutionMode ? FILE_OPS_FAST_MODEL : FILE_OPS_MODEL,
+        ),
       });
 
       const retryOperations = normalizeOperations(
@@ -3583,8 +3684,6 @@ const planConversationFileOperations = async (
       }
     }
 
-    const requiresExecutablePlan = shouldRequireExecutableFileOperations(input);
-
     if (
       requiresExecutablePlan &&
       (selectedOperations.length === 0 || selectedIssues.length > 0)
@@ -3606,7 +3705,9 @@ const planConversationFileOperations = async (
         "- Do not return prose, markdown, or code-only response.",
       ].join("\n");
 
-      const finalStrictModel = pickAvailableModel(FILE_OPS_MODEL);
+      const finalStrictModel = pickAvailableModel(
+        fastExecutionMode ? FILE_OPS_FAST_MODEL : FILE_OPS_MODEL,
+      );
       const finalStrictOutput = await runPlanner({
         prompt: finalStrictPrompt,
         label: "final-strict",
@@ -3688,12 +3789,17 @@ const planConversationFileOperations = async (
 const executePlannedFileOperations = async (
   operations: ConversationFileOperation[],
   executeFileOperation?: ConversationFileOperationExecutor,
+  onOperationProgress?: (
+    completed: ConversationFileOperationResult[],
+    total: number,
+  ) => Promise<void> | void,
 ): Promise<ConversationFileOperationResult[]> => {
   if (operations.length === 0) {
     return [];
   }
 
   const results: ConversationFileOperationResult[] = [];
+  const totalOps = operations.length;
 
   for (const operation of operations) {
     // Gate check: skip this operation if previous operation failed and this op requires it to succeed
@@ -3710,6 +3816,7 @@ const executePlannedFileOperations = async (
           status: "skipped",
           message: `Skipped because previous operation failed: ${previousResult.message.slice(0, 200)}`,
         });
+        try { await onOperationProgress?.(results, totalOps); } catch { /* best-effort */ }
         continue;
       }
 
@@ -3724,6 +3831,7 @@ const executePlannedFileOperations = async (
           status: "skipped",
           message: `Skipped because previous command exited with code ${previousResult.commandExitCode}.`,
         });
+        try { await onOperationProgress?.(results, totalOps); } catch { /* best-effort */ }
         continue;
       }
     }
@@ -3740,6 +3848,7 @@ const executePlannedFileOperations = async (
           ? "Queued for sandbox runtime execution."
           : "No execution handler is available.",
       });
+      try { await onOperationProgress?.(results, totalOps); } catch { /* best-effort */ }
       continue;
     }
 
@@ -3759,6 +3868,9 @@ const executePlannedFileOperations = async (
         message: error instanceof Error ? error.message : "Unknown error",
       });
     }
+
+    // Fire progress callback after each operation so the UI updates in real-time
+    try { await onOperationProgress?.(results, totalOps); } catch { /* best-effort */ }
   }
 
   return results;
@@ -3997,11 +4109,14 @@ const buildProjectStructureLines = (entries: StructuredTreeEntry[]) => {
 
 const shouldUseStructuredCodeResponse = (args: {
   intent: ConversationIntent;
-  changedFiles: StructuredChangedFile[];
-  folderEntries: StructuredFolderEntry[];
+  operationResults: ConversationFileOperationResult[];
 }) =>
   (args.intent === "code_generation" || args.intent === "code_update") &&
-  (args.changedFiles.length > 0 || args.folderEntries.length > 0);
+  args.operationResults.some(
+    (result) =>
+      result.status === "applied" &&
+      isFilesystemMutationOperation(result.operation),
+  );
 
 const buildStructuredCodeResponse = (args: {
   intent: ConversationIntent;
@@ -4319,6 +4434,7 @@ export const runConversationAgentOrchestration = async (
   let operationResults = await executePlannedFileOperations(
     allOperations,
     input.executeFileOperation,
+    input.onOperationProgress,
   );
 
   // ─── Iterative Fixup Loop ───────────────────────────────────────────
@@ -4452,6 +4568,7 @@ export const runConversationAgentOrchestration = async (
             used: plannerCallsUsed,
             max: MAX_PLANNER_CALLS_PER_REQUEST,
           },
+          fastMode: shouldUseFastPlannerMode(input),
         },
       );
       plannerCallsUsed += 1;
@@ -4478,6 +4595,7 @@ export const runConversationAgentOrchestration = async (
           const fixupResults = await executePlannedFileOperations(
             normalizedFixupOps,
             input.executeFileOperation,
+            input.onOperationProgress,
           );
 
           allOperations = [...allOperations, ...normalizedFixupOps];
@@ -4544,7 +4662,10 @@ export const runConversationAgentOrchestration = async (
   }
 
   if (
-    shouldUseStructuredCodeResponse({ intent, changedFiles, folderEntries })
+    shouldUseStructuredCodeResponse({
+      intent,
+      operationResults,
+    })
   ) {
     return {
       content: buildStructuredCodeResponse({
@@ -4580,6 +4701,35 @@ export const runConversationAgentOrchestration = async (
       assignments: [] as AgentAssignment[],
       reports: [] as SpecialistReport[],
       supervisorPlan: "strict-file-ops-plan-gate",
+      operations: allOperations,
+      operationResults,
+      fileOperationPlannerOutput: fileOperationPlan.plannerOutput,
+      plannerCallsUsed,
+    };
+  }
+
+  const requiresFilesystemMutations =
+    shouldRequireFilesystemMutationOperations(input);
+  const appliedFilesystemMutationCount = operationResults.filter(
+    (result) =>
+      result.status === "applied" &&
+      isFilesystemMutationOperation(result.operation),
+  ).length;
+
+  if (requiresFilesystemMutations && appliedFilesystemMutationCount === 0) {
+    const applyGateFailureContent = [
+      "I couldn't apply any filesystem changes for this request.",
+      "No files or folders were created, updated, renamed, or deleted.",
+      "",
+      "Execution summary:",
+      buildFileOperationSummary(operationResults),
+    ].join("\n");
+
+    return {
+      content: applyGateFailureContent,
+      assignments: [] as AgentAssignment[],
+      reports: [] as SpecialistReport[],
+      supervisorPlan: "strict-file-mutation-apply-gate",
       operations: allOperations,
       operationResults,
       fileOperationPlannerOutput: fileOperationPlan.plannerOutput,
