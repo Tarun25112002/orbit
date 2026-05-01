@@ -1,6 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
 import Stripe from "stripe";
-import { getAuth } from "@clerk/nextjs/server";
+import { getClerkUserId } from "@/lib/clerk-auth";
 
 const TIER_CONFIG: Record<
   string,
@@ -28,7 +28,7 @@ const TIER_CONFIG: Record<
 
 export async function POST(req: NextRequest) {
   try {
-    const { userId } = getAuth(req);
+    const userId = await getClerkUserId(req);
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

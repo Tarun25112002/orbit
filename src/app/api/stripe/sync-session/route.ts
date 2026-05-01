@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
-import { getAuth } from "@clerk/nextjs/server";
+import { getClerkUserId } from "@/lib/clerk-auth";
 import { fetchMutation } from "convex/nextjs";
 import { api } from "../../../../../convex/_generated/api";
 
@@ -8,7 +8,7 @@ const VALID_TIERS = new Set(["basic", "pro", "advance"]);
 
 export async function POST(request: NextRequest) {
   try {
-    const { userId } = getAuth(request);
+    const userId = await getClerkUserId(request);
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
