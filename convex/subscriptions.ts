@@ -29,23 +29,70 @@ export const activate = mutation({
     stripePaymentIntentId: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    // Prevent duplicate activations
-    const existing = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_owner", (q) => q.eq("ownerId", args.ownerId))
+    const byOwner = () =>
+      ctx.db
+        .query("subscriptions")
+        .withIndex("by_owner", (q) => q.eq("ownerId", args.ownerId));
+
+    const existingBySession = await byOwner()
+      .filter((q) => q.eq(q.field("stripeSessionId"), args.stripeSessionId))
+      .first();
+
+    if (existingBySession) {
+      if (
+        existingBySession.status !== "active" ||
+        existingBySession.tier !== args.tier ||
+        (args.stripePaymentIntentId &&
+          existingBySession.stripePaymentIntentId !==
+            args.stripePaymentIntentId)
+      ) {
+        await ctx.db.patch(existingBySession._id, {
+          tier: args.tier,
+          status: "active",
+          stripeSessionId: args.stripeSessionId,
+          stripePaymentIntentId:
+            args.stripePaymentIntentId ??
+            existingBySession.stripePaymentIntentId,
+          updatedAt: Date.now(),
+        });
+      }
+
+      return existingBySession._id;
+    }
+
+    const existingActive = await byOwner()
       .filter((q) => q.eq(q.field("status"), "active"))
       .first();
 
-    if (existing) return existing._id;
+    if (existingActive) {
+      await ctx.db.patch(existingActive._id, {
+        tier: args.tier,
+        stripeSessionId: args.stripeSessionId,
+        stripePaymentIntentId:
+          args.stripePaymentIntentId ?? existingActive.stripePaymentIntentId,
+        status: "active",
+        updatedAt: Date.now(),
+      });
 
-    // Clean up any pending records
-    const pending = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_owner", (q) => q.eq("ownerId", args.ownerId))
+      return existingActive._id;
+    }
+
+    const pending = await byOwner()
       .filter((q) => q.eq(q.field("status"), "pending"))
       .first();
 
-    if (pending) await ctx.db.delete(pending._id);
+    if (pending) {
+      await ctx.db.patch(pending._id, {
+        tier: args.tier,
+        stripeSessionId: args.stripeSessionId,
+        stripePaymentIntentId:
+          args.stripePaymentIntentId ?? pending.stripePaymentIntentId,
+        status: "active",
+        updatedAt: Date.now(),
+      });
+
+      return pending._id;
+    }
 
     const subId = await ctx.db.insert("subscriptions", {
       ownerId: args.ownerId,

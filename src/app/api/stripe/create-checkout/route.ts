@@ -2,7 +2,10 @@ import { NextResponse, NextRequest } from "next/server";
 import Stripe from "stripe";
 import { getAuth } from "@clerk/nextjs/server";
 
-const TIER_CONFIG: Record<string, { name: string; amount: number; description: string; currency: string }> = {
+const TIER_CONFIG: Record<
+  string,
+  { name: string; amount: number; description: string; currency: string }
+> = {
   basic: {
     name: "Orbit Basic Plan",
     amount: 100000, // ₹1000 in paisa
@@ -63,7 +66,8 @@ export async function POST(req: NextRequest) {
         userId,
         tier,
       },
-      success_url: `${baseUrl}/dashboard?payment=success`,
+      client_reference_id: userId,
+      success_url: `${baseUrl}/dashboard?payment=success&session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${baseUrl}/pricing?payment=cancelled`,
     });
 

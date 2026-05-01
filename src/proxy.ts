@@ -1,9 +1,6 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
-const isProjectRoute = (pathname: string) =>
-  pathname === "/projects" || pathname.startsWith("/projects/");
-
 /** Routes accessible without Clerk sign-in */
 const isPublicRoute = (pathname: string) =>
   pathname === "/" ||
@@ -12,6 +9,7 @@ const isPublicRoute = (pathname: string) =>
   pathname.startsWith("/pricing") ||
   pathname.startsWith("/api/auth/github") || // GitHub OAuth callback needs access
   pathname.startsWith("/api/webhooks") || // Stripe webhooks - must be public
+  pathname.startsWith("/api/stripe/webhooks") || // Stripe webhooks alias
   pathname.startsWith("/api/inngest") ||
   pathname.startsWith("/monitoring");
 
@@ -64,8 +62,6 @@ export default clerkMiddleware(async (_auth, request) => {
       maxAge: 0,
     });
   }
-
-
 
   return response;
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { UserButton } from "@clerk/nextjs";
 import { Plus, Search, Blocks, Sparkles, Zap } from "lucide-react";
 import {
@@ -19,15 +20,21 @@ import { useCreateProject, useProjects } from "../hooks/use-projects";
 import { useQuery } from "convex/react";
 import { api } from "../../../../convex/_generated/api";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 const FREE_PROJECT_LIMIT = 3;
 
 export const ProjectsView = () => {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const createProject = useCreateProject();
   const projects = useProjects();
   const activeSub = useQuery(api.subscriptions.getActive);
   const [commandOpen, setCommandOpen] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+
+  const sessionId = searchParams.get("session_id");
+  const paymentStatus = searchParams.get("payment");
 
   const isSubscribed = !!activeSub;
   const projectCount = projects?.length ?? 0;
@@ -64,7 +71,7 @@ export const ProjectsView = () => {
     try {
       await createProject({ name: projectName });
     } catch (err: any) {
-      const isLimitReached = 
+      const isLimitReached =
         err?.message?.includes("PROJECT_LIMIT_REACHED") ||
         err?.data === "PROJECT_LIMIT_REACHED";
 
@@ -75,6 +82,57 @@ export const ProjectsView = () => {
       }
     }
   }, [createProject, projectCount, projectLimit]);
+
+  useEffect(() => {
+    if (!sessionId || paymentStatus !== "success") {
+      return;
+    }
+
+    let cancelled = false;
+
+    const syncPayment = async () => {
+      try {
+        const response = await fetch("/api/stripe/sync-session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId }),
+        });
+
+        const data = (await response.json().catch(() => ({}))) as {
+          error?: string;
+          tier?: string;
+        };
+
+        if (!response.ok) {
+          throw new Error(data.error || "Failed to confirm payment");
+        }
+
+        if (!cancelled) {
+          toast.success(
+            data.tier
+              ? `Payment confirmed. ${data.tier} plan activated.`
+              : "Payment confirmed. Plan activated.",
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          const message =
+            error instanceof Error ? error.message : "Payment sync failed";
+          toast.error(message);
+        }
+      } finally {
+        if (!cancelled) {
+          router.replace("/dashboard");
+        }
+      }
+    };
+
+    void syncPayment();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [paymentStatus, router, sessionId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -195,7 +253,8 @@ export const ProjectsView = () => {
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <span className="text-[12px] font-semibold text-foreground">
-                          {activeSub?.tier.charAt(0).toUpperCase()}{activeSub?.tier.slice(1)} Plan
+                          {activeSub?.tier.charAt(0).toUpperCase()}
+                          {activeSub?.tier.slice(1)} Plan
                         </span>
                         <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
                           Active
@@ -214,7 +273,9 @@ export const ProjectsView = () => {
                           <Sparkles className="size-3.5 text-primary" />
                         </div>
                         <span className="text-[12px] font-semibold text-foreground">
-                          {isSubscribed ? `${activeSub?.tier.charAt(0).toUpperCase()}${activeSub?.tier.slice(1)} Usage` : "AI Usage"}
+                          {isSubscribed
+                            ? `${activeSub?.tier.charAt(0).toUpperCase()}${activeSub?.tier.slice(1)} Usage`
+                            : "AI Usage"}
                         </span>
                       </div>
                       <span className="text-[11px] text-muted-foreground font-medium">
@@ -229,7 +290,7 @@ export const ProjectsView = () => {
                             ? "bg-red-500"
                             : usagePercent >= 66
                               ? "bg-amber-500"
-                              : "bg-primary"
+                              : "bg-primary",
                         )}
                         style={{ width: `${usagePercent}%` }}
                       />

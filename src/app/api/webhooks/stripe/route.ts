@@ -20,17 +20,24 @@ export async function POST(req: NextRequest) {
     event = stripe.webhooks.constructEvent(
       rawBody,
       signature,
-      process.env.STRIPE_WEBHOOK_SECRET!
+      process.env.STRIPE_WEBHOOK_SECRET!,
     );
   } catch (err: any) {
     console.error("Stripe webhook signature verification failed:", err.message);
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
-  if (event.type === "checkout.session.completed") {
+  if (
+    event.type === "checkout.session.completed" ||
+    event.type === "checkout.session.async_payment_succeeded"
+  ) {
     const session = event.data.object as Stripe.Checkout.Session;
 
-    const userId = session.metadata?.userId;
+    if (session.payment_status && session.payment_status !== "paid") {
+      return NextResponse.json({ received: true });
+    }
+
+    const userId = session.metadata?.userId ?? session.client_reference_id;
     const tier = session.metadata?.tier as
       | "basic"
       | "pro"
