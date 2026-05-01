@@ -57,6 +57,8 @@ const SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS = Math.max(
 );
 const DOCKER_MUX_HEADER_BYTES = 8;
 const DOCKER_MUX_MAX_FRAME_BYTES = 8 * 1024 * 1024;
+const SANDBOX_SESSION_MISSING_PATTERN =
+  /\b(session|container)\b[\s\S]*\bnot found\b|no such container/i;
 const ALLOW_CLIENT_COMMAND_FALLBACK = /^(1|true)$/i.test(
   process.env.CONVERSATION_ALLOW_CLIENT_COMMAND_FALLBACK?.trim() ?? "",
 );
@@ -393,6 +395,16 @@ const createExecOutputCollector = (maxBytes: number) => {
   };
 };
 
+const isSandboxSessionMissingError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const statusCode =
+    typeof (error as { statusCode?: number }).statusCode === "number"
+      ? (error as { statusCode?: number }).statusCode
+      : undefined;
+
+  return statusCode === 404 || SANDBOX_SESSION_MISSING_PATTERN.test(message);
+};
+
 /**
  * Execute a shell command inside a Docker container and capture output.
  * Returns the exit code and captured stdout/stderr text.
@@ -572,7 +584,7 @@ const buildSandboxValidationCommandScript = () =>
   [
     "if [ ! -f package.json ]; then echo 'No package.json found; skipping package validation.'; exit 0; fi",
     "validation_target=$(node -e \"const pkg=require('./package.json'); const s=pkg.scripts||{}; if (s.build) process.stdout.write('build'); else if (s.typecheck) process.stdout.write('typecheck'); else if (s.check) process.stdout.write('check'); else process.stdout.write('auto');\")",
-    "case \"$validation_target\" in",
+    'case "$validation_target" in',
     "  build) npm run build ;;",
     "  typecheck) npm run typecheck ;;",
     "  check) npm run check ;;",
@@ -581,7 +593,7 @@ const buildSandboxValidationCommandScript = () =>
     "    elif [ -x node_modules/.bin/vite ]; then node_modules/.bin/vite build;",
     "    else echo 'No build, typecheck, check, tsc, or vite validation target found.'; fi",
     "    ;;",
-    "  *) echo \"Unknown validation target: $validation_target\"; exit 1 ;;",
+    '  *) echo "Unknown validation target: $validation_target"; exit 1 ;;',
     "esac",
   ].join("\n");
 
@@ -775,11 +787,14 @@ const executeConversationFileOperation = async (args: {
           ? `background command (${operation.key})`
           : "command";
 
-      try {
-        // Ensure sandbox exists and is synced to latest project state.
-        let sessionId = activeSandboxSessions.get(projectId);
+      const runSandboxCommand = async (forceResync?: boolean) => {
+        let sessionId = forceResync
+          ? undefined
+          : activeSandboxSessions.get(projectId);
         const needsResync =
-          !sessionId || sandboxNeedsResync.get(projectId) !== false;
+          forceResync ||
+          !sessionId ||
+          sandboxNeedsResync.get(projectId) !== false;
 
         if (!sessionId || needsResync) {
           const latestProjectFiles =
@@ -790,6 +805,7 @@ const executeConversationFileOperation = async (args: {
             projectFiles: latestProjectFiles,
           });
           activeSandboxSessions.set(projectId, sessionId);
+          sandboxNeedsResync.set(projectId, false);
         }
 
         const commandToRun =
@@ -802,7 +818,7 @@ const executeConversationFileOperation = async (args: {
               ? buildSandboxValidationCommandScript()
               : shellCommand;
 
-        const result = await execCommandInContainer({
+        return await execCommandInContainer({
           sessionId,
           command: commandToRun,
           timeoutMs:
@@ -810,7 +826,38 @@ const executeConversationFileOperation = async (args: {
               ? SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS + 5_000
               : SANDBOX_COMMAND_TIMEOUT_MS,
         });
+      };
 
+      let result: { exitCode: number; output: string } | null = null;
+      let sandboxError: unknown = null;
+
+      try {
+        result = await runSandboxCommand();
+      } catch (error) {
+        sandboxError = error;
+      }
+
+      if (
+        !result &&
+        sandboxError &&
+        isSandboxSessionMissingError(sandboxError)
+      ) {
+        console.warn("conversation.sandbox.session.recover", {
+          projectId,
+          command: displayCommand,
+        });
+
+        activeSandboxSessions.delete(projectId);
+        sandboxNeedsResync.set(projectId, true);
+
+        try {
+          result = await runSandboxCommand(true);
+        } catch (error) {
+          sandboxError = error;
+        }
+      }
+
+      if (result) {
         const outputPreview = buildCommandOutputPreview(result.output);
         const exitLabel =
           result.exitCode === 0
@@ -823,7 +870,9 @@ const executeConversationFileOperation = async (args: {
           commandOutput: outputPreview || undefined,
           commandExitCode: result.exitCode,
         };
-      } catch (sandboxError) {
+      }
+
+      if (sandboxError) {
         // Prefer a hard failure so fixup can see terminal/runtime problems.
         // Client-side queue fallback remains available behind an explicit env flag.
         console.warn("conversation.sandbox.exec.fallback", {
@@ -854,6 +903,11 @@ const executeConversationFileOperation = async (args: {
           message: `Queued ${label} for client-side execution: ${displayCommand}`,
         };
       }
+
+      return {
+        status: "failed",
+        message: `Could not execute ${label}: unknown sandbox error`,
+      };
     }
 
     if (operation.type === "create_file") {
@@ -1255,7 +1309,9 @@ const buildExecutionTraceSummary = (
   if (appliedFiles.length > 0) {
     lines.push(`Files created/modified (${appliedFiles.length} total):`);
     for (const f of appliedFiles.slice(0, 40)) {
-      lines.push(`  - [${f.operation.type}] ${describeTraceOperation(f.operation)}`);
+      lines.push(
+        `  - [${f.operation.type}] ${describeTraceOperation(f.operation)}`,
+      );
     }
     if (appliedFiles.length > 40) {
       lines.push(`  ... and ${appliedFiles.length - 40} more files`);
@@ -1564,7 +1620,7 @@ export const conversationMessageRequested = inngest.createFunction(
         ? generateConversationTitle(message).catch(() => null)
         : null;
 
-       const runConversationOrchestration = async (args?: {
+      const runConversationOrchestration = async (args?: {
         message?: string;
         projectContext?: string;
         history?: string;

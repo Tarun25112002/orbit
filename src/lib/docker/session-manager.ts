@@ -174,6 +174,18 @@ function removeWorkspaceDir(dirPath: string): void {
   }
 }
 
+const CONTAINER_MISSING_PATTERN = /no such container|not found/i;
+
+const isContainerMissingError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const statusCode =
+    typeof (error as { statusCode?: number }).statusCode === "number"
+      ? (error as { statusCode?: number }).statusCode
+      : undefined;
+
+  return statusCode === 404 || CONTAINER_MISSING_PATTERN.test(message);
+};
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -197,12 +209,22 @@ export async function createSession(
   // Guard: already exists
   const existing = sessions.get(sessionId);
   if (existing) {
-    existing.lastActivityAt = Date.now();
-    return {
-      sessionId: existing.sessionId,
-      containerId: existing.containerId,
-      workspacePath: existing.workspacePath,
-    };
+    try {
+      await docker.getContainer(existing.containerId).inspect();
+
+      existing.lastActivityAt = Date.now();
+      return {
+        sessionId: existing.sessionId,
+        containerId: existing.containerId,
+        workspacePath: existing.workspacePath,
+      };
+    } catch (error) {
+      if (!isContainerMissingError(error)) {
+        throw error;
+      }
+
+      sessions.delete(sessionId);
+    }
   }
 
   // Guard: capacity

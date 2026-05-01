@@ -215,7 +215,13 @@ const buildInstallCommand = (
   return {
     packageManager,
     command: "npm",
-    commandArgs: ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--no-progress"],
+    commandArgs: [
+      "install",
+      "--legacy-peer-deps",
+      "--no-audit",
+      "--no-fund",
+      "--no-progress",
+    ],
     label: "npm install",
   };
 };
@@ -2544,6 +2550,28 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           `Preview dev server exited during startup (${exitDetails}).`,
         );
         return false;
+      }
+
+      if (
+        projectWebcontainerRuntime.isBackgroundCommandRunning(
+          RUNTIME_DEV_SERVER_KEY,
+        )
+      ) {
+        const fallbackUrl =
+          await projectWebcontainerRuntime.getPreviewUrlForPort(
+            RUNTIME_DEV_SERVER_PORT,
+          );
+
+        if (fallbackUrl) {
+          runtimeDevServerStartedRef.current = true;
+          setRuntimePreviewUrl(fallbackUrl);
+          setPreviewError(null);
+          resetRuntimeDevServerFailures();
+          appendRuntimeLog(
+            `Preview server detected without readiness logs: ${fallbackUrl}`,
+          );
+          return true;
+        }
       }
 
       const message =

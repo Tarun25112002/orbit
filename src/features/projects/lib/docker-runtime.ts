@@ -35,7 +35,7 @@ class RuntimeRequestError extends Error {
   }
 }
 
-const DOCKER_RUNTIME_VERSION = 3;
+const DOCKER_RUNTIME_VERSION = 4;
 const SESSION_NOT_FOUND_PATTERN = /\bsession\b[\s\S]*\bnot found\b/i;
 const CONTAINER_NOT_FOUND_PATTERN =
   /\bno such container\b|\bcontainer\b[\s\S]*\bnot found\b/i;
@@ -43,6 +43,7 @@ const FILE_SYNC_MAX_BATCH_FILES = 40;
 const FILE_SYNC_MAX_BATCH_CHARS = 180_000;
 const FILE_SYNC_PAYLOAD_TOO_LARGE_PATTERN =
   /payload|entity too large|request body|body exceeded|request too large|413|content length|too large/i;
+const BACKGROUND_PID_PREFIX = "__orbit_pid__:";
 
 const normalizePath = (rawPath: string) =>
   rawPath
@@ -160,7 +161,12 @@ class ProjectDockerRuntime {
 
   private backgroundCommands = new Map<
     string,
-    { abortController: AbortController }
+    {
+      abortController: AbortController;
+      commandLine: string;
+      pid: number | null;
+      sessionId: string | null;
+    }
   >();
   private backgroundExitPromises = new Map<
     string,
@@ -276,6 +282,10 @@ class ProjectDockerRuntime {
     } catch {
       return null;
     }
+  }
+
+  async getPreviewUrlForPort(port: number): Promise<string | null> {
+    return await this.resolvePreviewUrl(port);
   }
 
   async waitForServerReady(args?: {
@@ -772,12 +782,16 @@ class ProjectDockerRuntime {
       return;
     }
 
-    await this.ensureBooted(args.log);
-
     const fullCommand = [args.command, ...(args.commandArgs ?? [])].join(" ");
+    const commandWithPid = `(${fullCommand}) & pid=$!; echo ${BACKGROUND_PID_PREFIX}$pid; wait $pid`;
     const abortController = new AbortController();
 
-    this.backgroundCommands.set(args.key, { abortController });
+    this.backgroundCommands.set(args.key, {
+      abortController,
+      commandLine: fullCommand,
+      pid: null,
+      sessionId: null,
+    });
     this.backgroundLastExits.delete(args.key);
 
     // Clear sync caches since background commands can modify files
@@ -786,30 +800,53 @@ class ProjectDockerRuntime {
 
     const exitPromise = (async (): Promise<BackgroundCommandExit> => {
       try {
-        const response = await fetch("/api/sandbox/exec", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sessionId: this.sessionId,
-            command: fullCommand,
-            env: args.env,
-          }),
-          signal: abortController.signal,
+        const exitCode = await this.executeWithSessionRetry({
+          actionLabel: `starting background command (${args.key})`,
+          log: args.log,
+          execute: async (sessionId) => {
+            const running = this.backgroundCommands.get(args.key);
+            if (running) {
+              running.sessionId = sessionId;
+            }
+
+            const response = await fetch("/api/sandbox/exec", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                sessionId,
+                command: commandWithPid,
+                env: args.env,
+              }),
+              signal: abortController.signal,
+            });
+
+            if (!response.ok) {
+              throw await this.createResponseError(
+                response,
+                "Failed to start command",
+              );
+            }
+
+            const handleLogLine = (line: string) => {
+              if (line.startsWith(BACKGROUND_PID_PREFIX)) {
+                const pidText = line.slice(BACKGROUND_PID_PREFIX.length).trim();
+                const pid = Number.parseInt(pidText, 10);
+                if (Number.isFinite(pid)) {
+                  const active = this.backgroundCommands.get(args.key);
+                  if (active) {
+                    active.pid = pid;
+                  }
+                }
+                return;
+              }
+
+              args.log?.(line);
+            };
+
+            return await this.consumeSSEStream(response, handleLogLine);
+          },
         });
 
-        if (!response.ok) {
-          const error = await response
-            .json()
-            .catch(() => ({ error: "Unknown" }));
-          return {
-            code: 1,
-            errorMessage:
-              (error as { error?: string }).error || "Failed to start command",
-            at: Date.now(),
-          };
-        }
-
-        const exitCode = await this.consumeSSEStream(response, args.log);
         return { code: exitCode, errorMessage: null, at: Date.now() };
       } catch (error) {
         if (abortController.signal.aborted) {
@@ -856,6 +893,12 @@ class ProjectDockerRuntime {
     }
 
     running.abortController.abort();
+    void this.requestBackgroundCommandStop({
+      key: args.key,
+      sessionId: running.sessionId,
+      pid: running.pid,
+      log: args.log,
+    });
     this.backgroundCommands.delete(args.key);
     this.syncedProjectFileContent.clear();
     this.syncedProjectFilePaths.clear();
@@ -865,6 +908,38 @@ class ProjectDockerRuntime {
 
   isBackgroundCommandRunning(key: string) {
     return this.backgroundCommands.has(key);
+  }
+
+  private async requestBackgroundCommandStop(args: {
+    key: string;
+    sessionId: string | null;
+    pid: number | null;
+    log?: RuntimeLogWriter;
+  }) {
+    if (!args.sessionId || !args.pid || !Number.isFinite(args.pid)) {
+      return;
+    }
+
+    const command = `if kill -0 ${args.pid} 2>/dev/null; then kill ${args.pid} 2>/dev/null || true; fi`;
+
+    try {
+      const response = await fetch("/api/sandbox/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: args.sessionId,
+          command,
+        }),
+      });
+
+      if (response.ok) {
+        await this.consumeSSEStream(response);
+      }
+    } catch (error) {
+      args.log?.(
+        `Failed to stop background command (${args.key}): ${getErrorMessage(error)}`,
+      );
+    }
   }
 
   getBackgroundCommandLastExit(key: string) {
