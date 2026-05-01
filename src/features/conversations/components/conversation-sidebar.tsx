@@ -14,6 +14,7 @@ import {
   SparklesIcon,
   Trash2Icon,
   XIcon,
+  SquareIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { classifyError, type ClassifiedError } from "@/lib/errors";
@@ -45,6 +46,7 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Suggestion } from "@/components/ai-elements/suggestion";
+import { Spinner } from "@/components/ui/spinner";
 
 import {
   useConversation,
@@ -269,7 +271,9 @@ const ChatMessage = ({
                 <span className="relative inline-flex rounded-full size-2.5 bg-primary" />
               </span>
               <span className="text-[11px] font-semibold text-primary tracking-wide uppercase">
-                Executing Pipeline
+                {content.startsWith("✍️") || content.startsWith("🤔")
+                  ? "Planning Pipeline"
+                  : "Executing Pipeline"}
               </span>
             </div>
             <MessageResponse>{content}</MessageResponse>
@@ -779,7 +783,19 @@ const ChatView = ({
                     : "bg-primary hover:bg-primary/90 w-8",
                 )}
               >
-                {activeAssistantMessageId ? undefined : undefined}
+                {activeAssistantMessageId ? (
+                  isCancellingActiveAssistant ? (
+                    <div className="flex items-center gap-1.5 opacity-70">
+                      <Spinner className="size-3" />
+                      <span>Stopping...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground">
+                      <SquareIcon className="size-3 fill-current" />
+                      <span>Stop generating</span>
+                    </div>
+                  )
+                ) : undefined}
               </PromptInputSubmit>
             </PromptInputFooter>
           </PromptInput>

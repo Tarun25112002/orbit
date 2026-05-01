@@ -324,6 +324,13 @@ export const completeMessageIfProcessing = mutation({
       return false;
     }
 
+    // Only update if the message is still in "processing" state.
+    // This prevents the safety-net finally block from overwriting
+    // a message that was already completed or failed by the normal path.
+    if (message.status !== "processing") {
+      return false;
+    }
+
     const patch: {
       content: string;
       status: "completed" | "failed";

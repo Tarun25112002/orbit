@@ -45,6 +45,7 @@ import {
 import { buildProjectFilePathMap } from "@/features/editor/utils/codebase-context";
 import { EditorStatusBar } from "../../editor/components/editor-status-bar";
 import { WelcomeTab } from "../../editor/components/welcome-tab";
+import { OrbitBuildingAnimation } from "../../editor/components/building-animation";
 import type { CursorState } from "../../editor/store/use-editor-store";
 import { useProjectHeaderContext } from "./project-header-context";
 import { projectWebcontainerRuntime } from "../lib/docker-runtime";
@@ -214,7 +215,7 @@ const buildInstallCommand = (
   return {
     packageManager,
     command: "npm",
-    commandArgs: ["install", "--no-audit", "--no-fund", "--no-progress"],
+    commandArgs: ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--no-progress"],
     label: "npm install",
   };
 };
@@ -2223,6 +2224,26 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     [appendRuntimeTabLog, appendRuntimeLog],
   );
 
+  const removeRuntimeBackgroundCommand = useCallback(
+    (key: string) => {
+      setRuntimeBackgroundCommands((previous) => {
+        const item = previous.find((i) => i.key === key);
+        if (item && item.status === "running") {
+          projectWebcontainerRuntime.stopBackgroundCommand({
+            key,
+            log: appendRuntimeLog,
+          });
+        }
+        return previous.filter((i) => i.key !== key);
+      });
+
+      if (activeRuntimeTabKey === key) {
+        setTimeout(() => setActiveRuntimeTabKey(MAIN_RUNTIME_TAB_KEY), 0);
+      }
+    },
+    [activeRuntimeTabKey, appendRuntimeLog],
+  );
+
   const stopAllRuntimeBackgroundCommands = useCallback(() => {
     const runningCommands = runtimeBackgroundCommands.filter(
       (item) => item.status === "running",
@@ -3270,7 +3291,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             </div>
 
             <div className="min-h-0 flex-1">
-              {runtimePreviewUrl ? (
+              {isRuntimeBusy ? (
+                <div className="h-full w-full bg-background border-t border-border/50">
+                  <OrbitBuildingAnimation />
+                </div>
+              ) : runtimePreviewUrl ? (
                 <iframe
                   className="h-full w-full"
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
@@ -3338,7 +3363,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         >
           <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_minmax(0,24rem)] bg-background">
             <div className="border-b border-border/50 bg-background/50 backdrop-blur-sm z-10 relative">
-              {runtimePreviewUrl ? (
+              {isRuntimeBusy ? (
+                <div className="h-full w-full bg-background">
+                  <OrbitBuildingAnimation />
+                </div>
+              ) : runtimePreviewUrl ? (
                 <iframe
                   className="h-full w-full"
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
@@ -3404,19 +3433,32 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                         <span className="max-w-48 truncate font-mono text-[12px] font-medium">
                           {item.commandLine}
                         </span>
-                        {item.status === "running" && (
+                        <div className="ml-1 flex items-center">
+                          {item.status === "running" && (
+                            <button
+                              className="rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                stopRuntimeBackgroundCommand(item.key);
+                              }}
+                              title={`Stop ${item.commandLine}`}
+                              type="button"
+                            >
+                              <SquareIcon className="size-3.5" />
+                            </button>
+                          )}
                           <button
-                            className="ml-1 rounded p-1 text-muted-foreground/60 hover:bg-muted hover:text-foreground "
+                            className="rounded p-1 text-muted-foreground/60 hover:bg-destructive/20 hover:text-destructive"
                             onClick={(event) => {
                               event.stopPropagation();
-                              stopRuntimeBackgroundCommand(item.key);
+                              removeRuntimeBackgroundCommand(item.key);
                             }}
-                            title={`Stop ${item.commandLine}`}
+                            title={`Delete tab`}
                             type="button"
                           >
                             <XIcon className="size-3.5" />
                           </button>
-                        )}
+                        </div>
                       </div>
                     ))}
                   </div>

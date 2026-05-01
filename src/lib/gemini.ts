@@ -1,6 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { createGroq } from "@ai-sdk/groq";
-import { generateText } from "ai";
+import { generateText, streamText } from "ai";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -606,6 +606,7 @@ const generateGroqCompletion = async (args: {
   temperature?: number;
   system?: string;
   reasoningEffort?: "low" | "medium" | "high";
+  onStreamChunk?: (chunk: string, fullText: string) => void;
 }): Promise<GeminiCompletionResult> => {
   const groq = getGroqClient();
   const modelId = args.model ?? getGroqModel();
@@ -648,7 +649,7 @@ const generateGroqCompletion = async (args: {
     });
 
     try {
-      const result = await generateText({
+      const result = await streamText({
         model: groq(modelId),
         ...(retryPayload.system ? { system: retryPayload.system } : {}),
         messages: retryPayload.messages,
@@ -663,7 +664,14 @@ const generateGroqCompletion = async (args: {
           : {}),
       });
 
-      const text = result.text?.trim() ?? "";
+      let text = "";
+      for await (const chunk of result.textStream) {
+        text += chunk;
+        args.onStreamChunk?.(chunk, text);
+      }
+      
+      text = text.trim();
+
       if (!text) {
         throw new GeminiRequestError({
           message: "Groq response did not include any content",
@@ -754,6 +762,7 @@ export const generateGeminiCompletion = async (args: {
   responseMimeType?: string;
   system?: string;
   reasoningEffort?: "low" | "medium" | "high";
+  onStreamChunk?: (chunk: string, fullText: string) => void;
 }): Promise<GeminiCompletionResult> => {
   const modelName = (args.model ?? GEMINI_MODEL_DEFAULT).trim();
   const isExplicitGeminiModel = modelName.toLowerCase().startsWith("gemini-");
@@ -761,24 +770,59 @@ export const generateGeminiCompletion = async (args: {
 
   // Route through Groq when available (primary provider) and a Gemini model isn't explicitly requested
   if (shouldUseGroq) {
-    try {
-      return await generateGroqCompletion({ ...args, model: modelName });
-    } catch (error) {
-      // If Groq fails with a non-auth error and Gemini key is available, fall back
-      const geminiKey = getGeminiApiKey();
-      if (
-        geminiKey &&
-        error instanceof GeminiRequestError &&
-        error.status !== 401
-      ) {
-        console.warn("groq.fallback-to-gemini", {
-          groqError: error.message,
-          status: error.status,
-        });
-        // Fall through to Gemini logic below
-      } else {
-        throw error;
+    const GROQ_RATE_LIMIT_MAX_RETRIES = 3;
+    let groqLastError: GeminiRequestError | null = null;
+
+    for (let groqAttempt = 1; groqAttempt <= GROQ_RATE_LIMIT_MAX_RETRIES; groqAttempt += 1) {
+      try {
+        return await generateGroqCompletion({ ...args, model: modelName });
+      } catch (error) {
+        if (
+          error instanceof GeminiRequestError &&
+          error.status === 429 &&
+          groqAttempt < GROQ_RATE_LIMIT_MAX_RETRIES
+        ) {
+          // Exponential backoff: 2s, 4s, 8s
+          const backoffMs = Math.pow(2, groqAttempt) * 1000;
+          console.warn("groq.rate-limit-retry", {
+            attempt: groqAttempt,
+            backoffMs,
+            error: error.message,
+          });
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          groqLastError = error;
+          continue;
+        }
+
+        // If Groq fails with a non-auth error and Gemini key is available, fall back
+        const geminiKey = getGeminiApiKey();
+        if (
+          geminiKey &&
+          error instanceof GeminiRequestError &&
+          error.status !== 401
+        ) {
+          console.warn("groq.fallback-to-gemini", {
+            groqError: error.message,
+            status: error.status,
+            attempts: groqAttempt,
+          });
+          groqLastError = error;
+          break; // Fall through to Gemini logic below
+        } else {
+          throw error;
+        }
       }
+    }
+
+    // If all Groq retries exhausted with 429, fall through to Gemini
+    if (groqLastError) {
+      const geminiKey = getGeminiApiKey();
+      if (!geminiKey) {
+        throw groqLastError;
+      }
+      console.warn("groq.exhausted-retries-fallback-to-gemini", {
+        error: groqLastError.message,
+      });
     }
   }
 
@@ -830,13 +874,22 @@ export const generateGeminiCompletion = async (args: {
         config.responseMimeType = args.responseMimeType;
       }
 
-      const response = await ai.models.generateContent({
+      const responseStream = await ai.models.generateContentStream({
         model: candidateModel,
         contents,
         config,
       });
 
-      const text = response.text?.trim() ?? "";
+      let text = "";
+      for await (const chunk of responseStream) {
+        if (chunk.text) {
+          text += chunk.text;
+          args.onStreamChunk?.(chunk.text, text);
+        }
+      }
+
+      text = text.trim();
+
       if (!text) {
         throw new GeminiRequestError({
           message: "Gemini response did not include any content",

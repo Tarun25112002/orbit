@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { getErrorMessage } from "@/lib/errors";
 import { useCreateFile } from "@/features/projects/hooks/use-files";
+import { useIsProjectProcessing } from "@/features/conversations/hooks/use-conversations";
+import { OrbitBuildingAnimation } from "./building-animation";
 
 import { Id } from "../../../../convex/_generated/dataModel";
 
@@ -33,6 +35,7 @@ export const WelcomeTab = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const isBuilding = useIsProjectProcessing(projectId);
 
   const importSingleFile = useCallback(
     async (file: File) => {
@@ -166,6 +169,10 @@ export const WelcomeTab = ({
     input.multiple = true;
     input.click();
   }, []);
+
+  if (isBuilding) {
+    return <OrbitBuildingAnimation />;
+  }
 
   return (
     <div className="flex h-full w-full items-center justify-center overflow-auto bg-background p-8">

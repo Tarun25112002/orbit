@@ -16,6 +16,13 @@ export const useProjectConversations = (projectId: Id<"projects"> | null) => {
   );
 };
 
+export const useIsProjectProcessing = (projectId: Id<"projects"> | null) => {
+  return useQuery(
+    api.conversations.getProcessingStatus,
+    projectId ? { projectId } : "skip",
+  ) ?? false;
+};
+
 export const useMessages = (conversationId: Id<"conversations"> | null) => {
   return useQuery(
     api.conversations.getMessages,

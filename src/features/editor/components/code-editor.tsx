@@ -115,6 +115,68 @@ const installMonacoTransientErrorGuard = () => {
 
   guardedWindow.__orbit_monaco_left_error_guard_installed__ = true;
 
+  // Next.js dev overlay catches errors aggressively. To truly hide this
+  // specific Monaco race condition, we must catch it directly where it
+  // executes (often inside requestAnimationFrame).
+  const originalRaf = window.requestAnimationFrame;
+  window.requestAnimationFrame = function (callback) {
+    return originalRaf(function (time) {
+      try {
+        callback(time);
+      } catch (error) {
+        const errorStack = error instanceof Error ? (error.stack ?? "") : "";
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (
+          shouldSuppressMonacoTransientError({
+            message: errorMessage,
+            source: errorStack,
+            stack: errorStack,
+          })
+        ) {
+          console.warn("Suppressed Monaco transient RAF error:", errorMessage);
+          return;
+        }
+        throw error;
+      }
+    });
+  };
+
+  const originalSetTimeout = window.setTimeout;
+  window.setTimeout = (function (
+    handler: TimerHandler,
+    timeout?: number,
+    ...args: any[]
+  ): number {
+    if (typeof handler === "function") {
+      const wrappedHandler = function (...innerArgs: any[]) {
+        try {
+          return handler(...innerArgs);
+        } catch (error) {
+          const errorStack = error instanceof Error ? (error.stack ?? "") : "";
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          if (
+            shouldSuppressMonacoTransientError({
+              message: errorMessage,
+              source: errorStack,
+              stack: errorStack,
+            })
+          ) {
+            console.warn(
+              "Suppressed Monaco transient timeout error:",
+              errorMessage,
+            );
+            return;
+          }
+          throw error;
+        }
+      };
+      // Type assertion needed because TS lib.dom.d.ts signatures for setTimeout are restrictive
+      return originalSetTimeout(wrappedHandler as any, timeout, ...args);
+    }
+    return originalSetTimeout(handler, timeout, ...args);
+  }) as any;
+
   window.addEventListener(
     "error",
     (event) => {

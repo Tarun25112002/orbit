@@ -89,6 +89,25 @@ export const getMessages = query({
   },
 });
 
+export const getProcessingStatus = query({
+  args: {
+    projectId: v.id("projects"),
+  },
+  handler: async (ctx, args) => {
+    const identity = await verifyAuth(ctx);
+    await requireProjectAccess(ctx, args.projectId, identity.subject);
+
+    const processingMessage = await ctx.db
+      .query("messages")
+      .withIndex("by_project_status", (q) =>
+        q.eq("projectId", args.projectId).eq("status", "processing"),
+      )
+      .first();
+
+    return processingMessage !== null;
+  },
+});
+
 export const sendMessage = mutation({
   args: {
     conversationId: v.id("conversations"),

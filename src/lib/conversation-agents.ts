@@ -140,21 +140,20 @@ const ENABLE_INSTALL_GATE = !/^(0|false)$/i.test(
 const ENABLE_TRACE_HISTORY = !/^(0|false)$/i.test(
   process.env.CONVERSATION_ENABLE_TRACE_HISTORY?.trim() ?? "true",
 );
-const NEXTJS_FRAMEWORK_PATTERN = /\bnext(?:\.js|js)?\b/i;
-const NEXTJS_SCAFFOLD_INTENT_PATTERN =
-  /\b(create|scaffold|setup|generate|starter|boilerplate|from scratch|new)\b/i;
-const NEXTJS_BASIC_STARTER_INTENT_PATTERN =
+const VITE_SCAFFOLD_INTENT_PATTERN =
+  /\b(create|scaffold|setup|generate|starter|boilerplate|from scratch|new|build|make)\b/i;
+const VITE_BASIC_STARTER_INTENT_PATTERN =
   /\b(starter|boilerplate|template|minimal|basic|blank|empty|hello world)\b/i;
 const END_TO_END_BUILD_INTENT_PATTERN =
-  /\b(end[\s-]?to[\s-]?end|full[\s-]?stack|production(?:\s|-)?ready|complete\s+app|complete\s+project)\b/i;
+  /\b(end[\s-]?to[\s-]?end|production(?:\s|-)?ready|complete\s+app|complete\s+project)\b/i;
 const COMPLEX_BUILD_TRIGGER_PATTERN =
   /\b(build|create|scaffold|setup|generate|implement|develop|ship|deliver)\b/i;
 const COMPLEX_BUILD_SCOPE_PATTERN =
   /\b(app|application|project|platform|dashboard|portal|tool|service|saas)\b/i;
 const COMPLEX_BUILD_STACK_PATTERN =
-  /\b(frontend|backend|api|database|db|auth|authentication|payment|stripe|upload|storage|webhook|queue|worker|cron|realtime|real-time|admin|role|permission)\b/i;
+  /\b(frontend|front-end|ui|ux|react|component|page|layout|css|tailwind|design|style|styling|form|table|chart|graph|animation|responsive)\b/i;
 const COMPLEX_FEATURE_SCOPE_PATTERN =
-  /\b(auth|authentication|login|signup|database|db|prisma|postgres|mysql|mongodb|redis|payment|stripe|webhook|dashboard|admin|roles|permissions|upload|storage|notification|socket|realtime|real-time|queue|worker|cron|backend|server|api)\b/i;
+  /\b(multi-page|routing|router|state management|redux|zustand|context|form validation|chart|graph|dashboard|table|data visualization|drag and drop|infinite scroll|pagination|search|filter|sort|modal|drawer|toast|notification|theme|dark mode|i18n|localization)\b/i;
 const STRICT_EXECUTION_ACTION_PATTERN =
   /\b(do it|apply(?:\s+it)?|apply changes|make changes|edit files|update files|create files|scaffold|set\s*up|setup|run commands?|execute commands?|install dependencies|wire up|hook up)\b/i;
 const PROJECT_SCOPED_EXECUTION_PATTERN =
@@ -164,21 +163,20 @@ const EXECUTION_FRUSTRATION_PATTERN =
 const FAST_EXECUTION_INTENT_PATTERN =
   /\b(immediate(?:ly)?|immediatly|immideately|right\s+away|asap|step\s*by\s*step|execute\s+now|start\s+execut(?:e|ing)|execute\s+pipeline|run\s+pipeline|pipeline\s+(?:first|execution))\b/i;
 const FRONTEND_PLANNER_STYLE_HINT_PATTERN =
-  /\b(ui|ux|frontend|front-end|react|next(?:\.js|js)?|component|page|layout|css|tailwind|design|style|styling)\b/i;
+  /\b(ui|ux|frontend|front-end|react|vite|component|page|layout|css|tailwind|design|style|styling)\b/i;
 const STRICT_FILE_OPS_GATE_ENABLED = !/^(0|false)$/i.test(
   process.env.CONVERSATION_STRICT_FILE_OPS_GATE?.trim() ?? "true",
 );
 const REQUIRE_EXECUTABLE_FOR_CODE_INTENT = !/^(0|false)$/i.test(
   process.env.CONVERSATION_REQUIRE_EXECUTABLE_FOR_CODE_INTENT?.trim() ?? "true",
 );
-const NEXTJS_REQUIRED_SCAFFOLD_FILE_PATHS = [
+const VITE_REQUIRED_SCAFFOLD_FILE_PATHS = [
   "package.json",
-  "next.config.mjs",
+  "vite.config.ts",
   "tsconfig.json",
-  "next-env.d.ts",
-  "src/app/layout.tsx",
-  "src/app/page.tsx",
-  "src/app/globals.css",
+  "index.html",
+  "src/main.tsx",
+  "src/App.tsx",
 ] as const;
 
 const isFastExecutionRequest = (input: ConversationOrchestrationInput) => {
@@ -275,19 +273,19 @@ const buildDeterministicChunks = (
   if (!hasExistingPackageJson) {
     chunks.push({
       title: "Project Foundation",
-      goal: "Create package.json with all needed dependencies, config files (tsconfig.json, framework config like next.config.mjs or vite.config.ts), and global style files. Include COMPLETE dependency list so npm install succeeds in one pass.",
+      goal: "Create package.json with all needed dependencies (vite, react, react-dom, @vitejs/plugin-react, tailwindcss, postcss, autoprefixer, typescript), config files (tsconfig.json, vite.config.ts, postcss.config.js, tailwind.config.js), index.html, and src/index.css with Tailwind directives. Include COMPLETE dependency list so npm install succeeds in one pass.",
     });
   }
 
   chunks.push({
     title: "Core Implementation",
-    goal: `Implement the main application code: root layout, pages, components, API routes, and core logic for: ${message.slice(0, 250)}. Write COMPLETE, RUNNABLE files with proper imports/exports.`,
+    goal: `Implement the main application code: entry point (src/main.tsx), App component, pages, components, and core UI logic for: ${message.slice(0, 250)}. Write COMPLETE, RUNNABLE files with proper imports/exports. Use Tailwind CSS for all styling.`,
   });
 
   if (COMPLEX_FEATURE_SCOPE_PATTERN.test(message)) {
     chunks.push({
-      title: "Features & Integration",
-      goal: "Implement additional features (auth, database, API integration, etc.), connect all components, add proper error handling, loading states, and type safety.",
+      title: "Features & Polish",
+      goal: "Implement additional UI features (routing, state management, forms, data visualization, etc.), connect all components, add proper error handling, loading states, responsive layouts, and type safety.",
     });
   }
 
@@ -339,6 +337,9 @@ type ConversationOrchestrationInput = {
     completed: ConversationFileOperationResult[],
     total: number,
   ) => Promise<void> | void;
+  /** Called during LLM generation with real-time text updates.
+   *  Used to stream progress indicating which file is currently being generated. */
+  onPlanningProgress?: (status: string) => void;
 };
 
 export type ConversationProjectFile = {
@@ -447,8 +448,9 @@ const SUPERVISOR_SYSTEM_PROMPT = [
 ].join("\n");
 
 const ARCHITECTURE_SYSTEM_PROMPT = [
-  "You are Orbit's architecture specialist.",
-  "Focus on project structure, data flow, API boundaries, and how the code fits together.",
+  "You are Orbit's architecture specialist for frontend applications.",
+  "Focus on component structure, state management, data flow, and how the UI fits together.",
+  "All projects use Vite + React + TypeScript. No backend code is generated.",
   "Return concise findings that another agent can synthesize into a final user answer.",
 ].join("\n");
 
@@ -461,15 +463,18 @@ const CODE_QUALITY_SYSTEM_PROMPT = [
 const IMPLEMENTATION_SYSTEM_PROMPT = [
   "You are Orbit's Implementation Specialist — the PRIMARY code-generation engine.",
   "",
+  "IMPORTANT: You ONLY generate FRONTEND code. You use Vite + React + TypeScript exclusively.",
+  "NEVER generate backend code, API routes, Express servers, database code, or server-side logic.",
+  "For data, use mock data, localStorage, or browser APIs. NOT real backends.",
+  "",
   "YOUR CODE MUST BE PRODUCTION-QUALITY:",
   "- Write COMPLETE, RUNNABLE files — never stubs, never TODOs, never placeholders.",
   "- For UI: create BEAUTIFUL, MODERN interfaces with polished styling.",
   "  Use vibrant gradients, responsive states, proper spacing, and modern fonts.",
   "  Every page must look like it was designed by a professional — not a plain HTML page.",
-  "- For React/Next.js: include proper state management, loading states, error boundaries,",
+  "- For React: include proper state management, loading states, error boundaries,",
   "  responsive layouts, accessibility attributes, and semantic HTML.",
-  "- For APIs: include proper validation, error handling, status codes, TypeScript types.",
-  "- For full-stack: wire frontend to backend completely — no disconnected pieces.",
+  "- Use Tailwind CSS for all styling. Include tailwindcss in dependencies.",
   "",
   "STYLING STANDARDS:",
   "- Use modern color palettes (not plain red/blue/green). Prefer HSL-based harmonious schemes.",
@@ -477,7 +482,6 @@ const IMPLEMENTATION_SYSTEM_PROMPT = [
   "- Light mode: use soft whites (#fafafa to #f0f4f8) with gentle shadows.",
   "- Typography: use system font stacks or Google Fonts (Inter, Outfit, Plus Jakarta Sans).",
   "- Spacing: consistent padding/margins using 4px/8px grid system.",
-  "- Motion: do not add animations, transitions, or motion effects. Keep UI state changes instant.",
   "- Border radius: use modern rounded corners (8-16px for cards, 6-8px for buttons).",
   "- Shadows: layered shadows for depth (0 1px 3px, 0 4px 12px patterns).",
   "",
@@ -486,10 +490,10 @@ const IMPLEMENTATION_SYSTEM_PROMPT = [
   "- Forms: include validation, disabled states, loading indicators on submit.",
   "- Lists: include empty states, loading skeletons, and proper key props.",
   "- Navigation: active states, hover effects, mobile responsiveness.",
-  "- Modals/Dialogs: proper focus trapping, backdrop, close on escape.",
+  "- Use React Router for multi-page navigation when needed.",
   "",
   "Write code that makes users say 'wow, this looks amazing' at first glance.",
-  "Include ALL necessary files — layout, pages, components, styles, types, utilities.",
+  "Include ALL necessary files — pages, components, styles, types, utilities.",
   "Include package.json updates for any new dependencies.",
 ].join("\n");
 
@@ -520,6 +524,24 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "for a human; you are programming a build system.",
   "",
   "═══════════════════════════════════════════════════",
+  "PLATFORM CONSTRAINT — FRONTEND ONLY",
+  "═══════════════════════════════════════════════════",
+  "",
+  "You ONLY generate FRONTEND applications using Vite + React + TypeScript.",
+  "NEVER generate:",
+  "- Backend code (Express, Fastify, Hono, NestJS, etc.)",
+  "- API routes or server endpoints",
+  "- Database code (Prisma, MongoDB, PostgreSQL, etc.)",
+  "- Server-side rendering (Next.js, Remix, etc.)",
+  "- Authentication backends (passport, JWT servers, etc.)",
+  "",
+  "Instead, for data needs use:",
+  "- Mock data / hardcoded JSON arrays",
+  "- localStorage / sessionStorage for persistence",
+  "- Browser APIs (fetch to public APIs, geolocation, etc.)",
+  "- React state (useState, useReducer, Context, Zustand)",
+  "",
+  "═══════════════════════════════════════════════════",
   "OPERATION TYPES",
   "═══════════════════════════════════════════════════",
   "",
@@ -540,8 +562,7 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "",
   "1. COMPLETE CODE ONLY: Every create_file/update_file MUST contain the FULL, FINAL, RUNNABLE file content.",
   "   No placeholders. No `// TODO`. No `// add your code here`. No `...` ellipsis. Every file must work AS-IS.",
-  "   Unless the user explicitly asks for a starter/minimal template, implement a COMPLETE end-to-end slice, not a bare shell.",
-  "   For app feature requests, include frontend UI + server/API/data flow + validation/error handling so the feature actually works.",
+  "   Implement COMPLETE, FUNCTIONAL UI with real interactions, state management, and polished styling.",
   "",
   "2. COMMANDS: Put the binary name in `command` and args in `commandArgs` array.",
   "   NEVER use shell chaining (&&, ||, ;, |). Use SEPARATE run_command operations instead.",
@@ -558,95 +579,58 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "   Create config files BEFORE source files that depend on them.",
   "",
   "═══════════════════════════════════════════════════",
-  "FRAMEWORK SCAFFOLDING GUIDES",
+  "VITE + REACT PROJECT STRUCTURE",
   "═══════════════════════════════════════════════════",
   "",
-  "▸ NEXT.JS (App Router):",
-  "  Required files:",
-  "  - package.json (next, react, react-dom + any extras like tailwindcss)",
-  "  - next.config.mjs or next.config.mjs",
-  "  - tsconfig.json (with 'jsx': 'preserve', paths, etc.)",
-  "  - src/app/layout.tsx (root layout with <html>, <body>)",
-  "  - src/app/page.tsx (home page)",
-  "  - src/app/globals.css (global styles or Tailwind directives)",
-  "  Optional: src/app/api/*/route.ts for API routes, src/components/ for shared components",
-  "  Config: postcss.config.mjs + tailwind.config.ts if using Tailwind",
-  "",
-  "▸ VITE + REACT:",
-  "  Required files:",
-  "  - package.json (vite, react, react-dom, @vitejs/plugin-react)",
-  "  - vite.config.ts (import react plugin)",
-  "  - tsconfig.json",
+  "Every new project MUST include these files:",
+  "  - package.json (vite, react, react-dom, @vitejs/plugin-react, tailwindcss, postcss, autoprefixer, typescript, @types/react, @types/react-dom)",
+  "  - vite.config.ts (import react plugin from @vitejs/plugin-react)",
+  "  - tsconfig.json (Vite-compatible: jsx 'react-jsx', module 'ESNext', moduleResolution 'bundler')",
+  "  - tsconfig.node.json (for vite.config.ts)",
+  "  - postcss.config.js (tailwindcss + autoprefixer plugins)",
+  "  - tailwind.config.js (content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'])",
   "  - index.html (with <div id='root'> and <script type='module' src='/src/main.tsx'>)",
   "  - src/main.tsx (ReactDOM.createRoot render)",
-  "  - src/App.tsx (main component)",
-  "  - src/App.css or src/index.css",
+  "  - src/App.tsx (main app component with routing if multi-page)",
+  "  - src/index.css (Tailwind directives: @tailwind base; @tailwind components; @tailwind utilities;)",
   "",
-  "▸ NODE.JS / EXPRESS BACKEND:",
-  "  Required files:",
-  "  - package.json (express, typescript, ts-node, @types/express, @types/node)",
-  "  - tsconfig.json",
-  "  - src/index.ts or src/server.ts (entry point with express app setup)",
+  "  Optional but recommended:",
+  "  - src/components/ — reusable UI components",
+  "  - src/pages/ — page-level components (for React Router)",
+  "  - src/hooks/ — custom React hooks",
+  "  - src/lib/ — utility functions",
+  "  - src/types/ — TypeScript type definitions",
   "",
-  "▸ FULL-STACK (Next.js with API routes):",
-  "  - All Next.js files above PLUS",
-  "  - src/app/api/<resource>/route.ts files for RESTful endpoints",
-  "  - src/lib/ for shared utilities, database connections, types",
+  "  For multi-page apps, use react-router-dom:",
+  "  - Add react-router-dom to dependencies",
+  "  - Use BrowserRouter, Routes, Route in App.tsx",
+  "  - Create page components in src/pages/",
   "",
   "═══════════════════════════════════════════════════",
   "CODE QUALITY & UI/UX REQUIREMENTS",
   "═══════════════════════════════════════════════════",
   "",
   "TYPESCRIPT:",
-  "- Use TypeScript (.tsx/.ts) for ALL React/Next.js projects",
+  "- Use TypeScript (.tsx/.ts) for ALL files",
   "- Use proper imports (named imports, not require())",
-  "- Include 'use client' directive for client components in Next.js App Router",
   "- Include proper TypeScript types/interfaces — NEVER use `any`",
-  "- Always export default for page/layout components in Next.js",
   "",
-  "UI/UX — YOUR CODE MUST LOOK PROFESSIONAL AND MODERN:",
-  "- NEVER create plain, unstyled HTML. Every page MUST have polished CSS.",
+  "STYLING — USE TAILWIND CSS:",
+  "- Use Tailwind CSS utility classes for ALL styling.",
+  "- NEVER create plain, unstyled HTML. Every page MUST look polished and professional.",
   "- Use modern design: gradients, subtle shadows, crisp state changes, rounded corners.",
   "- Color palette: use harmonious HSL-based colors, NOT plain red/blue/green.",
-  "  Example dark theme: background #0f172a, surface #1e293b, accent #3b82f6/#8b5cf6, text #e2e8f0",
-  "  Example light theme: background #f8fafc, surface #ffffff, accent #6366f1/#8b5cf6, text #0f172a",
-  "- Typography: use font-family: 'Inter', 'Segoe UI', system-ui, sans-serif.",
-  "  Use proper font weights (400 for body, 500 for labels, 600-700 for headings).",
-  "  Use proper line-height (1.5 for body, 1.2 for headings).",
-  "- Spacing: use consistent 8px grid (padding: 8px, 16px, 24px, 32px, 48px).",
-  "- Buttons: background gradient or solid color, rounded (8px), hover darken/lighten,",
-  "  no motion effects, padding 10px 20px, font-weight 500.",
-  "- Cards: background surface color, border-radius 12-16px, subtle border (1px solid rgba),",
-  "  box-shadow (0 1px 3px rgba(0,0,0,0.1), 0 4px 12px rgba(0,0,0,0.05)), padding 24px.",
-  "- Inputs: border 1px solid #e2e8f0, border-radius 8px, padding 10px 14px,",
-  "  focus: border-color accent + box-shadow 0 0 0 3px rgba(accent, 0.15).",
-  "- Animations: do not add CSS animations, transitions, spinners, or transform-based motion.",
-  "  Use instant hover/focus/active states and static loading indicators.",
-  "- Layout: use CSS Grid or Flexbox. Make it responsive with @media queries.",
-  "  Mobile-first: stack vertically on small screens, grid on larger screens.",
-  "- Navigation: sticky header, backdrop-filter blur, border-bottom, logo + links + actions.",
-  "- Empty states: centered icon + message + action button, not just blank space.",
-  "- Loading: use skeleton placeholders or spinner animations, not just 'Loading...' text.",
-  "- Error states: red/warning colored callout with icon, message, and retry action.",
-  "",
-  "CSS PATTERNS TO USE:",
-  "  .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }",
-  "  .card { background: var(--surface); border-radius: 12px; padding: 24px;",
-  "          border: 1px solid var(--border); box-shadow: 0 1px 3px rgba(0,0,0,0.08); }",
-  "  .btn { padding: 10px 20px; border-radius: 8px; font-weight: 500; border: none;",
-  "         cursor: pointer; }",
-  "  .btn:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.15); }",
-  "  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; }",
-  "  .input { width: 100%; padding: 10px 14px; border: 1px solid var(--border);",
-  "           border-radius: 8px; font-size: 14px; }",
-  "  .input:focus { outline: none; border-color: var(--accent);",
-  "                 box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15); }",
-  "",
-  "API ROUTES:",
-  "- Proper error handling with try/catch",
-  "- Correct HTTP status codes (200, 201, 400, 404, 500)",
-  "- JSON responses with consistent shape: { data } or { error: message }",
-  "- Input validation before processing",
+  "  Example dark theme: bg-slate-900, surface bg-slate-800, accent indigo-500/violet-500, text slate-200",
+  "  Example light theme: bg-slate-50, surface white, accent indigo-600/violet-600, text slate-900",
+  "- Typography: use font-sans (Inter) with proper font weights.",
+  "- Spacing: use Tailwind spacing scale (p-2, p-4, p-6, p-8, etc.).",
+  "- Buttons: bg-gradient-to-r, rounded-lg, hover:shadow-lg, px-5 py-2.5, font-medium.",
+  "- Cards: bg-white dark:bg-slate-800, rounded-xl, shadow-sm, border border-slate-200, p-6.",
+  "- Inputs: w-full, px-4 py-2.5, border border-slate-300, rounded-lg, focus:ring-2 focus:ring-indigo-500.",
+  "- Layout: use flex/grid. Make responsive with sm:/md:/lg: prefixes.",
+  "- Navigation: sticky top-0, backdrop-blur, border-b, flex items-center justify-between.",
+  "- Empty states: flex flex-col items-center justify-center with icon + message + CTA button.",
+  "- Loading: use animated skeleton placeholders or spinner.",
   "",
   "═══════════════════════════════════════════════════",
   "OUTPUT FORMAT",
@@ -666,7 +650,7 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "- package.json MUST include ALL dependencies on the FIRST pass — missing deps cause npm install failures that waste fixup iterations.",
   "- For create_file: include the ENTIRE file content even if it is long (200+ lines is fine).",
   "- For update_file: include the FULL new file, not a partial patch.",
-  "- When generating a full project: ALWAYS include config files (tsconfig.json, next.config.mjs, postcss.config, etc.) — missing configs cause build failures.",
+  "- When generating a full project: ALWAYS include config files (tsconfig.json, vite.config.ts, postcss.config.js, tailwind.config.js) — missing configs cause build failures.",
   "- ALWAYS end with npm install + dev server start for new projects.",
 ].join("\n");
 
@@ -925,6 +909,89 @@ const extractJsonObject = (value: string) => {
   }
 
   return raw.slice(arrayStart, end + 1);
+};
+
+/**
+ * Attempt to repair common LLM JSON mistakes so JSON.parse succeeds.
+ * Handles: trailing commas, missing closing braces/brackets, control chars.
+ */
+const repairJson = (value: string): string => {
+  let repaired = value
+    // Remove control characters that break JSON
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
+    // Remove trailing commas before closing braces/brackets
+    .replace(/,\s*([\]}])/g, "$1")
+    // Remove JavaScript-style comments
+    .replace(/\/\/[^\n]*/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "");
+
+  // Count unbalanced braces/brackets and add missing closers
+  let braces = 0;
+  let brackets = 0;
+  let inString = false;
+  let escape = false;
+
+  for (const char of repaired) {
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (char === "{") braces++;
+    else if (char === "}") braces--;
+    else if (char === "[") brackets++;
+    else if (char === "]") brackets--;
+  }
+
+  // Close any unclosed strings
+  if (inString) {
+    repaired += '"';
+  }
+
+  // Add missing closing brackets/braces
+  while (brackets > 0) {
+    repaired += "]";
+    brackets--;
+  }
+  while (braces > 0) {
+    repaired += "}";
+    braces--;
+  }
+
+  // Final trailing comma cleanup after repair
+  repaired = repaired.replace(/,\s*([\]}])/g, "$1");
+
+  return repaired;
+};
+
+/**
+ * Try JSON.parse, falling back to repairJson + JSON.parse on failure.
+ */
+const safeJsonParse = (value: string): unknown | null => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    try {
+      const repaired = repairJson(value);
+      const parsed = JSON.parse(repaired);
+      console.info("conversation.planner.json-repaired", {
+        originalLength: value.length,
+        repairedLength: repaired.length,
+      });
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
 };
 
 const toRecord = (value: unknown): Record<string, unknown> | null =>
@@ -1471,7 +1538,7 @@ const buildDefaultInstallOperation = (
     return {
       type: "run_command",
       command,
-      commandArgs: ["install", "--no-audit", "--no-fund", "--no-progress"],
+      commandArgs: ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--no-progress", "--loglevel=error"],
     };
   }
 
@@ -2145,19 +2212,15 @@ const isLikelyEmptyProjectForScaffold = (
   return !hasPackageJson && !hasNextConfig && !hasAppRouterStructure;
 };
 
-const isNextJsScaffoldRequest = (input: ConversationOrchestrationInput) => {
+const isViteScaffoldRequest = (input: ConversationOrchestrationInput) => {
   const message = input.message.trim();
-  if (!NEXTJS_FRAMEWORK_PATTERN.test(message)) {
-    return false;
-  }
-
-  return NEXTJS_SCAFFOLD_INTENT_PATTERN.test(message);
+  return VITE_SCAFFOLD_INTENT_PATTERN.test(message);
 };
 
-const isNextJsBasicStarterRequest = (input: ConversationOrchestrationInput) => {
+const isViteBasicStarterRequest = (input: ConversationOrchestrationInput) => {
   const message = input.message.trim();
 
-  if (!isNextJsScaffoldRequest(input)) {
+  if (!isViteScaffoldRequest(input)) {
     return false;
   }
 
@@ -2169,31 +2232,34 @@ const isNextJsBasicStarterRequest = (input: ConversationOrchestrationInput) => {
     return false;
   }
 
-  return NEXTJS_BASIC_STARTER_INTENT_PATTERN.test(message);
+  return VITE_BASIC_STARTER_INTENT_PATTERN.test(message);
 };
 
-const buildNextJsStarterPackageJson = () =>
+const buildViteStarterPackageJson = () =>
   `${JSON.stringify(
     {
-      name: "next-app",
+      name: "vite-react-app",
       version: "0.1.0",
       private: true,
+      type: "module",
       scripts: {
-        dev: "next dev",
-        build: "next build",
-        start: "next start",
-        typecheck: "tsc --noEmit",
+        dev: "vite",
+        build: "tsc -b && vite build",
+        preview: "vite preview",
       },
       dependencies: {
-        next: "16.2.0",
-        react: "19.2.4",
-        "react-dom": "19.2.4",
+        react: "^19.1.0",
+        "react-dom": "^19.1.0",
       },
       devDependencies: {
-        typescript: "^5",
-        "@types/node": "^20",
         "@types/react": "^19",
         "@types/react-dom": "^19",
+        "@vitejs/plugin-react": "^4",
+        autoprefixer: "^10",
+        postcss: "^8",
+        tailwindcss: "^3",
+        typescript: "^5",
+        vite: "^6",
       },
     },
     null,
@@ -2222,13 +2288,13 @@ const upsertPlannerFileOperation = (args: {
   };
 };
 
-const buildDeterministicNextJsScaffoldOperations = (
+const buildDeterministicViteScaffoldOperations = (
   projectFiles: ConversationProjectFile[] = [],
 ) => {
   const existingPaths = buildNormalizedProjectPathSet(projectFiles);
   const operations: ConversationFileOperation[] = [];
 
-  for (const folderPath of ["src", "src/app", "public"]) {
+  for (const folderPath of ["src", "public"]) {
     if (!existingPaths.has(folderPath)) {
       operations.push({ type: "create_folder", path: folderPath });
     }
@@ -2237,16 +2303,18 @@ const buildDeterministicNextJsScaffoldOperations = (
   operations.push(
     upsertPlannerFileOperation({
       path: "package.json",
-      content: buildNextJsStarterPackageJson(),
+      content: buildViteStarterPackageJson(),
       existingPaths,
     }),
     upsertPlannerFileOperation({
-      path: "next.config.mjs",
+      path: "vite.config.ts",
       content: [
-        "/** @type {import('next').NextConfig} */",
-        "const nextConfig = {};",
+        'import { defineConfig } from "vite";',
+        'import react from "@vitejs/plugin-react";',
         "",
-        "export default nextConfig;",
+        "export default defineConfig({",
+        "  plugins: [react()],",
+        "});",
         "",
       ].join("\n"),
       existingPaths,
@@ -2256,31 +2324,20 @@ const buildDeterministicNextJsScaffoldOperations = (
       content: `${JSON.stringify(
         {
           compilerOptions: {
-            target: "ES2017",
-            lib: ["dom", "dom.iterable", "esnext"],
-            allowJs: false,
+            target: "ES2020",
+            useDefineForClassFields: true,
+            lib: ["ES2020", "DOM", "DOM.Iterable"],
+            module: "ESNext",
             skipLibCheck: true,
-            strict: true,
-            noEmit: true,
-            esModuleInterop: true,
-            module: "esnext",
             moduleResolution: "bundler",
-            resolveJsonModule: true,
+            allowImportingTsExtensions: true,
             isolatedModules: true,
-            jsx: "preserve",
-            incremental: true,
-            plugins: [{ name: "next" }],
-            paths: {
-              "@/*": ["./src/*"],
-            },
+            moduleDetection: "force",
+            noEmit: true,
+            jsx: "react-jsx",
+            strict: true,
           },
-          include: [
-            "next-env.d.ts",
-            "**/*.ts",
-            "**/*.tsx",
-            ".next/types/**/*.ts",
-          ],
-          exclude: ["node_modules"],
+          include: ["src"],
         },
         null,
         2,
@@ -2288,80 +2345,56 @@ const buildDeterministicNextJsScaffoldOperations = (
       existingPaths,
     }),
     upsertPlannerFileOperation({
-      path: "next-env.d.ts",
-      content: [
-        '/// <reference types="next" />',
-        '/// <reference types="next/image-types/global" />',
-        "",
-        "// This file is auto-generated by Next.js.",
-        "",
-      ].join("\n"),
+      path: "tsconfig.node.json",
+      content: `${JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2022",
+            lib: ["ES2023"],
+            module: "ESNext",
+            skipLibCheck: true,
+            moduleResolution: "bundler",
+            allowImportingTsExtensions: true,
+            isolatedModules: true,
+            moduleDetection: "force",
+            noEmit: true,
+            strict: true,
+          },
+          include: ["vite.config.ts"],
+        },
+        null,
+        2,
+      )}\n`,
       existingPaths,
     }),
     upsertPlannerFileOperation({
-      path: "src/app/globals.css",
-      content: [
-        ":root {",
-        "  color-scheme: light;",
-        "  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;",
-        "}",
-        "",
-        "* {",
-        "  box-sizing: border-box;",
-        "}",
-        "",
-        "body {",
-        "  margin: 0;",
-        "  min-height: 100vh;",
-        "  background: linear-gradient(135deg, #f5f7fa 0%, #e4ecf7 100%);",
-        "  color: #0f172a;",
-        "}",
-        "",
-      ].join("\n"),
+      path: "postcss.config.js",
+      content: "export default {\n  plugins: {\n    tailwindcss: {},\n    autoprefixer: {},\n  },\n};\n",
       existingPaths,
     }),
     upsertPlannerFileOperation({
-      path: "src/app/layout.tsx",
-      content: [
-        'import type { Metadata } from "next";',
-        'import "./globals.css";',
-        "",
-        "export const metadata: Metadata = {",
-        '  title: "Orbit Next App",',
-        '  description: "Generated by Orbit AI",',
-        "};",
-        "",
-        "export default function RootLayout({",
-        "  children,",
-        "}: Readonly<{",
-        "  children: React.ReactNode;",
-        "}>) {",
-        "  return (",
-        '    <html lang="en">',
-        "      <body>{children}</body>",
-        "    </html>",
-        "  );",
-        "}",
-        "",
-      ].join("\n"),
+      path: "tailwind.config.js",
+      content: '/** @type {import(\'tailwindcss\').Config} */\nexport default {\n  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],\n  theme: {\n    extend: {},\n  },\n  plugins: [],\n};\n',
       existingPaths,
     }),
     upsertPlannerFileOperation({
-      path: "src/app/page.tsx",
-      content: [
-        "export default function HomePage() {",
-        "  return (",
-        '    <main style={{ padding: "3rem" }}>',
-        '      <h1 style={{ marginBottom: "0.75rem" }}>Next.js Project Ready</h1>',
-        "      <p>",
-        "        Your project scaffold is in place. Start editing",
-        "        <strong> src/app/page.tsx</strong> to build your app.",
-        "      </p>",
-        "    </main>",
-        "  );",
-        "}",
-        "",
-      ].join("\n"),
+      path: "index.html",
+      content: '<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Orbit App</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n',
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "src/index.css",
+      content: "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n",
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "src/main.tsx",
+      content: 'import React from "react";\nimport ReactDOM from "react-dom/client";\nimport App from "./App";\nimport "./index.css";\n\nReactDOM.createRoot(document.getElementById("root")!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>,\n);\n',
+      existingPaths,
+    }),
+    upsertPlannerFileOperation({
+      path: "src/App.tsx",
+      content: 'export default function App() {\n  return (\n    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">\n      <div className="text-center space-y-4">\n        <h1 className="text-4xl font-bold text-slate-900">Vite + React</h1>\n        <p className="text-slate-600">\n          Your project is ready. Edit <code className="bg-slate-200 px-2 py-1 rounded text-sm">src/App.tsx</code> to get started.\n        </p>\n      </div>\n    </div>\n  );\n}\n',
       existingPaths,
     }),
   );
@@ -2369,7 +2402,7 @@ const buildDeterministicNextJsScaffoldOperations = (
   operations.push({
     type: "run_command",
     command: "npm",
-    commandArgs: ["install", "--no-audit", "--no-fund", "--no-progress"],
+    commandArgs: ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--no-progress", "--loglevel=error"],
   });
   operations.push({
     type: "start_background_command",
@@ -2402,11 +2435,11 @@ const collectPlannedPathSet = (
   return paths;
 };
 
-const validateNextJsScaffoldPlan = (args: {
+const validateViteScaffoldPlan = (args: {
   input: ConversationOrchestrationInput;
   operations: ConversationFileOperation[];
 }) => {
-  if (!isNextJsScaffoldRequest(args.input)) {
+  if (!isViteScaffoldRequest(args.input)) {
     return [] as string[];
   }
 
@@ -2415,7 +2448,7 @@ const validateNextJsScaffoldPlan = (args: {
     args.input.projectFiles,
   );
 
-  const missingPaths = NEXTJS_REQUIRED_SCAFFOLD_FILE_PATHS.filter(
+  const missingPaths = VITE_REQUIRED_SCAFFOLD_FILE_PATHS.filter(
     (path) => !plannedPaths.has(path),
   );
 
@@ -2424,7 +2457,7 @@ const validateNextJsScaffoldPlan = (args: {
   }
 
   return [
-    `Next.js scaffold is missing required files: ${missingPaths.join(", ")}.`,
+    `Vite scaffold is missing required files: ${missingPaths.join(", ")}.`,
   ];
 };
 
@@ -2585,9 +2618,6 @@ const buildProjectFileInventory = (files: ConversationProjectFile[] = []) => {
 const PLANNER_KEY_FILE_PATTERNS = [
   "package.json",
   "tsconfig.json",
-  "next.config.mjs",
-  "next.config.js",
-  "next.config.mjs",
   "vite.config.ts",
   "vite.config.js",
   "tailwind.config.ts",
@@ -2595,14 +2625,11 @@ const PLANNER_KEY_FILE_PATTERNS = [
   "postcss.config.mjs",
   "postcss.config.js",
   // Main source files — critical for follow-up changes
-  "src/app/layout.tsx",
-  "src/app/page.tsx",
-  "src/app/globals.css",
+  "index.html",
   "src/main.tsx",
   "src/App.tsx",
   "src/index.tsx",
   "src/index.css",
-  "index.html",
 ] as const;
 
 const buildPlannerKeyFileContext = (files: ConversationProjectFile[] = []) => {
@@ -2667,10 +2694,10 @@ const buildFileOperationPlannerPrompt = (
     "REMINDERS:",
     "- Your output is EXECUTED, not displayed. Include COMPLETE file contents.",
     "- Unless the user explicitly asks for starter/minimal scaffold, do NOT stop at a basic frontend shell.",
-    "- For feature requests, deliver an end-to-end implementation (UI + API/backend/data flow) that runs in this project.",
+    "- For feature requests, deliver a complete frontend implementation with polished UI, state management, and mock data.",
     '- After changing package.json: {"type":"run_command","command":"npm","commandArgs":["install"]}',
     '- To start dev server: {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
-    "- For Next.js scaffolds, include at minimum: package.json, next.config.mjs, tsconfig.json, next-env.d.ts, src/app/layout.tsx, src/app/page.tsx, src/app/globals.css.",
+    "- For Vite scaffolds, include at minimum: package.json, vite.config.ts, tsconfig.json, index.html, src/main.tsx, src/App.tsx, src/index.css.",
     "- Create ALL files needed for the task. Do not leave gaps or TODOs.",
     ...(includeFrontendStyleGuidance
       ? [
@@ -2901,7 +2928,7 @@ const shouldUseChunkedComplexBuildPlanning = (
     return false;
   }
 
-  if (isNextJsBasicStarterRequest(input)) {
+  if (isViteBasicStarterRequest(input)) {
     return false;
   }
 
@@ -3012,7 +3039,7 @@ const extractPlannerChunks = (output: string): PlannerChunk[] => {
   }
 
   try {
-    return parsePlannerChunks(JSON.parse(plannerJson) as unknown);
+    return parsePlannerChunks(safeJsonParse(plannerJson) as unknown);
   } catch {
     return [];
   }
@@ -3151,6 +3178,7 @@ const runFileOpsPlannerDirect = async (
     preferredModel?: string;
     callBudget?: PlannerCallBudget;
     fastMode?: boolean;
+    onPlanningProgress?: (status: string) => void;
   },
 ): Promise<string> => {
   const callBudget = args?.callBudget;
@@ -3191,6 +3219,18 @@ const runFileOpsPlannerDirect = async (
     temperature: 0.05,
     reasoningEffort: args?.fastMode ? "medium" : "high",
     responseMimeType: "application/json",
+    onStreamChunk: (chunk, fullText) => {
+      if (args?.onPlanningProgress) {
+        // Find the last file path the LLM started generating
+        const matches = [...fullText.matchAll(/"path"\s*:\s*"([^"]+)"/g)];
+        if (matches.length > 0) {
+          const lastPath = matches[matches.length - 1][1];
+          args.onPlanningProgress(`✍️ Generating plan for \`${lastPath}\`...`);
+        } else {
+          args.onPlanningProgress(`🤔 Analyzing project requirements...`);
+        }
+      }
+    },
   });
 
   console.info(`conversation.planner.${label}.response`, {
@@ -3238,14 +3278,14 @@ const planConversationFileOperations = async (
     return toPlanResult([], "intent-skip");
   }
 
-  const shouldUseDeterministicNextJsFallback =
-    isNextJsScaffoldRequest(input) &&
+  const shouldUseDeterministicViteFallback =
+    isViteScaffoldRequest(input) &&
     isLikelyEmptyProjectForScaffold(input.projectFiles) &&
-    isNextJsBasicStarterRequest(input);
+    isViteBasicStarterRequest(input);
 
-  if (shouldUseDeterministicNextJsFallback) {
+  if (shouldUseDeterministicViteFallback) {
     const deterministicOperations = normalizePlannerOperationsForExecution({
-      operations: buildDeterministicNextJsScaffoldOperations(
+      operations: buildDeterministicViteScaffoldOperations(
         input.projectFiles,
       ),
       projectFiles: input.projectFiles,
@@ -3254,7 +3294,7 @@ const planConversationFileOperations = async (
 
     return toPlanResult(
       deterministicOperations,
-      "deterministic-nextjs-scaffold",
+      "deterministic-vite-scaffold",
     );
   }
 
@@ -3267,6 +3307,7 @@ const planConversationFileOperations = async (
       preferredModel: args.preferredModel,
       callBudget: plannerCallBudget,
       fastMode: fastExecutionMode,
+      onPlanningProgress: input.onPlanningProgress,
     });
 
   const mergePlannerOutputs = (...parts: string[]) =>
@@ -3293,7 +3334,15 @@ const planConversationFileOperations = async (
     }
 
     try {
-      const parsed = JSON.parse(plannerJson) as unknown;
+      const parsed = safeJsonParse(plannerJson);
+      if (parsed === null) {
+        console.warn("conversation.planner.json-parse-failed", {
+          jsonLength: plannerJson.length,
+          jsonPreview: plannerJson.slice(0, 300),
+          error: "safeJsonParse returned null",
+        });
+        return [];
+      }
       const ops = parseFileOperationPlan(parsed);
       console.info("conversation.planner.parsed", {
         jsonLength: plannerJson.length,
@@ -3336,7 +3385,7 @@ const planConversationFileOperations = async (
     const issues = Array.from(
       new Set([
         ...validateFileOperationPlan(operations),
-        ...validateNextJsScaffoldPlan({
+        ...validateViteScaffoldPlan({
           input: validationInput,
           operations,
         }),
@@ -3409,13 +3458,13 @@ const planConversationFileOperations = async (
           const keyPatterns = [
             "package.json",
             "tsconfig.json",
-            "next.config.mjs",
-            "next.config.mjs",
             "vite.config.ts",
-            "tailwind.config.ts",
-            "postcss.config.mjs",
-            "src/app/layout.tsx",
-            "src/app/globals.css",
+            "tailwind.config.js",
+            "postcss.config.js",
+            "index.html",
+            "src/main.tsx",
+            "src/App.tsx",
+            "src/index.css",
           ];
           for (const pattern of keyPatterns) {
             const file = workingProjectFiles.find(
@@ -3737,9 +3786,9 @@ const planConversationFileOperations = async (
       }
     }
 
-    if (shouldUseDeterministicNextJsFallback) {
+    if (shouldUseDeterministicViteFallback) {
       const deterministicOperations = normalizePlannerOperationsForExecution({
-        operations: buildDeterministicNextJsScaffoldOperations(
+        operations: buildDeterministicViteScaffoldOperations(
           input.projectFiles,
         ),
         projectFiles: input.projectFiles,
@@ -3755,7 +3804,7 @@ const planConversationFileOperations = async (
           mergePlannerOutputs(
             chunkedPlannerOutput,
             selectedOutput,
-            "fallback: deterministic-nextjs-scaffold",
+            "fallback: deterministic-vite-scaffold",
           ),
         );
       }
@@ -4187,14 +4236,16 @@ const buildStructuredCodeResponse = (args: {
   }
 
   // Project structure
-  sections.push("**Project Structure:**", ...structureLines, "");
+  if (structureLines.length > 0) {
+    sections.push("### Project Structure", "```text", ...structureLines, "```", "");
+  }
 
   // File list with brief descriptions (no full code dumps)
   if (args.changedFiles.length > 0) {
     const label =
       args.intent === "code_update"
-        ? "**Files Modified:**"
-        : "**Files Created:**";
+        ? "### Files Modified"
+        : "### Files Created";
     sections.push(label);
     for (const file of args.changedFiles) {
       sections.push(`- \`${file.path}\``);
@@ -4582,7 +4633,7 @@ export const runConversationAgentOrchestration = async (
 
       if (fixupJson) {
         const fixupOps = parseFileOperationPlan(
-          JSON.parse(fixupJson) as unknown,
+          safeJsonParse(fixupJson) ?? {},
         );
 
         if (fixupOps.length > 0) {

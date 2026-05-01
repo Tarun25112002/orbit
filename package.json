@@ -32,6 +32,7 @@
     "@streamdown/math": "^1.0.2",
     "@streamdown/mermaid": "^1.0.2",
     "@stripe/stripe-js": "^9.2.0",
+    "@tailwindcss/typography": "^0.5.19",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "@xyflow/react": "^12.10.2",

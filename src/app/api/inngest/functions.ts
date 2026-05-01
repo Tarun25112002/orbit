@@ -1413,10 +1413,20 @@ export const conversationMessageRequested = inngest.createFunction(
               projectFiles: conversationProjectFiles,
             });
           },
+          onPlanningProgress: async (status: string) => {
+            try {
+              await convex.mutation(api.system.streamMessageProgress, {
+                messageId: assistantMessageId as Id<"messages">,
+                content: status,
+              });
+            } catch {
+              // Best-effort
+            }
+          },
           onOperationProgress: async (completedResults, totalOps) => {
             // Build a real-time progress message the user can see
             const lines: string[] = [
-              `⚡ **Building project** (${completedResults.length}/${totalOps} operations)`,
+              `> ⚡ **Building project** (${completedResults.length}/${totalOps} operations)`,
               "",
             ];
 
@@ -1442,7 +1452,7 @@ export const conversationMessageRequested = inngest.createFunction(
                 label = `${op.type} \`${op.path}\``;
               }
 
-              lines.push(`${icon} ${label}`);
+              lines.push(`- ${icon} ${label}`);
             }
 
             if (completedResults.length < totalOps) {
@@ -1660,6 +1670,21 @@ export const conversationMessageRequested = inngest.createFunction(
       }
 
       throw error;
+    } finally {
+      // SAFETY NET: Guarantee the message is never left stuck in "processing".
+      // If the try or catch paths already finalized it, this is a no-op since
+      // completeMessageIfProcessing only updates messages still in "processing".
+      try {
+        await convex.mutation(api.system.completeMessageIfProcessing, {
+          messageId: assistantMessageId as Id<"messages">,
+          content:
+            "The AI pipeline encountered an unexpected issue. Please try again.",
+          status: "failed",
+        });
+      } catch {
+        // Best-effort — if this also fails, the message will stay stuck but
+        // at least we logged the real error above.
+      }
     }
   },
 );
