@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { convex } from "@/lib/convex-client";
+import { getClerkUserIdAndToken } from "@/lib/clerk-auth";
 import { api } from "../../../../../convex/_generated/api";
 import type { Id } from "../../../../../convex/_generated/dataModel";
 import { classifyError } from "@/lib/errors";
@@ -13,9 +13,7 @@ const requestSchema = z.object({
   status: z.enum(["completed", "failed"]),
 });
 
-export async function POST(request: Request) {
-  const { getToken } = await auth();
-
+export async function POST(request: NextRequest) {
   let body: unknown;
   try {
     body = await request.json();
@@ -32,13 +30,15 @@ export async function POST(request: Request) {
   }
 
   try {
-    const convexToken = await getToken({ template: "convex" });
-    if (!convexToken) {
+    const authContext = await getClerkUserIdAndToken(request);
+    if (!authContext) {
       return NextResponse.json(
         { error: "Please sign in to continue." },
         { status: 401 },
       );
     }
+
+    const { convexToken } = authContext;
 
     const message = await convex.query(api.system.getMessageById, {
       messageId: parsed.data.messageId as Id<"messages">,
