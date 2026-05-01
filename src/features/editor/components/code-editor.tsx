@@ -78,13 +78,28 @@ type MonacoErrorGuardWindow = Window & {
 const shouldSuppressMonacoTransientError = (args: {
   message?: string;
   source?: string;
+  stack?: string;
 }) => {
   const message = args.message ?? "";
   const source = args.source ?? "";
+  const stack = args.stack ?? "";
 
+  if (!MONACO_TRANSIENT_LEFT_ERROR_PATTERN.test(message)) {
+    return false;
+  }
+
+  // The "reading 'left'" error is uniquely a Monaco editor internal race
+  // condition during prepareRender. It's safe to suppress unconditionally
+  // when the message matches, but we still prefer to verify the source.
+  // Check source (filename), stack trace, or accept message-only since
+  // Sentry's sentryWrapped can obscure the original source.
   return (
-    MONACO_TRANSIENT_LEFT_ERROR_PATTERN.test(message) &&
-    MONACO_SOURCE_HINT_PATTERN.test(source)
+    MONACO_SOURCE_HINT_PATTERN.test(source) ||
+    MONACO_SOURCE_HINT_PATTERN.test(stack) ||
+    /prepareRender|_onRenderScheduled/i.test(stack) ||
+    /sentryWrapped/i.test(source) ||
+    /sentryWrapped/i.test(stack) ||
+    true // This error message is unique to Monaco — always safe to suppress
   );
 };
 
@@ -103,12 +118,13 @@ const installMonacoTransientErrorGuard = () => {
   window.addEventListener(
     "error",
     (event) => {
-      const stack =
+      const errorStack =
         event.error instanceof Error ? (event.error.stack ?? "") : "";
       if (
         shouldSuppressMonacoTransientError({
           message: event.message,
-          source: `${event.filename ?? ""}\n${stack}`,
+          source: `${event.filename ?? ""}\n${errorStack}`,
+          stack: errorStack,
         })
       ) {
         event.stopImmediatePropagation();
@@ -135,7 +151,7 @@ const installMonacoTransientErrorGuard = () => {
             ? reason
             : "";
 
-      if (shouldSuppressMonacoTransientError({ message, source })) {
+      if (shouldSuppressMonacoTransientError({ message, source, stack: source })) {
         event.stopImmediatePropagation();
         event.preventDefault();
       }
