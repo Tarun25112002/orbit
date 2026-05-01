@@ -66,6 +66,22 @@ function extractBearerToken(authHeader: string | null): string | null {
   return match ? match[1] : null;
 }
 
+const resolveConvexTokenFromAuth = async (
+  getToken: (options?: { template?: string }) => Promise<string | null>,
+) => {
+  const templated = await getToken({ template: "convex" });
+  if (templated?.trim()) {
+    return templated.trim();
+  }
+
+  const defaultToken = await getToken();
+  if (defaultToken?.trim()) {
+    return defaultToken.trim();
+  }
+
+  return null;
+};
+
 /**
  * Get the current Clerk userId and a Convex auth token.
  * Tries auth() first (for getToken), falls back to cookie verification.
@@ -73,11 +89,14 @@ function extractBearerToken(authHeader: string | null): string | null {
 export async function getClerkUserIdAndToken(
   request: NextRequest,
 ): Promise<{ userId: string; convexToken: string } | null> {
+  const bearerToken = extractBearerToken(request.headers.get("authorization"));
+
   // Try auth() first — it provides getToken()
   try {
     const { userId, getToken } = await auth();
     if (userId) {
-      const convexToken = await getToken({ template: "convex" });
+      const convexToken =
+        (await resolveConvexTokenFromAuth(getToken)) ?? bearerToken;
       if (convexToken) {
         return { userId, convexToken };
       }
@@ -90,7 +109,7 @@ export async function getClerkUserIdAndToken(
   const sessionToken =
     request.cookies.get("__session")?.value ||
     request.cookies.get("__clerk_db_jwt")?.value ||
-    extractBearerToken(request.headers.get("authorization"));
+    bearerToken;
 
   if (!sessionToken) return null;
 
@@ -107,10 +126,15 @@ export async function getClerkUserIdAndToken(
     // For Convex, try getting a token through auth()
     try {
       const { getToken } = await auth();
-      const convexToken = await getToken({ template: "convex" });
+      const convexToken =
+        (await resolveConvexTokenFromAuth(getToken)) ?? bearerToken;
       if (convexToken) return { userId, convexToken };
     } catch {
       // Can't get Convex token
+    }
+
+    if (bearerToken) {
+      return { userId, convexToken: bearerToken };
     }
 
     return null;
