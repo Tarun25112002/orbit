@@ -343,6 +343,34 @@ export const completeMessageIfProcessing = mutation({
   },
 });
 
+/**
+ * Stream progress updates to a processing message without changing its status.
+ * Called after each file operation completes so the user sees real-time progress.
+ */
+export const streamMessageProgress = mutation({
+  args: {
+    messageId: v.id("messages"),
+    content: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const message = await ctx.db.get(args.messageId);
+    if (!message) {
+      return false;
+    }
+
+    // Only update if the message is still processing — don't overwrite completed/cancelled
+    if (message.status !== "processing") {
+      return false;
+    }
+
+    await ctx.db.patch(args.messageId, {
+      content: args.content,
+    });
+
+    return true;
+  },
+});
+
 export const cancelMessage = mutation({
   args: {
     messageId: v.id("messages"),
