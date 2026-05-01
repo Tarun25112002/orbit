@@ -137,9 +137,13 @@ const ENABLE_DEP_PREVALIDATION = !/^(0|false)$/i.test(
 const ENABLE_INSTALL_GATE = !/^(0|false)$/i.test(
   process.env.CONVERSATION_ENABLE_INSTALL_GATE?.trim() ?? "true",
 );
+const ENABLE_AUTONOMOUS_VALIDATION = !/^(0|false)$/i.test(
+  process.env.CONVERSATION_ENABLE_AUTONOMOUS_VALIDATION?.trim() ?? "true",
+);
 const ENABLE_TRACE_HISTORY = !/^(0|false)$/i.test(
   process.env.CONVERSATION_ENABLE_TRACE_HISTORY?.trim() ?? "true",
 );
+const ORBIT_VALIDATE_COMMAND = "orbit-validate";
 const VITE_SCAFFOLD_INTENT_PATTERN =
   /\b(create|scaffold|setup|generate|starter|boilerplate|from scratch|new|build|make)\b/i;
 const VITE_BASIC_STARTER_INTENT_PATTERN =
@@ -256,6 +260,25 @@ const pickAvailableModel = (preferredModel: string): string => {
   }
 
   return trimmed;
+};
+
+const pickPlannerModelForAttempt = (
+  preferredModel: string,
+  attemptIndex: number,
+) => {
+  const candidates = Array.from(
+    new Set(
+      [preferredModel, ...PLANNER_MODEL_ROTATION]
+        .map((model) => model.trim())
+        .filter(Boolean),
+    ),
+  );
+
+  const candidate =
+    candidates[Math.max(0, attemptIndex) % Math.max(1, candidates.length)] ??
+    preferredModel;
+
+  return pickAvailableModel(candidate);
 };
 
 const buildDeterministicChunks = (
@@ -573,9 +596,12 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "4. DEV SERVER: To start the development server, ALWAYS use key 'dev-server':",
   '   {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
   "",
-  "5. UPDATE = FULL REPLACE: When using update_file, include the COMPLETE new file content, not a diff.",
+  "5. VALIDATION: After file/dependency changes, run a build check before the dev server:",
+  '   {"type":"run_command","command":"npm","commandArgs":["run","build","--if-present"]}',
   "",
-  "6. ORDER MATTERS: Operations execute sequentially. Create package.json BEFORE run_command npm install.",
+  "6. UPDATE = FULL REPLACE: When using update_file, include the COMPLETE new file content, not a diff.",
+  "",
+  "7. ORDER MATTERS: Operations execute sequentially. Create package.json BEFORE run_command npm install.",
   "   Create config files BEFORE source files that depend on them.",
   "",
   "═══════════════════════════════════════════════════",
@@ -1472,6 +1498,24 @@ const hasPackageJsonMutation = (operations: ConversationFileOperation[]) =>
       operation.path === "package.json",
   );
 
+const hasPackageJsonAvailable = (
+  operations: ConversationFileOperation[],
+  projectFiles: ConversationProjectFile[] = [],
+) =>
+  hasPackageJsonMutation(operations) ||
+  projectFiles.some(
+    (file) =>
+      file.type === "file" &&
+      (file.path === "package.json" || file.path.endsWith("/package.json")),
+  );
+
+const hasFilesystemMutation = (operations: ConversationFileOperation[]) =>
+  operations.some(
+    (operation) =>
+      operation.type !== "run_command" &&
+      operation.type !== "start_background_command",
+  );
+
 const isInstallLikeCommand = (operation: ConversationFileOperation) => {
   if (operation.type !== "run_command") {
     return false;
@@ -1584,6 +1628,71 @@ const moveManagedDevServerStartToEnd = (
 const hasDependencyInstallCommand = (operations: ConversationFileOperation[]) =>
   operations.some((operation) => isPlainDependencyInstallCommand(operation));
 
+const isBuildValidationCommand = (operation: ConversationFileOperation) => {
+  if (operation.type !== "run_command") {
+    return false;
+  }
+
+  const command = operation.command.trim().toLowerCase();
+  const args =
+    operation.commandArgs
+      ?.map((arg) => arg.trim().toLowerCase())
+      .filter(Boolean) ?? [];
+
+  if (command === ORBIT_VALIDATE_COMMAND) {
+    return true;
+  }
+
+  if (command === "npm" || command === "pnpm" || command === "bun") {
+    return args[0] === "run" && args[1] === "build";
+  }
+
+  if (command === "yarn") {
+    return (
+      args[0] === "build" || (args[0] === "run" && args[1] === "build")
+    );
+  }
+
+  return command === "vite" || command === "tsc";
+};
+
+const buildAutonomousValidationOperation = (): ConversationFileOperation => ({
+  type: "run_command",
+  command: ORBIT_VALIDATE_COMMAND,
+  gatedOnPreviousSuccess: true,
+});
+
+const ensureAutonomousValidationOperation = (
+  operations: ConversationFileOperation[],
+  projectFiles: ConversationProjectFile[] = [],
+) => {
+  if (
+    !ENABLE_AUTONOMOUS_VALIDATION ||
+    !hasFilesystemMutation(operations) ||
+    !hasPackageJsonAvailable(operations, projectFiles) ||
+    operations.some((operation) => isBuildValidationCommand(operation))
+  ) {
+    return operations;
+  }
+
+  const validationOperation = buildAutonomousValidationOperation();
+  const insertionIndex = (() => {
+    const devServerIndex = operations.findIndex((operation) =>
+      isManagedDevServerStartOperation(operation),
+    );
+
+    if (devServerIndex >= 0) {
+      return devServerIndex;
+    }
+
+    return operations.length;
+  })();
+
+  const withValidation = [...operations];
+  withValidation.splice(insertionIndex, 0, validationOperation);
+  return withValidation;
+};
+
 const ensureDependencyInstallOperation = (
   operations: ConversationFileOperation[],
   projectFiles: ConversationProjectFile[] = [],
@@ -1687,12 +1796,17 @@ const normalizePlannerOperationsForExecution = (args: {
   const projectFiles = args.projectFiles ?? [];
   const maxOperations = args.maxOperations ?? MAX_FILE_OPERATIONS_PER_RUN;
 
-  return ensureDependencyInstallOperation(
+  const operationsWithInstall = ensureDependencyInstallOperation(
     normalizeDevServerOperations(
       validatePackageJsonDependencies(
         ensureFolderOperationsForWrites(args.operations, projectFiles),
       ),
     ),
+    projectFiles,
+  );
+
+  return ensureAutonomousValidationOperation(
+    operationsWithInstall,
     projectFiles,
   ).slice(0, maxOperations);
 };
@@ -1875,10 +1989,33 @@ const validatePackageJsonDependencies = (
       (op.type === "create_file" || op.type === "update_file") &&
       /\.(tsx|jsx)$/.test(op.path),
   );
+  const hasTsSourceFiles = operations.some(
+    (op) =>
+      (op.type === "create_file" || op.type === "update_file") &&
+      /\.tsx?$/.test(op.path) &&
+      !/\.d\.ts$/.test(op.path),
+  );
   const hasViteConfig = operations.some(
     (op) =>
       (op.type === "create_file" || op.type === "update_file") &&
       /^vite\.config\.(ts|js|mjs)$/.test(op.path),
+  );
+  const hasEsmJsConfig = operations.some(
+    (op) =>
+      (op.type === "create_file" || op.type === "update_file") &&
+      /(?:postcss|tailwind|vite)\.config\.js$/.test(op.path) &&
+      /\bexport\s+default\b/.test(op.content),
+  );
+  const hasTailwindConfig = operations.some(
+    (op) =>
+      (op.type === "create_file" || op.type === "update_file") &&
+      /^tailwind\.config\.(ts|js|mjs|cjs)$/.test(op.path),
+  );
+  const hasPostcssTailwindPlugin = operations.some(
+    (op) =>
+      (op.type === "create_file" || op.type === "update_file") &&
+      /^postcss\.config\.(js|mjs|cjs)$/.test(op.path) &&
+      /\btailwindcss\b/.test(op.content),
   );
 
   // Vite + React → always needs @vitejs/plugin-react
@@ -1905,16 +2042,12 @@ const validatePackageJsonDependencies = (
   }
 
   // Vite + TypeScript → needs typescript
-  if ((hasVite || hasViteConfig) && !existingDeps.has("typescript")) {
-    const hasTsFiles = operations.some(
-      (op) =>
-        (op.type === "create_file" || op.type === "update_file") &&
-        /\.tsx?$/.test(op.path) &&
-        !/\.d\.ts$/.test(op.path),
-    );
-    if (hasTsFiles) {
-      frameworkEssentialPackages.push({ name: "typescript", version: "^5" });
-    }
+  if (
+    (hasVite || hasViteConfig) &&
+    hasTsSourceFiles &&
+    !existingDeps.has("typescript")
+  ) {
+    frameworkEssentialPackages.push({ name: "typescript", version: "^5" });
   }
 
   // React projects → need @types/react and @types/react-dom
@@ -1923,30 +2056,28 @@ const validatePackageJsonDependencies = (
     (existingDeps.has("react") || allImportedPackages.has("react"))
   ) {
     if (!existingDeps.has("@types/react")) {
-      frameworkEssentialPackages.push({ name: "@types/react", version: "^18" });
+      frameworkEssentialPackages.push({ name: "@types/react", version: "^19" });
     }
     if (!existingDeps.has("@types/react-dom")) {
       frameworkEssentialPackages.push({
         name: "@types/react-dom",
-        version: "^18",
+        version: "^19",
       });
     }
   }
 
   const hasFrameworkEssentialGaps = frameworkEssentialPackages.length > 0;
 
-  if (missingPackages.length === 0 && !hasFrameworkEssentialGaps) {
-    return operations;
+  if (missingPackages.length > 0 || hasFrameworkEssentialGaps) {
+    console.info("conversation.planner.dep-prevalidation.fixing", {
+      missingPackages,
+      frameworkEssentials:
+        frameworkEssentialPackages.length > 0
+          ? frameworkEssentialPackages
+          : undefined,
+      existingDepCount: existingDeps.size,
+    });
   }
-
-  console.info("conversation.planner.dep-prevalidation.fixing", {
-    missingPackages,
-    frameworkEssentials:
-      frameworkEssentialPackages.length > 0
-        ? frameworkEssentialPackages
-        : undefined,
-    existingDepCount: existingDeps.size,
-  });
 
   // Add missing packages to dependencies with "latest" version
   const deps =
@@ -1971,12 +2102,49 @@ const validatePackageJsonDependencies = (
     }
   }
 
+  const scripts =
+    typeof packageJson.scripts === "object" && packageJson.scripts !== null
+      ? { ...(packageJson.scripts as Record<string, string>) }
+      : {};
+
+  if (hasVite || hasViteConfig) {
+    scripts.dev = scripts.dev || "vite";
+    scripts.build =
+      scripts.build ||
+      (hasTsSourceFiles ? "tsc -b && vite build" : "vite build");
+    scripts.preview = scripts.preview || "vite preview";
+    packageJson.scripts = scripts;
+  }
+
+  if (hasEsmJsConfig && packageJson.type !== "module") {
+    packageJson.type = "module";
+  }
+
+  const tailwindVersion = deps.tailwindcss ?? devDeps.tailwindcss ?? "";
+  const usesClassicTailwindPostcss =
+    (hasTailwindConfig || hasPostcssTailwindPlugin) &&
+    (hasPostcssTailwindPlugin || existingDeps.has("tailwindcss"));
+
+  if (
+    usesClassicTailwindPostcss &&
+    tailwindVersion &&
+    (/^latest$/i.test(tailwindVersion) ||
+      /^(\^|~)?4(?:\.|$)/.test(tailwindVersion))
+  ) {
+    delete deps.tailwindcss;
+    devDeps.tailwindcss = "^3.4.17";
+  }
+
   packageJson.dependencies = deps;
   if (Object.keys(devDeps).length > 0) {
     packageJson.devDependencies = devDeps;
   }
 
   const updatedContent = `${JSON.stringify(packageJson, null, 2)}\n`;
+  if (updatedContent === packageJsonOp.content) {
+    return operations;
+  }
+
   const updatedOp: ConversationFileOperation = {
     ...packageJsonOp,
     content: updatedContent,
@@ -2696,6 +2864,7 @@ const buildFileOperationPlannerPrompt = (
     "- Unless the user explicitly asks for starter/minimal scaffold, do NOT stop at a basic frontend shell.",
     "- For feature requests, deliver a complete frontend implementation with polished UI, state management, and mock data.",
     '- After changing package.json: {"type":"run_command","command":"npm","commandArgs":["install"]}',
+    '- After file/dependency changes: {"type":"run_command","command":"npm","commandArgs":["run","build","--if-present"]}',
     '- To start dev server: {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
     "- For Vite scaffolds, include at minimum: package.json, vite.config.ts, tsconfig.json, index.html, src/main.tsx, src/App.tsx, src/index.css.",
     "- Create ALL files needed for the task. Do not leave gaps or TODOs.",
@@ -3171,6 +3340,62 @@ const describeFileOperation = (operation: ConversationFileOperation) => {
   return `${operation.type} ${operation.path}`;
 };
 
+const isCommandOperation = (
+  operation: ConversationFileOperation,
+): operation is Extract<
+  ConversationFileOperation,
+  { type: "run_command" | "start_background_command" }
+> =>
+  operation.type === "run_command" ||
+  operation.type === "start_background_command";
+
+const commandOperationSignature = (operation: ConversationFileOperation) => {
+  if (!isCommandOperation(operation)) {
+    return "";
+  }
+
+  const args = operation.commandArgs?.join("\u0000") ?? "";
+  return operation.type === "start_background_command"
+    ? `${operation.type}\u0000${operation.key}\u0000${operation.command}\u0000${args}`
+    : `${operation.type}\u0000${operation.command}\u0000${args}`;
+};
+
+const buildRecoveryCommandOperations = (args: {
+  failures: ConversationFileOperationResult[];
+  plannedOperations: ConversationFileOperation[];
+}) => {
+  const plannedCommandSignatures = new Set(
+    args.plannedOperations
+      .filter(isCommandOperation)
+      .map((operation) => commandOperationSignature(operation)),
+  );
+  const recoveryOperations: ConversationFileOperation[] = [];
+  const seenRecoverySignatures = new Set<string>();
+
+  for (const failure of args.failures) {
+    if (!isCommandOperation(failure.operation)) {
+      continue;
+    }
+
+    const signature = commandOperationSignature(failure.operation);
+    if (
+      !signature ||
+      plannedCommandSignatures.has(signature) ||
+      seenRecoverySignatures.has(signature)
+    ) {
+      continue;
+    }
+
+    recoveryOperations.push({
+      ...failure.operation,
+      gatedOnPreviousSuccess: true,
+    });
+    seenRecoverySignatures.add(signature);
+  }
+
+  return recoveryOperations;
+};
+
 const runFileOpsPlannerDirect = async (
   prompt: string,
   label: string,
@@ -3444,7 +3669,7 @@ const planConversationFileOperations = async (
         const rotatedCandidate =
           PLANNER_MODEL_ROTATION[chunkIndex % PLANNER_MODEL_ROTATION.length] ??
           FILE_OPS_MODEL;
-        const preferredModel = pickAvailableModel(rotatedCandidate);
+        const preferredModel = pickPlannerModelForAttempt(rotatedCandidate, 0);
 
         // Build enriched context from previous chunks — include actual file contents
         const previousChunkFilesList = aggregateChunkOperations
@@ -3556,7 +3781,10 @@ const planConversationFileOperations = async (
           const retryOutput = await runPlanner({
             prompt: retryPrompt,
             label: `chunk-${chunkIndex + 1}.retry-${retryIndex}`,
-            preferredModel,
+            preferredModel: pickPlannerModelForAttempt(
+              preferredModel,
+              retryIndex,
+            ),
           });
 
           const retryOperations = normalizeOperations(
@@ -3654,8 +3882,9 @@ const planConversationFileOperations = async (
     const plannerOutput = await runPlanner({
       prompt: plannerPrompt,
       label: "primary",
-      preferredModel: pickAvailableModel(
+      preferredModel: pickPlannerModelForAttempt(
         fastExecutionMode ? FILE_OPS_FAST_MODEL : FILE_OPS_MODEL,
+        0,
       ),
     });
 
@@ -3704,8 +3933,9 @@ const planConversationFileOperations = async (
       const retryOutput = await runPlanner({
         prompt: retryPrompt,
         label: `retry-${retryIndex}`,
-        preferredModel: pickAvailableModel(
+        preferredModel: pickPlannerModelForAttempt(
           fastExecutionMode ? FILE_OPS_FAST_MODEL : FILE_OPS_MODEL,
+          retryIndex,
         ),
       });
 
@@ -3754,8 +3984,9 @@ const planConversationFileOperations = async (
         "- Do not return prose, markdown, or code-only response.",
       ].join("\n");
 
-      const finalStrictModel = pickAvailableModel(
+      const finalStrictModel = pickPlannerModelForAttempt(
         fastExecutionMode ? FILE_OPS_FAST_MODEL : FILE_OPS_MODEL,
+        maxRetries + 1,
       );
       const finalStrictOutput = await runPlanner({
         prompt: finalStrictPrompt,
@@ -4231,7 +4462,11 @@ const buildStructuredCodeResponse = (args: {
 
   // Header confirming actions
   if (summaryParts.length > 0) {
-    sections.push(`\u2705 **Done** \u2014 ${summaryParts.join(", ")}.`);
+    sections.push(
+      failedCount > 0
+        ? `\u26a0\ufe0f **Partially applied** \u2014 ${summaryParts.join(", ")}. Automatic repair was attempted, but ${failedCount} operation${failedCount === 1 ? "" : "s"} still failed.`
+        : `\u2705 **Done** \u2014 ${summaryParts.join(", ")}.`,
+    );
     sections.push("");
   }
 
@@ -4603,26 +4838,31 @@ export const runConversationAgentOrchestration = async (
       "- Do NOT recreate files that already exist and are correct.",
       "- If package.json needs fixing, include the COMPLETE updated package.json content.",
       "- After fixing package.json, include a run_command for npm install.",
+      "- After fixing files or dependencies, retry the failed terminal command(s) so the pipeline can confirm the app now runs.",
       '- Return valid JSON: {"operations":[...]}',
     ]
       .filter(Boolean)
       .join("\n");
 
     try {
-      const fixupModel = pickAvailableModel(FILE_OPS_MODEL);
+      const fixupModel = pickPlannerModelForAttempt(
+        FILE_OPS_MODEL,
+        fixupIteration,
+      );
+      const fixupCallBudget = {
+        used: plannerCallsUsed,
+        max: MAX_PLANNER_CALLS_PER_REQUEST,
+      };
       const fixupOutput = await runFileOpsPlannerDirect(
         fixupPrompt,
         `fixup-${fixupIteration}`,
         {
           preferredModel: fixupModel,
-          callBudget: {
-            used: plannerCallsUsed,
-            max: MAX_PLANNER_CALLS_PER_REQUEST,
-          },
+          callBudget: fixupCallBudget,
           fastMode: shouldUseFastPlannerMode(input),
         },
       );
-      plannerCallsUsed += 1;
+      plannerCallsUsed = fixupCallBudget.used;
 
       const fixupJson = extractJsonObject(
         fixupOutput
@@ -4642,14 +4882,22 @@ export const runConversationAgentOrchestration = async (
             projectFiles: fixupProjectFiles,
             maxOperations: MAX_FILE_OPERATIONS_PER_RUN,
           });
+          const recoveryCommandOps = buildRecoveryCommandOperations({
+            failures: currentFailures,
+            plannedOperations: normalizedFixupOps,
+          });
+          const executableFixupOps = [
+            ...normalizedFixupOps,
+            ...recoveryCommandOps,
+          ];
 
           const fixupResults = await executePlannedFileOperations(
-            normalizedFixupOps,
+            executableFixupOps,
             input.executeFileOperation,
             input.onOperationProgress,
           );
 
-          allOperations = [...allOperations, ...normalizedFixupOps];
+          allOperations = [...allOperations, ...executableFixupOps];
           operationResults = [...operationResults, ...fixupResults];
 
           const fixupApplied = fixupResults.filter(
@@ -4661,7 +4909,8 @@ export const runConversationAgentOrchestration = async (
 
           console.info("conversation.planner.fixup.applied", {
             iteration: fixupIteration,
-            fixupOperationCount: normalizedFixupOps.length,
+            fixupOperationCount: executableFixupOps.length,
+            recoveryCommandCount: recoveryCommandOps.length,
             fixupApplied,
             fixupFailed,
           });

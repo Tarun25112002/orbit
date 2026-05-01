@@ -40,10 +40,26 @@ const MAX_FILE_CONTEXT_CHARS_PER_FILE = 8_000;
 const MAX_CONTEXT_FILES = 20;
 const MAX_HISTORY_MESSAGES = 10;
 const SANDBOX_COMMAND_TIMEOUT_MS = 300_000;
-const SANDBOX_MAX_OUTPUT_CHARS = 8_000;
+const SANDBOX_MAX_OUTPUT_CHARS = Math.max(
+  8_000,
+  Number.parseInt(
+    process.env.CONVERSATION_SANDBOX_MAX_OUTPUT_CHARS ?? "16000",
+    10,
+  ) || 16_000,
+);
 const SANDBOX_OUTPUT_MAX_BYTES = SANDBOX_MAX_OUTPUT_CHARS * 6;
+const SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS = Math.max(
+  1_000,
+  Number.parseInt(
+    process.env.CONVERSATION_BACKGROUND_STARTUP_TIMEOUT_MS ?? "8000",
+    10,
+  ) || 8_000,
+);
 const DOCKER_MUX_HEADER_BYTES = 8;
 const DOCKER_MUX_MAX_FRAME_BYTES = 8 * 1024 * 1024;
+const ALLOW_CLIENT_COMMAND_FALLBACK = /^(1|true)$/i.test(
+  process.env.CONVERSATION_ALLOW_CLIENT_COMMAND_FALLBACK?.trim() ?? "",
+);
 const ENABLE_CONVERSATION_AI_TITLE = /^(1|true)$/i.test(
   process.env.CONVERSATION_ENABLE_AI_TITLE?.trim() ?? "",
 );
@@ -458,6 +474,7 @@ const ensureSandboxForProject = async (args: {
   projectFiles: ConversationProjectFile[];
 }): Promise<string> => {
   const sessionId = `inngest-${args.projectId}`;
+  const syncStartedDirtyVersion = getSandboxDirtyVersion(args.projectId);
 
   // Create session if it doesn't already exist
   const existing = getSession(sessionId);
@@ -481,15 +498,43 @@ const ensureSandboxForProject = async (args: {
     await syncProjectToContainer(sessionId, filesToSync);
   }
 
+  markSandboxCleanAfterFullSync(args.projectId, syncStartedDirtyVersion);
+
   return sessionId;
 };
 
 /** Track sandbox session IDs created during Inngest execution for cleanup. */
 const activeSandboxSessions = new Map<string, string>();
 const sandboxNeedsResync = new Map<string, boolean>();
+const sandboxDirtyVersions = new Map<string, number>();
+
+const getSandboxDirtyVersion = (projectId: Id<"projects">) =>
+  sandboxDirtyVersions.get(projectId) ?? 0;
 
 const markSandboxDirty = (projectId: Id<"projects">) => {
+  sandboxDirtyVersions.set(projectId, getSandboxDirtyVersion(projectId) + 1);
   sandboxNeedsResync.set(projectId, true);
+};
+
+const markSandboxCleanAfterFullSync = (
+  projectId: Id<"projects">,
+  syncedDirtyVersion: number,
+) => {
+  if (getSandboxDirtyVersion(projectId) === syncedDirtyVersion) {
+    sandboxNeedsResync.set(projectId, false);
+  }
+};
+
+const markSandboxCleanAfterIncrementalSync = (
+  projectId: Id<"projects">,
+  syncStartedDirtyVersion: number,
+) => {
+  if (
+    sandboxNeedsResync.get(projectId) !== true &&
+    getSandboxDirtyVersion(projectId) === syncStartedDirtyVersion
+  ) {
+    sandboxNeedsResync.set(projectId, false);
+  }
 };
 
 const loadLatestProjectFilesForSandbox = async (
@@ -517,6 +562,70 @@ const toWorkspacePath = (path: string) =>
   `/workspace/${normalizeSandboxPath(path)}`;
 
 const quoteForShell = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
+
+const buildShellCommand = (command: string, commandArgs: string[] = []) =>
+  [command, ...commandArgs].map((part) => quoteForShell(part)).join(" ");
+
+const ORBIT_VALIDATE_COMMAND = "orbit-validate";
+
+const buildSandboxValidationCommandScript = () =>
+  [
+    "if [ ! -f package.json ]; then echo 'No package.json found; skipping package validation.'; exit 0; fi",
+    "validation_target=$(node -e \"const pkg=require('./package.json'); const s=pkg.scripts||{}; if (s.build) process.stdout.write('build'); else if (s.typecheck) process.stdout.write('typecheck'); else if (s.check) process.stdout.write('check'); else process.stdout.write('auto');\")",
+    "case \"$validation_target\" in",
+    "  build) npm run build ;;",
+    "  typecheck) npm run typecheck ;;",
+    "  check) npm run check ;;",
+    "  auto)",
+    "    if [ -x node_modules/.bin/tsc ] && [ -f tsconfig.json ]; then node_modules/.bin/tsc --noEmit;",
+    "    elif [ -x node_modules/.bin/vite ]; then node_modules/.bin/vite build;",
+    "    else echo 'No build, typecheck, check, tsc, or vite validation target found.'; fi",
+    "    ;;",
+    "  *) echo \"Unknown validation target: $validation_target\"; exit 1 ;;",
+    "esac",
+  ].join("\n");
+
+const sanitizeBackgroundCommandKey = (value: string) => {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "")
+    .slice(0, 64);
+
+  return normalized || "background-command";
+};
+
+const buildBackgroundCommandScript = (args: {
+  key: string;
+  command: string;
+}) => {
+  const key = sanitizeBackgroundCommandKey(args.key);
+  const stateDir = "/workspace/.orbit/background";
+  const pidFile = `${stateDir}/${key}.pid`;
+  const logFile = `${stateDir}/${key}.log`;
+  const startupSeconds = Math.max(
+    1,
+    Math.ceil(SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS / 1000),
+  );
+
+  return [
+    `mkdir -p ${quoteForShell(stateDir)}`,
+    `if [ -f ${quoteForShell(pidFile)} ] && kill -0 "$(cat ${quoteForShell(pidFile)})" 2>/dev/null; then kill "$(cat ${quoteForShell(pidFile)})" 2>/dev/null || true; sleep 1; fi`,
+    `: > ${quoteForShell(logFile)}`,
+    `nohup sh -lc ${quoteForShell(args.command)} > ${quoteForShell(logFile)} 2>&1 < /dev/null &`,
+    `pid=$!`,
+    `printf "%s" "$pid" > ${quoteForShell(pidFile)}`,
+    `echo "Started background command '${key}' with pid $pid."`,
+    `sleep ${startupSeconds}`,
+    `if kill -0 "$pid" 2>/dev/null; then echo "--- startup log ---"; tail -n 120 ${quoteForShell(logFile)} 2>/dev/null || true; exit 0; fi`,
+    `wait "$pid"; code=$?`,
+    `echo "--- startup log ---"`,
+    `tail -n 160 ${quoteForShell(logFile)} 2>/dev/null || true`,
+    `exit "$code"`,
+  ].join("; ");
+};
 
 const getParentPath = (path: string) => {
   const normalized = normalizeSandboxPath(path);
@@ -569,6 +678,8 @@ const syncAppliedOperationToActiveSandbox = async (args: {
     return;
   }
 
+  const syncStartedDirtyVersion = getSandboxDirtyVersion(args.projectId);
+
   try {
     if (
       args.operation.type === "create_file" ||
@@ -579,7 +690,10 @@ const syncAppliedOperationToActiveSandbox = async (args: {
         args.operation.path,
         args.operation.content,
       );
-      sandboxNeedsResync.set(args.projectId, false);
+      markSandboxCleanAfterIncrementalSync(
+        args.projectId,
+        syncStartedDirtyVersion,
+      );
       return;
     }
 
@@ -588,7 +702,10 @@ const syncAppliedOperationToActiveSandbox = async (args: {
         sessionId,
         command: `mkdir -p ${quoteForShell(toWorkspacePath(args.operation.path))}`,
       });
-      sandboxNeedsResync.set(args.projectId, false);
+      markSandboxCleanAfterIncrementalSync(
+        args.projectId,
+        syncStartedDirtyVersion,
+      );
       return;
     }
 
@@ -597,7 +714,10 @@ const syncAppliedOperationToActiveSandbox = async (args: {
         sessionId,
         command: `rm -rf ${quoteForShell(toWorkspacePath(args.operation.path))}`,
       });
-      sandboxNeedsResync.set(args.projectId, false);
+      markSandboxCleanAfterIncrementalSync(
+        args.projectId,
+        syncStartedDirtyVersion,
+      );
       return;
     }
 
@@ -614,7 +734,10 @@ const syncAppliedOperationToActiveSandbox = async (args: {
         sessionId,
         command: `mv ${quoteForShell(toWorkspacePath(args.operation.path))} ${quoteForShell(toWorkspacePath(args.operation.newPath))}`,
       });
-      sandboxNeedsResync.set(args.projectId, false);
+      markSandboxCleanAfterIncrementalSync(
+        args.projectId,
+        syncStartedDirtyVersion,
+      );
       return;
     }
   } catch (error) {
@@ -639,10 +762,14 @@ const executeConversationFileOperation = async (args: {
       operation.type === "run_command" ||
       operation.type === "start_background_command"
     ) {
-      const fullCommand = [
+      const displayCommand = [
         operation.command,
         ...(operation.commandArgs ?? []),
       ].join(" ");
+      const shellCommand = buildShellCommand(
+        operation.command,
+        operation.commandArgs ?? [],
+      );
       const label =
         operation.type === "start_background_command"
           ? `background command (${operation.key})`
@@ -663,13 +790,25 @@ const executeConversationFileOperation = async (args: {
             projectFiles: latestProjectFiles,
           });
           activeSandboxSessions.set(projectId, sessionId);
-          sandboxNeedsResync.set(projectId, false);
         }
+
+        const commandToRun =
+          operation.type === "start_background_command"
+            ? buildBackgroundCommandScript({
+                key: operation.key,
+                command: shellCommand,
+              })
+            : operation.command === ORBIT_VALIDATE_COMMAND
+              ? buildSandboxValidationCommandScript()
+              : shellCommand;
 
         const result = await execCommandInContainer({
           sessionId,
-          command: fullCommand,
-          timeoutMs: SANDBOX_COMMAND_TIMEOUT_MS,
+          command: commandToRun,
+          timeoutMs:
+            operation.type === "start_background_command"
+              ? SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS + 5_000
+              : SANDBOX_COMMAND_TIMEOUT_MS,
         });
 
         const outputPreview = buildCommandOutputPreview(result.output);
@@ -680,24 +819,39 @@ const executeConversationFileOperation = async (args: {
 
         return {
           status: result.exitCode === 0 ? "applied" : "failed",
-          message: `Executed ${label}: ${fullCommand} — ${exitLabel}.${outputPreview ? `\n${outputPreview}` : ""}`,
+          message: `Executed ${label}: ${displayCommand} — ${exitLabel}.${outputPreview ? `\n${outputPreview}` : ""}`,
           commandOutput: outputPreview || undefined,
           commandExitCode: result.exitCode,
         };
       } catch (sandboxError) {
-        // If Docker isn't available, fall back to queueing for client-side execution
+        // Prefer a hard failure so fixup can see terminal/runtime problems.
+        // Client-side queue fallback remains available behind an explicit env flag.
         console.warn("conversation.sandbox.exec.fallback", {
           projectId,
-          command: fullCommand,
+          command: displayCommand,
           error:
             sandboxError instanceof Error
               ? sandboxError.message
               : String(sandboxError),
         });
 
+        if (!ALLOW_CLIENT_COMMAND_FALLBACK) {
+          const message =
+            sandboxError instanceof Error
+              ? sandboxError.message
+              : String(sandboxError);
+
+          return {
+            status: "failed",
+            message: `Could not execute ${label} in the sandbox: ${message}`,
+            commandOutput: message,
+            commandExitCode: 1,
+          };
+        }
+
         return {
           status: "applied",
-          message: `Queued ${label} for client-side execution: ${fullCommand}`,
+          message: `Queued ${label} for client-side execution: ${displayCommand}`,
         };
       }
     }
@@ -1128,7 +1282,7 @@ const buildExecutionTraceSummary = (
     if (cmd.status === "applied") {
       lines.push(`- Ran: ${cmdDesc} → OK`);
     } else if (cmd.status === "failed") {
-      lines.push(`- Ran: ${cmdDesc} → FAILED: ${cmd.message.slice(0, 300)}`);
+      lines.push(`- Ran: ${cmdDesc} → FAILED: ${cmd.message.slice(0, 1200)}`);
     } else if (cmd.status === "skipped") {
       lines.push(`- Skipped: ${cmdDesc} — ${cmd.message.slice(0, 200)}`);
     }
@@ -1312,6 +1466,29 @@ export const conversationMessageRequested = inngest.createFunction(
 
       const conversationProjectFiles =
         buildConversationProjectFiles(projectFileNodes);
+      const preferExecutableOrchestration =
+        shouldPreferExecutableOrchestration(message);
+      const sandboxWarmupPromise = preferExecutableOrchestration
+        ? ensureSandboxForProject({
+            projectId: conversation.projectId,
+            projectFiles: conversationProjectFiles,
+          })
+            .then((sessionId) => {
+              activeSandboxSessions.set(conversation.projectId, sessionId);
+              console.info("conversation.sandbox.warmup.ready", {
+                conversationId,
+                projectId: conversation.projectId,
+                sessionId,
+              });
+            })
+            .catch((error) => {
+              console.warn("conversation.sandbox.warmup.failed", {
+                conversationId,
+                projectId: conversation.projectId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            })
+        : null;
 
       const projectPathIndex = conversationProjectFiles
         .map((file) =>
@@ -1407,6 +1584,14 @@ export const conversationMessageRequested = inngest.createFunction(
               } satisfies ConversationFileOperationExecutionResult;
             }
 
+            if (
+              sandboxWarmupPromise &&
+              (operation.type === "run_command" ||
+                operation.type === "start_background_command")
+            ) {
+              await sandboxWarmupPromise;
+            }
+
             return await executeConversationFileOperation({
               projectId: conversation.projectId,
               operation,
@@ -1496,9 +1681,6 @@ export const conversationMessageRequested = inngest.createFunction(
           },
         });
 
-      const preferExecutableOrchestration =
-        shouldPreferExecutableOrchestration(message);
-
       const orchestration = await (async () => {
         try {
           return await runConversationOrchestration();
@@ -1520,8 +1702,11 @@ export const conversationMessageRequested = inngest.createFunction(
               });
 
               return await runConversationOrchestration({
-                history: "",
-                webContext: "",
+                message: [
+                  plannerMessage,
+                  "",
+                  "Pipeline recovery directive: retry with the same full project context and conversation history. Preserve executable file operations and terminal validation.",
+                ].join("\n"),
               });
             } catch (retryError) {
               const retryClassified = classifyError(retryError);
