@@ -53,7 +53,8 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
     });
 
     try {
-      const token = await getToken();
+      const token =
+        (await getToken({ template: "convex" })) ?? (await getToken());
       if (token) {
         headers.set("Authorization", `Bearer ${token}`);
       }
@@ -97,7 +98,9 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
             const data = (await response.json().catch(() => null)) as {
               error?: string;
             } | null;
-            throw new Error(data?.error ?? `Request failed (${response.status})`);
+            throw new Error(
+              data?.error ?? `Request failed (${response.status})`,
+            );
           }
 
           setStatus("idle");
@@ -111,7 +114,10 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
                 headers: await buildAuthHeaders(),
                 body: JSON.stringify({
                   messageId: assistantMessageId,
-                  content: err instanceof Error ? err.message : "Failed to send message",
+                  content:
+                    err instanceof Error
+                      ? err.message
+                      : "Failed to send message",
                   status: "failed",
                 }),
               });
