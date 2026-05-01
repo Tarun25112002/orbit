@@ -1,8 +1,8 @@
 import { z } from "zod";
-import { NextResponse } from "next/server";
-import { auth } from "@clerk/nextjs/server";
+import { NextRequest, NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { inngest } from "@/inngest/client";
+import { getClerkUserIdAndToken } from "@/lib/clerk-auth";
 import { classifyError } from "@/lib/errors";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
@@ -16,29 +16,7 @@ const requestSchema = z.object({
   activeFolderPath: z.string().trim().min(1).max(512).optional(),
 });
 
-const resolveSubjectFromJwt = (token: string) => {
-  try {
-    const payload = token.split(".")[1];
-    if (!payload) {
-      return null;
-    }
-
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const padded = normalized.padEnd(normalized.length + ((4 - (normalized.length % 4)) % 4), "=");
-    const decoded = Buffer.from(padded, "base64").toString("utf8");
-    const parsed = JSON.parse(decoded) as { sub?: unknown };
-
-    return typeof parsed.sub === "string" && parsed.sub.trim()
-      ? parsed.sub
-      : null;
-  } catch {
-    return null;
-  }
-};
-
-export async function POST(request: Request) {
-  const { userId, getToken } = await auth();
-
+export async function POST(request: NextRequest) {
   let body: unknown;
   try {
     body = await request.json();
@@ -64,21 +42,15 @@ export async function POST(request: Request) {
   } = parsed.data;
 
   try {
-    const convexToken = await getToken({ template: "convex" });
-    if (!convexToken) {
+    const authContext = await getClerkUserIdAndToken(request);
+    if (!authContext) {
       return NextResponse.json(
         { error: "Please sign in to continue." },
         { status: 401 },
       );
     }
 
-    const resolvedUserId = userId ?? resolveSubjectFromJwt(convexToken);
-    if (!resolvedUserId) {
-      return NextResponse.json(
-        { error: "Could not verify workspace access." },
-        { status: 401 },
-      );
-    }
+    const { userId: resolvedUserId, convexToken } = authContext;
 
     const userConvex = new ConvexHttpClient(
       process.env.NEXT_PUBLIC_CONVEX_URL!,
