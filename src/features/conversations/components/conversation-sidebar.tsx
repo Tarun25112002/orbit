@@ -125,7 +125,9 @@ const ExecutionTimeline = ({ trace }: { trace: AiExecutionTrace }) => {
                   {describePipelineOperation(result.operation)}
                 </div>
                 {result.message ? (
-                  <div className="text-muted-foreground/70">{result.message}</div>
+                  <div className="text-muted-foreground/70">
+                    {result.message}
+                  </div>
                 ) : null}
               </div>
               <span className={cn("font-medium uppercase", statusColor)}>
@@ -259,6 +261,19 @@ const ChatMessage = ({
           <div className="flex items-center gap-2">
             <Shimmer duration={1.5}>Thinking...</Shimmer>
           </div>
+        ) : role === "assistant" && isProcessing && content ? (
+          <div className="relative">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="relative flex size-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary/60 opacity-75" />
+                <span className="relative inline-flex rounded-full size-2.5 bg-primary" />
+              </span>
+              <span className="text-[11px] font-semibold text-primary tracking-wide uppercase">
+                Executing Pipeline
+              </span>
+            </div>
+            <MessageResponse>{content}</MessageResponse>
+          </div>
         ) : role === "assistant" && isFailed ? (
           <div className="flex items-center gap-2 text-destructive/90 text-sm font-medium">
             <XIcon className="size-3.5" />
@@ -345,7 +360,8 @@ const ChatView = ({
     });
 
     try {
-      const token = await getToken();
+      const token =
+        (await getToken({ template: "convex" })) ?? (await getToken());
       if (token) {
         headers.set("Authorization", `Bearer ${token}`);
       }
@@ -532,32 +548,35 @@ const ChatView = ({
     [handleSend],
   );
 
-  const handleCancel = useCallback(async (messageId: Id<"messages">) => {
-    setCancellingMessageId(messageId);
-    setError(null);
+  const handleCancel = useCallback(
+    async (messageId: Id<"messages">) => {
+      setCancellingMessageId(messageId);
+      setError(null);
 
-    try {
-      const response = await fetch("/api/messages/cancel", {
-        method: "POST",
-        credentials: "include",
-        headers: await buildAuthHeaders(),
-        body: JSON.stringify({
-          assistantMessageId: messageId,
-        }),
-      });
+      try {
+        const response = await fetch("/api/messages/cancel", {
+          method: "POST",
+          credentials: "include",
+          headers: await buildAuthHeaders(),
+          body: JSON.stringify({
+            assistantMessageId: messageId,
+          }),
+        });
 
-      if (!response.ok) {
-        const data = (await response.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        throw new Error(data?.error ?? `Cancel failed (${response.status})`);
+        if (!response.ok) {
+          const data = (await response.json().catch(() => null)) as {
+            error?: string;
+          } | null;
+          throw new Error(data?.error ?? `Cancel failed (${response.status})`);
+        }
+      } catch (err) {
+        setError(classifyError(err));
+      } finally {
+        setCancellingMessageId(null);
       }
-    } catch (err) {
-      setError(classifyError(err));
-    } finally {
-      setCancellingMessageId(null);
-    }
-  }, [buildAuthHeaders]);
+    },
+    [buildAuthHeaders],
+  );
 
   const handleCancelActiveMessage = useCallback(() => {
     if (!activeAssistantMessageId || isCancellingActiveAssistant) {
@@ -695,9 +714,12 @@ const ChatView = ({
                 AI Limit Reached
               </p>
               <p className="text-[11px] text-muted-foreground mt-0.5 leading-relaxed">
-                You&apos;ve used {aiAccess?.count}/{aiAccess?.limit} projects on the{" "}
-                <span className="font-semibold text-foreground capitalize">{aiAccess?.tier}</span> plan.
-                Upgrade to continue using AI.
+                You&apos;ve used {aiAccess?.count}/{aiAccess?.limit} projects on
+                the{" "}
+                <span className="font-semibold text-foreground capitalize">
+                  {aiAccess?.tier}
+                </span>{" "}
+                plan. Upgrade to continue using AI.
               </p>
               <button
                 type="button"
@@ -741,7 +763,9 @@ const ChatView = ({
               <PromptInputSubmit
                 status={activeAssistantMessageId ? "streaming" : undefined}
                 onStop={
-                  activeAssistantMessageId ? handleCancelActiveMessage : undefined
+                  activeAssistantMessageId
+                    ? handleCancelActiveMessage
+                    : undefined
                 }
                 disabled={
                   !activeAssistantMessageId && isSending
@@ -855,7 +879,9 @@ export const ConversationSidebar = ({
       <div className="flex-1 overflow-y-auto p-2 scrollbar-none">
         {conversations === undefined ? (
           <div className="flex items-center justify-center py-10">
-            <Shimmer duration={1.5} className="text-sm tracking-wide">Loading conversations...</Shimmer>
+            <Shimmer duration={1.5} className="text-sm tracking-wide">
+              Loading conversations...
+            </Shimmer>
           </div>
         ) : conversations.length === 0 ? (
           <div className="flex flex-col items-center gap-5 py-16 px-4">
