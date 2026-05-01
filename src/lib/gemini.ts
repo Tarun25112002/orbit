@@ -98,25 +98,27 @@ const getGroqApiKey = () => getRuntimeEnvValue("GROQ_API_KEY");
 
 const isGroqEnabled = () => Boolean(getGroqApiKey());
 
-const GROQ_MODEL = getRuntimeEnvValue("GROQ_MODEL") || "openai/gpt-oss-120b";
-const GROQ_TPM_BUDGET =
-  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_TPM_BUDGET")) ?? 7_500;
-const GROQ_TOKEN_SAFETY_MARGIN =
+const getGroqModel = () =>
+  getRuntimeEnvValue("GROQ_MODEL") || "openai/gpt-oss-120b";
+const getGroqTpmBudget = () =>
+  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_TPM_BUDGET")) ?? 131_000;
+const getGroqTokenSafetyMargin = () =>
   parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_TOKEN_SAFETY_MARGIN")) ??
-  300;
-const GROQ_DEFAULT_MAX_OUTPUT_TOKENS =
+  500;
+const getGroqDefaultMaxOutputTokens = () =>
   parseOptionalPositiveInt(
     getRuntimeEnvValue("GROQ_DEFAULT_MAX_OUTPUT_TOKENS"),
-  ) ?? 1_200;
-const GROQ_MIN_OUTPUT_TOKENS =
-  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_MIN_OUTPUT_TOKENS")) ?? 256;
-const GROQ_MAX_COMPACTION_ATTEMPTS =
+  ) ?? 32_768;
+const getGroqMinOutputTokens = () =>
+  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_MIN_OUTPUT_TOKENS")) ??
+  4_096;
+const getGroqMaxCompactionAttempts = () =>
   parseOptionalPositiveInt(
     getRuntimeEnvValue("GROQ_MAX_COMPACTION_ATTEMPTS"),
-  ) ?? 3;
-const GROQ_MAX_INPUT_CHARS =
+  ) ?? 4;
+const getGroqMaxInputChars = () =>
   parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_MAX_INPUT_CHARS")) ??
-  20_000;
+  80_000;
 const GROQ_TRUNCATION_MARKER = "\n...[truncated for token budget]...\n";
 
 type GroqAiMessage = {
@@ -160,10 +162,11 @@ const compactGroqPayloadByChars = (args: {
 }) => {
   const normalizedMaxChars = Math.max(800, args.maxChars);
   const system = args.system?.trim();
+  // Allocate 40% of budget to system prompt (planner instructions are critical)
   const systemBudget = system
     ? Math.min(
-        Math.max(180, Math.floor(normalizedMaxChars * 0.22)),
-        Math.floor(normalizedMaxChars * 0.45),
+        Math.max(400, Math.floor(normalizedMaxChars * 0.40)),
+        Math.floor(normalizedMaxChars * 0.55),
       )
     : 0;
 
@@ -220,14 +223,14 @@ const buildGroqTokenPlan = (args: {
   promptTokens: number;
 }) => {
   const requestedOutputTokens =
-    args.requestedMaxOutputTokens ?? GROQ_DEFAULT_MAX_OUTPUT_TOKENS;
+    args.requestedMaxOutputTokens ?? getGroqDefaultMaxOutputTokens();
   const availableOutputTokens =
-    GROQ_TPM_BUDGET - GROQ_TOKEN_SAFETY_MARGIN - args.promptTokens;
+    getGroqTpmBudget() - getGroqTokenSafetyMargin() - args.promptTokens;
 
-  if (availableOutputTokens >= GROQ_MIN_OUTPUT_TOKENS) {
+  if (availableOutputTokens >= getGroqMinOutputTokens()) {
     return {
       maxOutputTokens: Math.max(
-        GROQ_MIN_OUTPUT_TOKENS,
+        getGroqMinOutputTokens(),
         Math.min(requestedOutputTokens, availableOutputTokens),
       ),
       requiresCompaction: false,
@@ -235,7 +238,7 @@ const buildGroqTokenPlan = (args: {
   }
 
   return {
-    maxOutputTokens: GROQ_MIN_OUTPUT_TOKENS,
+    maxOutputTokens: getGroqMinOutputTokens(),
     requiresCompaction: true,
   };
 };
@@ -547,7 +550,7 @@ export const markGeminiModelRateLimited = (
 /** Default model used across the app — configurable via GEMINI_MODEL env var.
  *  When Groq is configured (GROQ_API_KEY), defaults to the Groq model. */
 export const GEMINI_MODEL_DEFAULT = isGroqEnabled()
-  ? GROQ_MODEL
+  ? getGroqModel()
   : getRuntimeEnvValue("GEMINI_MODEL") || GEMINI_FREE_FALLBACK_CHAIN[0];
 
 export type GeminiChatMessage = {
@@ -605,14 +608,14 @@ const generateGroqCompletion = async (args: {
   reasoningEffort?: "low" | "medium" | "high";
 }): Promise<GeminiCompletionResult> => {
   const groq = getGroqClient();
-  const modelId = args.model ?? GROQ_MODEL;
+  const modelId = args.model ?? getGroqModel();
   const originalMessages: GroqAiMessage[] = args.messages.map((msg) => ({
     role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
     content: msg.content,
   }));
 
-  const maxAttempts = Math.max(1, GROQ_MAX_COMPACTION_ATTEMPTS);
-  let charBudget = GROQ_MAX_INPUT_CHARS;
+  const maxAttempts = Math.max(1, getGroqMaxCompactionAttempts());
+  let charBudget = getGroqMaxInputChars();
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -630,7 +633,7 @@ const generateGroqCompletion = async (args: {
     if (tokenPlan.requiresCompaction) {
       const promptTokenBudget = Math.max(
         500,
-        GROQ_TPM_BUDGET - GROQ_TOKEN_SAFETY_MARGIN - GROQ_MIN_OUTPUT_TOKENS,
+        getGroqTpmBudget() - getGroqTokenSafetyMargin() - getGroqMinOutputTokens(),
       );
       charBudget = Math.max(
         1_000,
