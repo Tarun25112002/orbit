@@ -35,12 +35,12 @@ import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
 const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
-const MAX_FILE_CONTEXT_CHARS = 3_000;
-const MAX_FILE_CONTEXT_CHARS_PER_FILE = 1_000;
-const MAX_CONTEXT_FILES = 4;
-const MAX_HISTORY_MESSAGES = 4;
-const SANDBOX_COMMAND_TIMEOUT_MS = 120_000;
-const SANDBOX_MAX_OUTPUT_CHARS = 1_500;
+const MAX_FILE_CONTEXT_CHARS = 30_000;
+const MAX_FILE_CONTEXT_CHARS_PER_FILE = 8_000;
+const MAX_CONTEXT_FILES = 20;
+const MAX_HISTORY_MESSAGES = 10;
+const SANDBOX_COMMAND_TIMEOUT_MS = 300_000;
+const SANDBOX_MAX_OUTPUT_CHARS = 8_000;
 const SANDBOX_OUTPUT_MAX_BYTES = SANDBOX_MAX_OUTPUT_CHARS * 6;
 const DOCKER_MUX_HEADER_BYTES = 8;
 const DOCKER_MUX_MAX_FRAME_BYTES = 8 * 1024 * 1024;
@@ -50,6 +50,12 @@ const ENABLE_CONVERSATION_AI_TITLE = /^(1|true)$/i.test(
 const ENABLE_TRACE_HISTORY = !/^(0|false)$/i.test(
   process.env.CONVERSATION_ENABLE_TRACE_HISTORY?.trim() ?? "true",
 );
+const EXECUTABLE_ORCHESTRATION_INTENT_PATTERN =
+  /\b(create|add|delete|remove|rename|move|update|edit|modify|write|rewrite|refactor|fix|implement|generate|scaffold|setup|build|install|uninstall|upgrade|downgrade|run|execute|command|terminal|dependency|dependencies|file|files|folder|folders|project|codebase|app)\b/i;
+const EXPLICIT_EXECUTION_DIRECTIVE_PATTERN =
+  /\b(do it|apply(?:\s+it)?|apply changes|make changes|edit files|update files|create files|run commands?|execute commands?|in (?:my|this|the) (?:project|workspace|repo|codebase)|for this project|step\s*by\s*step)\b/i;
+const ANALYSIS_ONLY_REQUEST_PATTERN =
+  /\b(how\s+do\s+i|how\s+to|what\s+is|why\s+is|can\s+you\s+explain|explain|describe|walk\s+me\s+through|show\s+me\s+how)\b/i;
 const TITLE_SKIP_HEAVY_REQUEST_PATTERN =
   /\b(create|build|generate|scaffold|setup|implement|fix|refactor|rename|move|delete|update|install|dependency|dependencies|next(?:\.js|js)?|project|app|route|api)\b/i;
 const FILE_CONTEXT_STOP_WORDS = new Set([
@@ -992,6 +998,27 @@ const shouldSkipAiTitleForMessage = (message: string) => {
   return TITLE_SKIP_HEAVY_REQUEST_PATTERN.test(trimmed);
 };
 
+const shouldPreferExecutableOrchestration = (message: string) => {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  const hasExecutableIntent =
+    EXECUTABLE_ORCHESTRATION_INTENT_PATTERN.test(trimmed) ||
+    EXPLICIT_EXECUTION_DIRECTIVE_PATTERN.test(trimmed);
+
+  if (!hasExecutableIntent) {
+    return false;
+  }
+
+  const looksAnalysisOnly =
+    ANALYSIS_ONLY_REQUEST_PATTERN.test(trimmed) &&
+    !EXPLICIT_EXECUTION_DIRECTIVE_PATTERN.test(trimmed);
+
+  return !looksAnalysisOnly;
+};
+
 const normalizeEditorContextPath = (value: string | undefined) => {
   if (typeof value !== "string") {
     return undefined;
@@ -1072,20 +1099,19 @@ const buildExecutionTraceSummary = (
   const failedFiles = fileOps.filter((r) => r.status === "failed");
 
   if (appliedFiles.length > 0) {
-    const filePaths = appliedFiles
-      .map((r) => describeTraceOperation(r.operation))
-      .slice(0, 15);
-    const suffix =
-      appliedFiles.length > 15 ? ` (+${appliedFiles.length - 15} more)` : "";
-    lines.push(
-      `- Created/modified ${appliedFiles.length} files: ${filePaths.join(", ")}${suffix}`,
-    );
+    lines.push(`Files created/modified (${appliedFiles.length} total):`);
+    for (const f of appliedFiles.slice(0, 40)) {
+      lines.push(`  - [${f.operation.type}] ${describeTraceOperation(f.operation)}`);
+    }
+    if (appliedFiles.length > 40) {
+      lines.push(`  ... and ${appliedFiles.length - 40} more files`);
+    }
   }
 
   if (failedFiles.length > 0) {
-    for (const f of failedFiles.slice(0, 5)) {
+    for (const f of failedFiles.slice(0, 10)) {
       lines.push(
-        `- FAILED: ${f.operation.type} ${describeTraceOperation(f.operation)} — ${f.message.slice(0, 150)}`,
+        `- FAILED: ${f.operation.type} ${describeTraceOperation(f.operation)} — ${f.message.slice(0, 300)}`,
       );
     }
   }
@@ -1102,9 +1128,9 @@ const buildExecutionTraceSummary = (
     if (cmd.status === "applied") {
       lines.push(`- Ran: ${cmdDesc} → OK`);
     } else if (cmd.status === "failed") {
-      lines.push(`- Ran: ${cmdDesc} → FAILED: ${cmd.message.slice(0, 200)}`);
+      lines.push(`- Ran: ${cmdDesc} → FAILED: ${cmd.message.slice(0, 300)}`);
     } else if (cmd.status === "skipped") {
-      lines.push(`- Skipped: ${cmdDesc} — ${cmd.message.slice(0, 100)}`);
+      lines.push(`- Skipped: ${cmdDesc} — ${cmd.message.slice(0, 200)}`);
     }
   }
 
@@ -1359,85 +1385,180 @@ export const conversationMessageRequested = inngest.createFunction(
 
       const titlePromise = shouldTitleConversation
         ? generateConversationTitle(message).catch(() => null)
-        : Promise.resolve(null);
+        : null;
 
-      const [generatedTitle, orchestration] = await Promise.all([
-        titlePromise,
-        (async () => {
-          try {
-            return await runConversationAgentOrchestration({
-              message: plannerMessage,
-              projectContext: systemContext,
-              history: conversationHistory,
-              webContext: webContext.markdown,
+       const runConversationOrchestration = async (args?: {
+        message?: string;
+        projectContext?: string;
+        history?: string;
+        webContext?: string;
+      }) =>
+        runConversationAgentOrchestration({
+          message: args?.message ?? plannerMessage,
+          projectContext: args?.projectContext ?? systemContext,
+          history: args?.history ?? conversationHistory,
+          webContext: args?.webContext ?? webContext.markdown,
+          projectFiles: conversationProjectFiles,
+          executeFileOperation: async (operation) => {
+            if (await isAssistantMessageCancelled(assistantMessageId)) {
+              return {
+                status: "skipped",
+                message: "Skipped because the response was cancelled.",
+              } satisfies ConversationFileOperationExecutionResult;
+            }
+
+            return await executeConversationFileOperation({
+              projectId: conversation.projectId,
+              operation,
               projectFiles: conversationProjectFiles,
-              executeFileOperation: async (operation) => {
-                if (await isAssistantMessageCancelled(assistantMessageId)) {
-                  return {
-                    status: "skipped",
-                    message: "Skipped because the response was cancelled.",
-                  } satisfies ConversationFileOperationExecutionResult;
-                }
-
-                return await executeConversationFileOperation({
-                  projectId: conversation.projectId,
-                  operation,
-                  projectFiles: conversationProjectFiles,
-                });
-              },
-              loadProjectFilesAfterOperations: async () => {
-                if (await isAssistantMessageCancelled(assistantMessageId)) {
-                  return conversationProjectFiles;
-                }
-
-                const latestFiles = await convex.query(
-                  api.system.getProjectFiles,
-                  {
-                    projectId: conversation.projectId,
-                  },
-                );
-
-                const latestFileNodes: ProjectFileTreeNode[] = latestFiles.map(
-                  (file) => ({
-                    name: file.name,
-                    type: file.type,
-                    parentId: file.parentId ?? null,
-                    _id: file._id,
-                    content: file.content,
-                  }),
-                );
-
-                return buildConversationProjectFiles(latestFileNodes);
-              },
             });
-          } catch (orchestrationError) {
-            const classified = classifyError(orchestrationError);
-            console.warn("conversation.orchestration.fallback", {
-              assistantMessageId,
-              conversationId,
-              reason: classified.message,
-              category: classified.category,
+          },
+          onOperationProgress: async (completedResults, totalOps) => {
+            // Build a real-time progress message the user can see
+            const lines: string[] = [
+              `⚡ **Building project** (${completedResults.length}/${totalOps} operations)`,
+              "",
+            ];
+
+            for (const result of completedResults) {
+              const op = result.operation;
+              const icon =
+                result.status === "applied"
+                  ? "✅"
+                  : result.status === "failed"
+                    ? "❌"
+                    : "⏭️";
+
+              let label: string;
+              if (
+                op.type === "run_command" ||
+                op.type === "start_background_command"
+              ) {
+                const cmdArgs = op.commandArgs?.join(" ") ?? "";
+                label = `\`${op.command}${cmdArgs ? ` ${cmdArgs}` : ""}\``;
+              } else if (op.type === "rename_path") {
+                label = `${op.type} \`${op.path}\` → \`${op.newPath}\``;
+              } else {
+                label = `${op.type} \`${op.path}\``;
+              }
+
+              lines.push(`${icon} ${label}`);
+            }
+
+            if (completedResults.length < totalOps) {
+              lines.push(
+                "",
+                `⏳ *${totalOps - completedResults.length} remaining...*`,
+              );
+            }
+
+            const progressContent = lines.join("\n");
+
+            try {
+              await convex.mutation(api.system.streamMessageProgress, {
+                messageId: assistantMessageId as Id<"messages">,
+                content: progressContent,
+              });
+            } catch {
+              // Best-effort — don't fail the pipeline if progress update fails
+            }
+          },
+          loadProjectFilesAfterOperations: async () => {
+            if (await isAssistantMessageCancelled(assistantMessageId)) {
+              return conversationProjectFiles;
+            }
+
+            const latestFiles = await convex.query(api.system.getProjectFiles, {
+              projectId: conversation.projectId,
             });
 
-            const fallback = await generateFallbackConversationReply({
-              systemContext,
-              history: conversationHistory,
-              message,
-              webContext: webContext.markdown,
-            });
+            const latestFileNodes: ProjectFileTreeNode[] = latestFiles.map(
+              (file) => ({
+                name: file.name,
+                type: file.type,
+                parentId: file.parentId ?? null,
+                _id: file._id,
+                content: file.content,
+              }),
+            );
 
-            return {
-              content: fallback.content,
-              assignments: [],
-              reports: [],
-              supervisorPlan: "fallback-direct-gemini",
-              operations: [],
-              operationResults: [],
-              fileOperationPlannerOutput: `fallback due to: ${classified.message}`,
-            };
+            return buildConversationProjectFiles(latestFileNodes);
+          },
+        });
+
+      const preferExecutableOrchestration =
+        shouldPreferExecutableOrchestration(message);
+
+      const orchestration = await (async () => {
+        try {
+          return await runConversationOrchestration();
+        } catch (orchestrationError) {
+          const classified = classifyError(orchestrationError);
+          console.warn("conversation.orchestration.fallback", {
+            assistantMessageId,
+            conversationId,
+            reason: classified.message,
+            category: classified.category,
+          });
+
+          if (preferExecutableOrchestration) {
+            try {
+              console.info("conversation.orchestration.retry-executable", {
+                assistantMessageId,
+                conversationId,
+                reason: classified.message,
+              });
+
+              return await runConversationOrchestration({
+                history: "",
+                webContext: "",
+              });
+            } catch (retryError) {
+              const retryClassified = classifyError(retryError);
+              console.warn(
+                "conversation.orchestration.retry-executable.failed",
+                {
+                  assistantMessageId,
+                  conversationId,
+                  reason: retryClassified.message,
+                  category: retryClassified.category,
+                },
+              );
+
+              return {
+                content: [
+                  "I couldn't execute file operations for this request because the execution pipeline failed.",
+                  `Reason: ${retryClassified.message}`,
+                  "No files were changed. Please retry this prompt.",
+                ].join("\n"),
+                assignments: [],
+                reports: [],
+                supervisorPlan: "fallback-executable-required",
+                operations: [],
+                operationResults: [],
+                fileOperationPlannerOutput: `fallback due to: ${classified.message}; executable-retry failed: ${retryClassified.message}`,
+              };
+            }
           }
-        })(),
-      ]);
+
+          const fallback = await generateFallbackConversationReply({
+            systemContext,
+            history: conversationHistory,
+            message,
+            webContext: webContext.markdown,
+          });
+
+          return {
+            content: fallback.content,
+            assignments: [],
+            reports: [],
+            supervisorPlan: "fallback-direct-gemini",
+            operations: [],
+            operationResults: [],
+            fileOperationPlannerOutput: `fallback due to: ${classified.message}`,
+          };
+        }
+      })();
 
       console.info("conversation.orchestration.summary", {
         assistantMessageId,
@@ -1454,15 +1575,6 @@ export const conversationMessageRequested = inngest.createFunction(
           .slice(0, 300)
           .trim(),
       });
-
-      if (generatedTitle) {
-        await step.run("save-conversation-title", async () => {
-          await convex.mutation(api.system.updateConversationTitle, {
-            conversationId: conversationId as Id<"conversations">,
-            title: generatedTitle,
-          });
-        });
-      }
 
       const wasCancelledBeforeSave = await step.run(
         "check-cancelled-before-save",
@@ -1492,6 +1604,18 @@ export const conversationMessageRequested = inngest.createFunction(
           },
         });
       });
+
+      if (saved && titlePromise) {
+        const generatedTitle = await titlePromise;
+        if (generatedTitle) {
+          await step.run("save-conversation-title", async () => {
+            await convex.mutation(api.system.updateConversationTitle, {
+              conversationId: conversationId as Id<"conversations">,
+              title: generatedTitle,
+            });
+          });
+        }
+      }
 
       console.info("conversation.orchestration.persisted", {
         assistantMessageId,
