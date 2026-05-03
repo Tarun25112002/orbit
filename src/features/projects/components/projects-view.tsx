@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { UserButton } from "@clerk/nextjs";
+import { UserButton, useAuth } from "@clerk/nextjs";
 import { Plus, Search, Blocks, Sparkles, Zap } from "lucide-react";
 import {
   adjectives,
@@ -27,6 +27,7 @@ const FREE_PROJECT_LIMIT = 3;
 export const ProjectsView = () => {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { getToken } = useAuth();
   const createProject = useCreateProject();
   const projects = useProjects();
   const activeSub = useQuery(api.subscriptions.getActive);
@@ -39,7 +40,7 @@ export const ProjectsView = () => {
   const isSubscribed = !!activeSub;
   const projectCount = projects?.length ?? 0;
 
-  let projectLimit = 3;
+  let projectLimit = FREE_PROJECT_LIMIT;
   if (isSubscribed) {
     if (activeSub.tier === "basic") projectLimit = 10;
     if (activeSub.tier === "pro") projectLimit = 50;
@@ -70,10 +71,15 @@ export const ProjectsView = () => {
 
     try {
       await createProject({ name: projectName });
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      const data =
+        typeof err === "object" && err !== null && "data" in err
+          ? (err as { data?: unknown }).data
+          : undefined;
       const isLimitReached =
-        err?.message?.includes("PROJECT_LIMIT_REACHED") ||
-        err?.data === "PROJECT_LIMIT_REACHED";
+        message.includes("PROJECT_LIMIT_REACHED") ||
+        data === "PROJECT_LIMIT_REACHED";
 
       if (isLimitReached) {
         setUpgradeOpen(true);
@@ -92,9 +98,17 @@ export const ProjectsView = () => {
 
     const syncPayment = async () => {
       try {
+        const token = await getToken();
+        const headers: HeadersInit = { "Content-Type": "application/json" };
+
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+
         const response = await fetch("/api/stripe/sync-session", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
+          credentials: "include",
           body: JSON.stringify({ sessionId }),
         });
 
@@ -132,7 +146,7 @@ export const ProjectsView = () => {
     return () => {
       cancelled = true;
     };
-  }, [paymentStatus, router, sessionId]);
+  }, [getToken, paymentStatus, router, sessionId]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

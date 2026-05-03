@@ -9,9 +9,6 @@ const VALID_TIERS = new Set(["basic", "pro", "advance"]);
 export async function POST(request: NextRequest) {
   try {
     const userId = await getClerkUserId(request);
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
     let payload: { sessionId?: string } | null = null;
     try {
@@ -42,7 +39,14 @@ export async function POST(request: NextRequest) {
       session.metadata?.userId ?? session.client_reference_id ?? null;
     const tier = session.metadata?.tier ?? null;
 
-    if (!metadataUserId || metadataUserId !== userId) {
+    if (!metadataUserId) {
+      return NextResponse.json(
+        { error: "Missing user metadata" },
+        { status: 400 },
+      );
+    }
+
+    if (userId && metadataUserId !== userId) {
       return NextResponse.json(
         { error: "Session does not belong to the current user" },
         { status: 403 },
@@ -64,7 +68,7 @@ export async function POST(request: NextRequest) {
     }
 
     await fetchMutation(api.subscriptions.activate, {
-      ownerId: userId,
+      ownerId: metadataUserId,
       tier: tier as "basic" | "pro" | "advance",
       stripeSessionId: session.id,
       stripePaymentIntentId:

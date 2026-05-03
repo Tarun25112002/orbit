@@ -576,7 +576,7 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   '  rename_path   → {"type":"rename_path","path":"<old>","newPath":"<new>"}',
   "",
   "COMMAND OPERATIONS:",
-  '  run_command              → {"type":"run_command","command":"npm","commandArgs":["install"]}',
+  '  run_command              → {"type":"run_command","command":"npm","commandArgs":["install","--legacy-peer-deps","--no-audit","--no-fund","--no-progress","--loglevel=error"]}',
   '  start_background_command → {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
   "",
   "═══════════════════════════════════════════════════",
@@ -591,7 +591,7 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "   NEVER use shell chaining (&&, ||, ;, |). Use SEPARATE run_command operations instead.",
   "",
   "3. DEPENDENCY INSTALL: After creating/updating package.json, ALWAYS include:",
-  '   {"type":"run_command","command":"npm","commandArgs":["install"]}',
+  '   {"type":"run_command","command":"npm","commandArgs":["install","--legacy-peer-deps","--no-audit","--no-fund","--no-progress","--loglevel=error"]}',
   "",
   "4. DEV SERVER: To start the development server, ALWAYS use key 'dev-server':",
   '   {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
@@ -1572,6 +1572,78 @@ const isPlainDependencyInstallCommand = (
   return args.slice(1).every((arg) => arg.startsWith("-"));
 };
 
+const NPM_STABLE_INSTALL_FLAGS = [
+  "--legacy-peer-deps",
+  "--no-audit",
+  "--no-fund",
+  "--no-progress",
+  "--loglevel=error",
+];
+const NPM_STABLE_CI_FLAGS = [
+  "--no-audit",
+  "--no-fund",
+  "--no-progress",
+  "--loglevel=error",
+];
+
+const normalizeNpmInstallArgs = (args: string[]) => {
+  const normalized = args.length > 0 ? [...args] : ["install"];
+  const mode = normalized[0]?.trim().toLowerCase();
+  const flags = mode === "ci" ? NPM_STABLE_CI_FLAGS : NPM_STABLE_INSTALL_FLAGS;
+  const existingFlags = new Set(
+    normalized.map((arg) => arg.trim().toLowerCase()),
+  );
+
+  for (const flag of flags) {
+    if (!existingFlags.has(flag)) {
+      normalized.push(flag);
+    }
+  }
+
+  return normalized;
+};
+
+const shouldNormalizeNpmInstallOperation = (
+  operation: ConversationFileOperation,
+) => {
+  if (operation.type !== "run_command") {
+    return false;
+  }
+
+  const command = operation.command.trim().toLowerCase();
+  if (command !== "npm") {
+    return false;
+  }
+
+  const args = operation.commandArgs ?? [];
+  if (args.length === 0) {
+    return true;
+  }
+
+  const firstArg = args[0]?.trim().toLowerCase();
+  return firstArg === "install" || firstArg === "i" || firstArg === "ci";
+};
+
+const normalizeInstallOperationForExecution = (
+  operation: ConversationFileOperation,
+) => {
+  if (!shouldNormalizeNpmInstallOperation(operation)) {
+    return operation;
+  }
+
+  return {
+    ...operation,
+    commandArgs: normalizeNpmInstallArgs(operation.commandArgs ?? []),
+  } satisfies ConversationFileOperation;
+};
+
+const normalizeInstallOperationsForExecution = (
+  operations: ConversationFileOperation[],
+) =>
+  operations.map((operation) =>
+    normalizeInstallOperationForExecution(operation),
+  );
+
 const buildDefaultInstallOperation = (
   operations: ConversationFileOperation[],
   projectFiles: ConversationProjectFile[] = [],
@@ -1582,7 +1654,7 @@ const buildDefaultInstallOperation = (
     return {
       type: "run_command",
       command,
-      commandArgs: ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--no-progress", "--loglevel=error"],
+      commandArgs: ["install", ...NPM_STABLE_INSTALL_FLAGS],
     };
   }
 
@@ -1648,9 +1720,7 @@ const isBuildValidationCommand = (operation: ConversationFileOperation) => {
   }
 
   if (command === "yarn") {
-    return (
-      args[0] === "build" || (args[0] === "run" && args[1] === "build")
-    );
+    return args[0] === "build" || (args[0] === "run" && args[1] === "build");
   }
 
   return command === "vite" || command === "tsc";
@@ -1806,7 +1876,7 @@ const normalizePlannerOperationsForExecution = (args: {
   );
 
   return ensureAutonomousValidationOperation(
-    operationsWithInstall,
+    normalizeInstallOperationsForExecution(operationsWithInstall),
     projectFiles,
   ).slice(0, maxOperations);
 };
@@ -2537,17 +2607,20 @@ const buildDeterministicViteScaffoldOperations = (
     }),
     upsertPlannerFileOperation({
       path: "postcss.config.js",
-      content: "export default {\n  plugins: {\n    tailwindcss: {},\n    autoprefixer: {},\n  },\n};\n",
+      content:
+        "export default {\n  plugins: {\n    tailwindcss: {},\n    autoprefixer: {},\n  },\n};\n",
       existingPaths,
     }),
     upsertPlannerFileOperation({
       path: "tailwind.config.js",
-      content: '/** @type {import(\'tailwindcss\').Config} */\nexport default {\n  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],\n  theme: {\n    extend: {},\n  },\n  plugins: [],\n};\n',
+      content:
+        '/** @type {import(\'tailwindcss\').Config} */\nexport default {\n  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],\n  theme: {\n    extend: {},\n  },\n  plugins: [],\n};\n',
       existingPaths,
     }),
     upsertPlannerFileOperation({
       path: "index.html",
-      content: '<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Orbit App</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n',
+      content:
+        '<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Orbit App</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n',
       existingPaths,
     }),
     upsertPlannerFileOperation({
@@ -2557,12 +2630,14 @@ const buildDeterministicViteScaffoldOperations = (
     }),
     upsertPlannerFileOperation({
       path: "src/main.tsx",
-      content: 'import React from "react";\nimport ReactDOM from "react-dom/client";\nimport App from "./App";\nimport "./index.css";\n\nReactDOM.createRoot(document.getElementById("root")!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>,\n);\n',
+      content:
+        'import React from "react";\nimport ReactDOM from "react-dom/client";\nimport App from "./App";\nimport "./index.css";\n\nReactDOM.createRoot(document.getElementById("root")!).render(\n  <React.StrictMode>\n    <App />\n  </React.StrictMode>,\n);\n',
       existingPaths,
     }),
     upsertPlannerFileOperation({
       path: "src/App.tsx",
-      content: 'export default function App() {\n  return (\n    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">\n      <div className="text-center space-y-4">\n        <h1 className="text-4xl font-bold text-slate-900">Vite + React</h1>\n        <p className="text-slate-600">\n          Your project is ready. Edit <code className="bg-slate-200 px-2 py-1 rounded text-sm">src/App.tsx</code> to get started.\n        </p>\n      </div>\n    </div>\n  );\n}\n',
+      content:
+        'export default function App() {\n  return (\n    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">\n      <div className="text-center space-y-4">\n        <h1 className="text-4xl font-bold text-slate-900">Vite + React</h1>\n        <p className="text-slate-600">\n          Your project is ready. Edit <code className="bg-slate-200 px-2 py-1 rounded text-sm">src/App.tsx</code> to get started.\n        </p>\n      </div>\n    </div>\n  );\n}\n',
       existingPaths,
     }),
   );
@@ -2570,7 +2645,7 @@ const buildDeterministicViteScaffoldOperations = (
   operations.push({
     type: "run_command",
     command: "npm",
-    commandArgs: ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--no-progress", "--loglevel=error"],
+    commandArgs: ["install", ...NPM_STABLE_INSTALL_FLAGS],
   });
   operations.push({
     type: "start_background_command",
@@ -2863,7 +2938,7 @@ const buildFileOperationPlannerPrompt = (
     "- Your output is EXECUTED, not displayed. Include COMPLETE file contents.",
     "- Unless the user explicitly asks for starter/minimal scaffold, do NOT stop at a basic frontend shell.",
     "- For feature requests, deliver a complete frontend implementation with polished UI, state management, and mock data.",
-    '- After changing package.json: {"type":"run_command","command":"npm","commandArgs":["install"]}',
+    '- After changing package.json: {"type":"run_command","command":"npm","commandArgs":["install","--legacy-peer-deps","--no-audit","--no-fund","--no-progress","--loglevel=error"]}',
     '- After file/dependency changes: {"type":"run_command","command":"npm","commandArgs":["run","build","--if-present"]}',
     '- To start dev server: {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
     "- For Vite scaffolds, include at minimum: package.json, vite.config.ts, tsconfig.json, index.html, src/main.tsx, src/App.tsx, src/index.css.",
@@ -3510,17 +3585,12 @@ const planConversationFileOperations = async (
 
   if (shouldUseDeterministicViteFallback) {
     const deterministicOperations = normalizePlannerOperationsForExecution({
-      operations: buildDeterministicViteScaffoldOperations(
-        input.projectFiles,
-      ),
+      operations: buildDeterministicViteScaffoldOperations(input.projectFiles),
       projectFiles: input.projectFiles,
       maxOperations: MAX_FILE_OPERATIONS_PER_RUN,
     });
 
-    return toPlanResult(
-      deterministicOperations,
-      "deterministic-vite-scaffold",
-    );
+    return toPlanResult(deterministicOperations, "deterministic-vite-scaffold");
   }
 
   const runPlanner = async (args: {
@@ -4096,7 +4166,11 @@ const executePlannedFileOperations = async (
           status: "skipped",
           message: `Skipped because previous operation failed: ${previousResult.message.slice(0, 200)}`,
         });
-        try { await onOperationProgress?.(results, totalOps); } catch { /* best-effort */ }
+        try {
+          await onOperationProgress?.(results, totalOps);
+        } catch {
+          /* best-effort */
+        }
         continue;
       }
 
@@ -4111,7 +4185,11 @@ const executePlannedFileOperations = async (
           status: "skipped",
           message: `Skipped because previous command exited with code ${previousResult.commandExitCode}.`,
         });
-        try { await onOperationProgress?.(results, totalOps); } catch { /* best-effort */ }
+        try {
+          await onOperationProgress?.(results, totalOps);
+        } catch {
+          /* best-effort */
+        }
         continue;
       }
     }
@@ -4128,7 +4206,11 @@ const executePlannedFileOperations = async (
           ? "Queued for sandbox runtime execution."
           : "No execution handler is available.",
       });
-      try { await onOperationProgress?.(results, totalOps); } catch { /* best-effort */ }
+      try {
+        await onOperationProgress?.(results, totalOps);
+      } catch {
+        /* best-effort */
+      }
       continue;
     }
 
@@ -4150,7 +4232,11 @@ const executePlannedFileOperations = async (
     }
 
     // Fire progress callback after each operation so the UI updates in real-time
-    try { await onOperationProgress?.(results, totalOps); } catch { /* best-effort */ }
+    try {
+      await onOperationProgress?.(results, totalOps);
+    } catch {
+      /* best-effort */
+    }
   }
 
   return results;
@@ -4472,7 +4558,13 @@ const buildStructuredCodeResponse = (args: {
 
   // Project structure
   if (structureLines.length > 0) {
-    sections.push("### Project Structure", "```text", ...structureLines, "```", "");
+    sections.push(
+      "### Project Structure",
+      "```text",
+      ...structureLines,
+      "```",
+      "",
+    );
   }
 
   // File list with brief descriptions (no full code dumps)
@@ -4872,9 +4964,7 @@ export const runConversationAgentOrchestration = async (
       );
 
       if (fixupJson) {
-        const fixupOps = parseFileOperationPlan(
-          safeJsonParse(fixupJson) ?? {},
-        );
+        const fixupOps = parseFileOperationPlan(safeJsonParse(fixupJson) ?? {});
 
         if (fixupOps.length > 0) {
           const normalizedFixupOps = normalizePlannerOperationsForExecution({

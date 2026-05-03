@@ -55,6 +55,27 @@ const SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS = Math.max(
     10,
   ) || 8_000,
 );
+const SANDBOX_INSTALL_TIMEOUT_MS = Math.max(
+  SANDBOX_COMMAND_TIMEOUT_MS,
+  Number.parseInt(
+    process.env.CONVERSATION_SANDBOX_INSTALL_TIMEOUT_MS ?? "600000",
+    10,
+  ) || 600_000,
+);
+const SANDBOX_INSTALL_MAX_ATTEMPTS = Math.max(
+  1,
+  Number.parseInt(
+    process.env.CONVERSATION_SANDBOX_INSTALL_MAX_ATTEMPTS ?? "3",
+    10,
+  ) || 3,
+);
+const SANDBOX_INSTALL_RETRY_BASE_MS = Math.max(
+  500,
+  Number.parseInt(
+    process.env.CONVERSATION_SANDBOX_INSTALL_RETRY_BASE_MS ?? "1500",
+    10,
+  ) || 1_500,
+);
 const DOCKER_MUX_HEADER_BYTES = 8;
 const DOCKER_MUX_MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const SANDBOX_SESSION_MISSING_PATTERN =
@@ -578,6 +599,200 @@ const quoteForShell = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
 const buildShellCommand = (command: string, commandArgs: string[] = []) =>
   [command, ...commandArgs].map((part) => quoteForShell(part)).join(" ");
 
+const NPM_STABLE_INSTALL_FLAGS = [
+  "--legacy-peer-deps",
+  "--no-audit",
+  "--no-fund",
+  "--no-progress",
+  "--loglevel=error",
+];
+const NPM_STABLE_CI_FLAGS = [
+  "--no-audit",
+  "--no-fund",
+  "--no-progress",
+  "--loglevel=error",
+];
+const INSTALL_NETWORK_ERROR_PATTERN =
+  /ETIMEDOUT|ECONNRESET|ENOTFOUND|EAI_AGAIN|network|fetch failed|socket hang up|temporary failure|certificate|tls/i;
+const INSTALL_PEER_DEP_ERROR_PATTERN =
+  /ERESOLVE|peer dep|conflicting peer dependency/i;
+const INSTALL_COMMAND_NOT_FOUND_PATTERN =
+  /\b(not found|command not found|ENOENT)\b/i;
+const NPM_CI_DESYNC_PATTERN =
+  /npm ci[\s\S]*?(package-lock\.json|package\.json)[\s\S]*?(sync|missing|out of date|out-of-date)/i;
+const INSTALL_TIMEOUT_PATTERN = /timed out|timeout/i;
+
+const normalizeNpmInstallArgs = (args: string[]) => {
+  const normalized = args.length > 0 ? [...args] : ["install"];
+  const mode = normalized[0]?.trim().toLowerCase();
+  const flags = mode === "ci" ? NPM_STABLE_CI_FLAGS : NPM_STABLE_INSTALL_FLAGS;
+  const existingFlags = new Set(
+    normalized.map((arg) => arg.trim().toLowerCase()),
+  );
+
+  for (const flag of flags) {
+    if (!existingFlags.has(flag)) {
+      normalized.push(flag);
+    }
+  }
+
+  return normalized;
+};
+
+const isDependencyInstallCommand = (operation: ConversationFileOperation) => {
+  if (operation.type !== "run_command") {
+    return false;
+  }
+
+  const command = operation.command.trim().toLowerCase();
+  const args =
+    operation.commandArgs
+      ?.map((arg) => arg.trim().toLowerCase())
+      .filter(Boolean) ?? [];
+
+  if (command === "yarn") {
+    return args.length === 0 || args[0] === "install";
+  }
+
+  if (command === "npm" || command === "pnpm" || command === "bun") {
+    if (args.length === 0) {
+      return command === "npm";
+    }
+    return args[0] === "install" || args[0] === "i" || args[0] === "ci";
+  }
+
+  return false;
+};
+
+const normalizeInstallCommandSpec = (operation: ConversationFileOperation) => {
+  if (
+    operation.type !== "run_command" ||
+    !isDependencyInstallCommand(operation)
+  ) {
+    return null;
+  }
+
+  const command = operation.command.trim();
+  const commandLower = command.toLowerCase();
+  const args = operation.commandArgs ?? [];
+
+  if (commandLower === "npm") {
+    return {
+      command,
+      commandArgs: normalizeNpmInstallArgs(args),
+    };
+  }
+
+  return {
+    command,
+    commandArgs: args,
+  };
+};
+
+const withAddedFlag = (args: string[], flag: string) => {
+  const existing = new Set(args.map((arg) => arg.trim().toLowerCase()));
+  if (existing.has(flag.toLowerCase())) {
+    return args;
+  }
+
+  return [...args, flag];
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const runInstallWithRetries = async (args: {
+  run: (
+    commandToRun: string,
+    timeoutMs: number,
+  ) => Promise<{
+    exitCode: number;
+    output: string;
+  }>;
+  command: string;
+  commandArgs?: string[];
+}) => {
+  let command = args.command;
+  let commandArgs = args.commandArgs ?? [];
+  let attempts = 0;
+  let lastResult: { exitCode: number; output: string } = {
+    exitCode: 1,
+    output: "",
+  };
+  const notes: string[] = [];
+
+  while (attempts < SANDBOX_INSTALL_MAX_ATTEMPTS) {
+    attempts += 1;
+    const commandLine = buildShellCommand(command, commandArgs);
+
+    lastResult = await args.run(commandLine, SANDBOX_INSTALL_TIMEOUT_MS);
+    if (lastResult.exitCode === 0) {
+      break;
+    }
+
+    const outputLower = lastResult.output.toLowerCase();
+    const commandLower = command.trim().toLowerCase();
+    const isTimeout = INSTALL_TIMEOUT_PATTERN.test(outputLower);
+    const isNetworkError =
+      INSTALL_NETWORK_ERROR_PATTERN.test(outputLower) || isTimeout;
+    const isPeerDepError = INSTALL_PEER_DEP_ERROR_PATTERN.test(outputLower);
+    const isCommandMissing =
+      INSTALL_COMMAND_NOT_FOUND_PATTERN.test(outputLower) &&
+      outputLower.includes(commandLower);
+
+    if (commandLower !== "npm" && isCommandMissing) {
+      notes.push(
+        `Package manager '${command}' missing; retrying with npm install.`,
+      );
+      command = "npm";
+      commandArgs = normalizeNpmInstallArgs(["install"]);
+      continue;
+    }
+
+    if (commandLower === "npm") {
+      const firstArg = commandArgs[0]?.trim().toLowerCase();
+      if (firstArg === "ci" && NPM_CI_DESYNC_PATTERN.test(outputLower)) {
+        notes.push(
+          "npm ci failed due to lockfile mismatch; retrying with npm install.",
+        );
+        commandArgs = normalizeNpmInstallArgs(["install"]);
+        continue;
+      }
+
+      if (isPeerDepError) {
+        const nextArgs = withAddedFlag(commandArgs, "--force");
+        if (nextArgs !== commandArgs) {
+          notes.push(
+            "Dependency resolution failed; retrying npm install with --force.",
+          );
+          commandArgs = nextArgs;
+          continue;
+        }
+      }
+    }
+
+    if (isNetworkError && attempts < SANDBOX_INSTALL_MAX_ATTEMPTS) {
+      const backoff = SANDBOX_INSTALL_RETRY_BASE_MS * attempts;
+      notes.push(`Transient network error; retrying in ${backoff}ms.`);
+      await sleep(backoff);
+      continue;
+    }
+
+    break;
+  }
+
+  return {
+    exitCode: lastResult.exitCode,
+    output: lastResult.output,
+    attempts,
+    command,
+    commandArgs,
+    notes,
+  };
+};
+
 const ORBIT_VALIDATE_COMMAND = "orbit-validate";
 
 const buildSandboxValidationCommandScript = () =>
@@ -774,20 +989,54 @@ const executeConversationFileOperation = async (args: {
       operation.type === "run_command" ||
       operation.type === "start_background_command"
     ) {
+      const installCommandSpec = normalizeInstallCommandSpec(operation);
+      const commandSpec = installCommandSpec ?? {
+        command: operation.command,
+        commandArgs: operation.commandArgs,
+      };
       const displayCommand = [
-        operation.command,
-        ...(operation.commandArgs ?? []),
+        commandSpec.command,
+        ...(commandSpec.commandArgs ?? []),
       ].join(" ");
       const shellCommand = buildShellCommand(
-        operation.command,
-        operation.commandArgs ?? [],
+        commandSpec.command,
+        commandSpec.commandArgs ?? [],
       );
       const label =
         operation.type === "start_background_command"
           ? `background command (${operation.key})`
           : "command";
 
-      const runSandboxCommand = async (forceResync?: boolean) => {
+      const resolveCommandToRun = (override?: string) => {
+        if (override) {
+          return override;
+        }
+
+        if (operation.type === "start_background_command") {
+          return buildBackgroundCommandScript({
+            key: operation.key,
+            command: shellCommand,
+          });
+        }
+
+        if (operation.command === ORBIT_VALIDATE_COMMAND) {
+          return buildSandboxValidationCommandScript();
+        }
+
+        return shellCommand;
+      };
+
+      const resolveTimeoutMs = (override?: number) =>
+        override ??
+        (operation.type === "start_background_command"
+          ? SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS + 5_000
+          : SANDBOX_COMMAND_TIMEOUT_MS);
+
+      const runSandboxCommand = async (
+        forceResync?: boolean,
+        commandOverride?: string,
+        timeoutOverride?: number,
+      ) => {
         let sessionId = forceResync
           ? undefined
           : activeSandboxSessions.get(projectId);
@@ -808,53 +1057,149 @@ const executeConversationFileOperation = async (args: {
           sandboxNeedsResync.set(projectId, false);
         }
 
-        const commandToRun =
-          operation.type === "start_background_command"
-            ? buildBackgroundCommandScript({
-                key: operation.key,
-                command: shellCommand,
-              })
-            : operation.command === ORBIT_VALIDATE_COMMAND
-              ? buildSandboxValidationCommandScript()
-              : shellCommand;
+        const commandToRun = resolveCommandToRun(commandOverride);
 
         return await execCommandInContainer({
           sessionId,
           command: commandToRun,
-          timeoutMs:
-            operation.type === "start_background_command"
-              ? SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS + 5_000
-              : SANDBOX_COMMAND_TIMEOUT_MS,
+          timeoutMs: resolveTimeoutMs(timeoutOverride),
         });
       };
+
+      const runSandboxCommandWithRecovery = async (
+        commandOverride?: string,
+        timeoutOverride?: number,
+      ) => {
+        let result: { exitCode: number; output: string } | null = null;
+        let sandboxError: unknown = null;
+
+        try {
+          result = await runSandboxCommand(
+            false,
+            commandOverride,
+            timeoutOverride,
+          );
+        } catch (error) {
+          sandboxError = error;
+        }
+
+        if (
+          !result &&
+          sandboxError &&
+          isSandboxSessionMissingError(sandboxError)
+        ) {
+          console.warn("conversation.sandbox.session.recover", {
+            projectId,
+            command: displayCommand,
+          });
+
+          activeSandboxSessions.delete(projectId);
+          sandboxNeedsResync.set(projectId, true);
+
+          try {
+            result = await runSandboxCommand(
+              true,
+              commandOverride,
+              timeoutOverride,
+            );
+          } catch (error) {
+            sandboxError = error;
+          }
+        }
+
+        if (result) {
+          return result;
+        }
+
+        throw sandboxError ?? new Error("Unknown sandbox error");
+      };
+
+      if (operation.type === "run_command" && installCommandSpec) {
+        let installResult: Awaited<
+          ReturnType<typeof runInstallWithRetries>
+        > | null = null;
+        let sandboxError: unknown = null;
+
+        try {
+          installResult = await runInstallWithRetries({
+            run: runSandboxCommandWithRecovery,
+            command: installCommandSpec.command,
+            commandArgs: installCommandSpec.commandArgs,
+          });
+        } catch (error) {
+          sandboxError = error;
+        }
+
+        if (installResult) {
+          const outputPreview = buildCommandOutputPreview(installResult.output);
+          const exitLabel =
+            installResult.exitCode === 0
+              ? "succeeded"
+              : `failed (exit ${installResult.exitCode})`;
+          const attemptSuffix =
+            installResult.attempts > 1
+              ? ` after ${installResult.attempts} attempts`
+              : "";
+          const notesBlock =
+            installResult.notes.length > 0
+              ? `\n${installResult.notes.map((note) => `Note: ${note}`).join("\n")}`
+              : "";
+          const effectiveCommand = [
+            installResult.command,
+            ...(installResult.commandArgs ?? []),
+          ].join(" ");
+
+          return {
+            status: installResult.exitCode === 0 ? "applied" : "failed",
+            message: `Executed ${label}: ${effectiveCommand} — ${exitLabel}${attemptSuffix}.${outputPreview ? `\n${outputPreview}` : ""}${notesBlock}`,
+            commandOutput: outputPreview || undefined,
+            commandExitCode: installResult.exitCode,
+          };
+        }
+
+        if (sandboxError) {
+          console.warn("conversation.sandbox.exec.fallback", {
+            projectId,
+            command: displayCommand,
+            error:
+              sandboxError instanceof Error
+                ? sandboxError.message
+                : String(sandboxError),
+          });
+
+          if (!ALLOW_CLIENT_COMMAND_FALLBACK) {
+            const message =
+              sandboxError instanceof Error
+                ? sandboxError.message
+                : String(sandboxError);
+
+            return {
+              status: "failed",
+              message: `Could not execute ${label} in the sandbox: ${message}`,
+              commandOutput: message,
+              commandExitCode: 1,
+            };
+          }
+
+          return {
+            status: "applied",
+            message: `Queued ${label} for client-side execution: ${displayCommand}`,
+          };
+        }
+
+        return {
+          status: "failed",
+          message: `Could not execute ${label}: unknown sandbox error`,
+        };
+      }
 
       let result: { exitCode: number; output: string } | null = null;
       let sandboxError: unknown = null;
 
       try {
-        result = await runSandboxCommand();
+        result = await runSandboxCommandWithRecovery();
       } catch (error) {
         sandboxError = error;
-      }
-
-      if (
-        !result &&
-        sandboxError &&
-        isSandboxSessionMissingError(sandboxError)
-      ) {
-        console.warn("conversation.sandbox.session.recover", {
-          projectId,
-          command: displayCommand,
-        });
-
-        activeSandboxSessions.delete(projectId);
-        sandboxNeedsResync.set(projectId, true);
-
-        try {
-          result = await runSandboxCommand(true);
-        } catch (error) {
-          sandboxError = error;
-        }
       }
 
       if (result) {

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
 import { Check, Sparkles, Loader2, ArrowLeft, Zap, Shield, ArrowRight } from "lucide-react";
 import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
@@ -59,17 +60,34 @@ const TIERS = [
 
 const PricingPage = () => {
   const router = useRouter();
+  const { isLoaded, isSignedIn, getToken } = useAuth();
   const [loadingTier, setLoadingTier] = useState<string | null>(null);
   const activeSub = useQuery(api.subscriptions.getActive);
   const isSubscribed = !!activeSub;
 
   const handleSubscribe = async (tier: string) => {
     try {
+      if (!isLoaded) {
+        return;
+      }
+
+      if (!isSignedIn) {
+        router.push(`/sign-in?redirect_url=${encodeURIComponent("/pricing")}`);
+        return;
+      }
+
       setLoadingTier(tier);
+      const token = await getToken();
+      const headers: HeadersInit = { "Content-Type": "application/json" };
+
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
 
       const res = await fetch("/api/stripe/create-checkout", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
+        credentials: "include",
         body: JSON.stringify({ tier }),
       });
 
@@ -77,8 +95,10 @@ const PricingPage = () => {
       if (!res.ok) throw new Error(data.error || "Failed to create checkout");
 
       window.location.href = data.url;
-    } catch (err: any) {
-      toast.error(err.message || "Something went wrong.");
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Something went wrong.";
+      toast.error(message);
       setLoadingTier(null);
     }
   };
@@ -221,7 +241,7 @@ const PricingPage = () => {
                   ) : (
                     <button
                       onClick={() => handleSubscribe(tier.id)}
-                      disabled={!!loadingTier || isSubscribed}
+                      disabled={!isLoaded || !!loadingTier || isSubscribed}
                       className={cn(
                         "relative w-full h-12 rounded-xl font-bold text-sm transition-all duration-300 flex items-center justify-center gap-2 overflow-hidden",
                         tier.popular

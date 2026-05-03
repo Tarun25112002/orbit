@@ -8,6 +8,8 @@ const isPublicRoute = (pathname: string) =>
   pathname.startsWith("/sign-up") ||
   pathname.startsWith("/pricing") ||
   pathname.startsWith("/api/auth/github") || // GitHub OAuth callback needs access
+  pathname === "/api/stripe/create-checkout" || // Handler validates Clerk auth
+  pathname === "/api/stripe/sync-session" || // Handler validates Stripe session ownership
   pathname.startsWith("/api/webhooks") || // Stripe webhooks - must be public
   pathname.startsWith("/api/stripe/webhooks") || // Stripe webhooks alias
   pathname.startsWith("/api/inngest") ||
