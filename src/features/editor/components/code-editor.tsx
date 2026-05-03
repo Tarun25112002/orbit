@@ -88,18 +88,13 @@ const shouldSuppressMonacoTransientError = (args: {
     return false;
   }
 
-  // The "reading 'left'" error is uniquely a Monaco editor internal race
-  // condition during prepareRender. It's safe to suppress unconditionally
-  // when the message matches, but we still prefer to verify the source.
-  // Check source (filename), stack trace, or accept message-only since
-  // Sentry's sentryWrapped can obscure the original source.
   return (
     MONACO_SOURCE_HINT_PATTERN.test(source) ||
     MONACO_SOURCE_HINT_PATTERN.test(stack) ||
     /prepareRender|_onRenderScheduled/i.test(stack) ||
     /sentryWrapped/i.test(source) ||
     /sentryWrapped/i.test(stack) ||
-    true // This error message is unique to Monaco — always safe to suppress
+    true
   );
 };
 
@@ -115,9 +110,6 @@ const installMonacoTransientErrorGuard = () => {
 
   guardedWindow.__orbit_monaco_left_error_guard_installed__ = true;
 
-  // Next.js dev overlay catches errors aggressively. To truly hide this
-  // specific Monaco race condition, we must catch it directly where it
-  // executes (often inside requestAnimationFrame).
   const originalRaf = window.requestAnimationFrame;
   window.requestAnimationFrame = function (callback) {
     return originalRaf(function (time) {
@@ -171,7 +163,7 @@ const installMonacoTransientErrorGuard = () => {
           throw error;
         }
       };
-      // Type assertion needed because TS lib.dom.d.ts signatures for setTimeout are restrictive
+
       return originalSetTimeout(wrappedHandler as any, timeout, ...args);
     }
     return originalSetTimeout(handler, timeout, ...args);
@@ -502,12 +494,6 @@ export const CodeEditor = ({
       return;
     }
 
-    // Guard: ensure the editor DOM node is still attached to the document.
-    // If the editor was unmounted (e.g. file tab switch) but a scheduled
-    // requestAnimationFrame or Monaco internal render cycle fires after
-    // unmount, getDomNode() may still return the detached element while
-    // getBoundingClientRect() returns all-zero values or throws because
-    // Monaco's internal layout state is already torn down.
     const dom = editor.getDomNode();
     if (!dom || !dom.isConnected) {
       setSelectionBar(null);
@@ -559,7 +545,7 @@ export const CodeEditor = ({
         height: Math.floor(rect.height),
       });
     } catch {
-      // Best effort: Monaco can throw during teardown races.
+
     }
   }, []);
 
@@ -634,8 +620,6 @@ export const CodeEditor = ({
       disposablesRef.current.forEach((disposable) => disposable.dispose());
       disposablesRef.current = [];
 
-      // Clear editor refs on unmount so any lingering Monaco RAF callbacks
-      // that fire after unmount find null and bail out gracefully.
       editorRef.current = null;
       monacoRef.current = null;
 
@@ -1441,12 +1425,10 @@ export const CodeEditor = ({
             );
             const lineSuffix = lineContent.slice(position.column - 1);
 
-            // Skip if line is empty or whitespace-only
             if (!linePrefix.trim()) {
               return { items: [] };
             }
 
-            // Skip automatic triggers if prefix is too short
             if (
               context.triggerKind ===
                 monacoApi.languages.InlineCompletionTriggerKind.Automatic &&
@@ -1456,12 +1438,10 @@ export const CodeEditor = ({
               return { items: [] };
             }
 
-            // Skip if cursor is right after only opening brackets/braces (too early)
             if (/^[\s]*[{(\[]\s*$/.test(linePrefix)) {
               return { items: [] };
             }
 
-            // Skip comment-only lines (user is writing comments, not code)
             if (
               /^\s*\/\/\s*$/.test(linePrefix) ||
               /^\s*#\s*$/.test(linePrefix)
@@ -1469,7 +1449,6 @@ export const CodeEditor = ({
               return { items: [] };
             }
 
-            // Skip if there's significant text after cursor (user is editing mid-line)
             if (lineSuffix.trim().length > 15) {
               return { items: [] };
             }

@@ -24,7 +24,7 @@ export const checkAiAccess = query({
       let limit = 3;
       if (tier === "basic") limit = 10;
       if (tier === "pro") limit = 50;
-      if (tier === "advance") limit = 999999; // effectively unlimited
+      if (tier === "advance") limit = 999999;
 
       const count = projects.length;
       const allowed = count < limit;
@@ -42,7 +42,7 @@ export const create = mutation({
   },
   handler: async (ctx, args) => {
     const identity = await verifyAuth(ctx);
-    
+
     const existingProjects = await ctx.db
       .query("projects")
       .withIndex("by_owner", (q) => q.eq("ownerId", identity.subject))
@@ -56,7 +56,7 @@ export const create = mutation({
 
     const planTier = activeSub ? activeSub.tier : "free";
 
-    let projectLimit = 3; // free tier
+    let projectLimit = 3;
     if (planTier === "basic") projectLimit = 10;
     if (planTier === "pro") projectLimit = 50;
     if (planTier === "advance") projectLimit = Infinity;
@@ -141,8 +141,7 @@ export const getById = query({
   handler: async (ctx, args) => {
     const identity = await verifyAuth(ctx);
     const project = await ctx.db.get(args.id);
-    // Return null instead of throwing so route/layout guards can render
-    // a not-found UI without crashing client query consumers.
+
     if (!project || project.ownerId !== identity.subject) {
       return null;
     }

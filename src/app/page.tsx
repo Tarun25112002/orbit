@@ -78,7 +78,7 @@ export default function Home() {
       }
     } catch (error: any) {
       setIsCreating(false);
-      const isLimitReached = 
+      const isLimitReached =
         error?.message?.includes("PROJECT_LIMIT_REACHED") ||
         error?.data === "PROJECT_LIMIT_REACHED";
 
@@ -257,9 +257,9 @@ export default function Home() {
                 </p>
               </div>
             </div>
-            
+
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-xs text-muted-foreground">
-              <Link 
+              <Link
                 href="/pricing"
                 className="hover:text-foreground transition-colors flex items-center gap-1.5"
               >

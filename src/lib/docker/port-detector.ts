@@ -1,13 +1,3 @@
-/**
- * Port Detector — watches container stdout for server-ready patterns.
- *
- * Scans output lines for common framework startup messages like
- * "listening on port 3000", "Local: http://localhost:5173", etc.
- * When detected, resolves the E2B/Docker mapped host port so the
- * frontend can show a preview URL.
- */
-
-/** Detected server-ready event */
 export interface ServerDetectedEvent {
   port: number;
   url: string;
@@ -15,7 +5,6 @@ export interface ServerDetectedEvent {
 
 type ServerReadyHandler = (event: ServerDetectedEvent) => void;
 
-// Common patterns that frameworks print when a server starts
 const PORT_PATTERNS: RegExp[] = [
   /(?:listening|started|running)\s+(?:on|at)\s+(?:port\s+)?(\d{2,5})/i,
   /(?:Local|Network):\s+https?:\/\/(?:localhost|0\.0\.0\.0|127\.0\.0\.1):(\d{2,5})/i,
@@ -24,12 +13,6 @@ const PORT_PATTERNS: RegExp[] = [
   /:\s*(\d{4,5})\s*$/,
 ];
 
-/**
- * Try to extract a port number from a line of stdout/stderr.
- *
- * @param line - A single line of terminal output
- * @returns The detected port number, or null
- */
 export function detectPortFromLine(line: string): number | null {
   for (const pattern of PORT_PATTERNS) {
     const match = pattern.exec(line);
@@ -43,16 +26,6 @@ export function detectPortFromLine(line: string): number | null {
   return null;
 }
 
-/**
- * Create a port detection watcher that scans output chunks.
- *
- * Call `watcher.scan(chunk)` with each stdout/stderr chunk.
- * When a port is detected, the handler fires once (debounced).
- *
- * @param handler - Callback when a server port is detected
- * @param getHostUrl - Function that resolves a container port to a host URL
- * @returns An object with a `scan(chunk)` method and `destroy()` cleanup
- */
 export function createPortWatcher(
   handler: ServerReadyHandler,
   getHostUrl: (port: number) => Promise<string | null>,

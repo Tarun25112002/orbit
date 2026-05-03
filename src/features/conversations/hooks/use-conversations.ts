@@ -66,7 +66,7 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
         headers.set("Authorization", `Bearer ${token}`);
       }
     } catch {
-      // Fall back to cookie-based auth if token retrieval fails.
+
     }
 
     return headers;
@@ -112,7 +112,7 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
 
           setStatus("idle");
         } catch (err) {
-          // Mark assistant message as failed
+
           if (assistantMessageId) {
             try {
               await fetch("/api/messages/complete", {
@@ -129,7 +129,7 @@ export const useChatActions = (conversationId: Id<"conversations"> | null) => {
                 }),
               });
             } catch {
-              // Best-effort cleanup
+
             }
           }
           throw err;

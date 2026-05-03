@@ -4,10 +4,6 @@ import { useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 
-/**
- * Detects `?github_error=` URL params and shows appropriate toast messages.
- * Cleans the URL param after displaying the message.
- */
 export function GitHubErrorHandler() {
   const searchParams = useSearchParams();
 
@@ -18,7 +14,6 @@ export function GitHubErrorHandler() {
 
     if (!errorType && !connected && !alreadyConnected) return;
 
-    // Show appropriate message
     if (errorType) {
       if (errorType === "access_denied") {
         toast.info("GitHub connection cancelled.");
@@ -37,7 +32,6 @@ export function GitHubErrorHandler() {
       toast.info("GitHub is already connected.");
     }
 
-    // Clean the URL params without reloading
     const url = new URL(window.location.href);
     url.searchParams.delete("github_error");
     url.searchParams.delete("github_connected");
@@ -45,5 +39,5 @@ export function GitHubErrorHandler() {
     window.history.replaceState({}, "", url.toString());
   }, [searchParams]);
 
-  return null; // This component renders nothing — it only handles side effects
+  return null;
 }

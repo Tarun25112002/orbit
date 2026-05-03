@@ -648,7 +648,6 @@ const normalizeGenerationError = (error: unknown) => {
   const message = getErrorMessage(error);
   const rateLimited = isRateLimitedError(message);
 
-  // Use classifyError for non-Gemini errors to produce friendly messages
   const classified = classifyError(error);
   const classifiedStatusCode =
     classified.category === "rate_limit" ||
@@ -722,7 +721,6 @@ export async function generateSuggestion(
       execution.textAfterCursor,
     );
 
-    // If transform returned empty, try a continuation
     if (!isAutocomplete && !suggestion.trim()) {
       const continuationResponse = await generateGeminiCompletion({
         model: GEMINI_MODEL,

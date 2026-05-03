@@ -1,16 +1,5 @@
 "use client";
 
-/**
- * Docker-backed Runtime Adapter
- *
- * Drop-in replacement for `projectWebcontainerRuntime`. Implements the
- * exact same public interface (ensureBooted, syncProjectFiles, runCommand,
- * startBackgroundCommand, stopBackgroundCommand, waitForBackgroundCommandExit,
- * onServerReady, waitForServerReady, applyOperation, readFileIfExists,
- * teardown, etc.) but proxies everything through API routes to Docker
- * containers running on the Oracle Cloud VM.
- */
-
 import type { AiPipelineOperation } from "@/lib/ai-execution";
 
 type RuntimeLogWriter = (line: string) => void;
@@ -100,7 +89,6 @@ const splitFileSyncBatches = (
     currentBatch.push(file);
     currentBatchChars += fileChars;
 
-    // Keep very large files isolated so fallback logic can target them directly.
     if (fileChars >= FILE_SYNC_MAX_BATCH_CHARS) {
       batches.push(currentBatch);
       currentBatch = [];
@@ -131,7 +119,6 @@ const normalizeProjectKey = (value: string | null | undefined) => {
   return normalized || null;
 };
 
-/** Port patterns to detect server-ready messages in output */
 const PORT_PATTERNS: RegExp[] = [
   /(?:listening|started|running)\s+(?:on|at)\s+(?:port\s+)?(\d{2,5})/i,
   /(?:Local|Network):\s+https?:\/\/(?:localhost|0\.0\.0\.0|127\.0\.0\.1):(\d{2,5})/i,
@@ -176,8 +163,6 @@ class ProjectDockerRuntime {
 
   private syncedProjectFileContent = new Map<string, string>();
   private syncedProjectFilePaths = new Set<string>();
-
-  // ─── Boot ───────────────────────────────────────────────────────────
 
   setProjectKey(projectKey: string | null | undefined) {
     const normalizedProjectKey = normalizeProjectKey(projectKey);
@@ -235,8 +220,6 @@ class ProjectDockerRuntime {
 
     return this.bootPromise;
   }
-
-  // ─── Server Ready ───────────────────────────────────────────────────
 
   onServerReady(
     handler: ServerReadyHandler,
@@ -422,7 +405,7 @@ class ProjectDockerRuntime {
         try {
           running.abortController.abort();
         } catch {
-          // Best effort
+
         }
       }
 
@@ -528,8 +511,6 @@ class ProjectDockerRuntime {
     }
   }
 
-  // ─── File Sync ──────────────────────────────────────────────────────
-
   async syncProjectFiles(args: {
     filesByPath: Map<string, string>;
     log?: RuntimeLogWriter;
@@ -545,7 +526,6 @@ class ProjectDockerRuntime {
 
       nextPaths.add(normalizedPath);
 
-      // Skip if content hasn't changed
       if (this.syncedProjectFileContent.get(normalizedPath) === content) {
         continue;
       }
@@ -623,7 +603,6 @@ class ProjectDockerRuntime {
       },
     });
 
-    // Update caches
     for (const file of files) {
       this.syncedProjectFileContent.set(file.path, file.content);
     }
@@ -708,8 +687,6 @@ class ProjectDockerRuntime {
     });
   }
 
-  // ─── Command Execution ──────────────────────────────────────────────
-
   async runCommand(args: {
     command: string;
     commandArgs?: string[];
@@ -768,8 +745,6 @@ class ProjectDockerRuntime {
     });
   }
 
-  // ─── Background Commands ───────────────────────────────────────────
-
   async startBackgroundCommand(args: {
     key: string;
     command: string;
@@ -794,7 +769,6 @@ class ProjectDockerRuntime {
     });
     this.backgroundLastExits.delete(args.key);
 
-    // Clear sync caches since background commands can modify files
     this.syncedProjectFileContent.clear();
     this.syncedProjectFilePaths.clear();
 
@@ -979,8 +953,6 @@ class ProjectDockerRuntime {
     return result;
   }
 
-  // ─── Filesystem Operations (AI pipeline) ────────────────────────────
-
   async applyOperation(args: {
     operation: AiPipelineOperation;
     readFileContentByPath: (path: string) => string | undefined;
@@ -988,7 +960,7 @@ class ProjectDockerRuntime {
     const { operation, readFileContentByPath } = args;
 
     if (operation.type === "create_folder") {
-      // Folders are auto-created by syncFileToContainer
+
       return;
     }
 
@@ -996,7 +968,7 @@ class ProjectDockerRuntime {
       operation.type === "run_command" ||
       operation.type === "start_background_command"
     ) {
-      // These are handled separately in the trace loop
+
       return;
     }
 
@@ -1066,7 +1038,6 @@ class ProjectDockerRuntime {
       return;
     }
 
-    // create_file, update_file
     const content = readFileContentByPath(operation.path);
     if (content === undefined) {
       throw new Error(`Missing content snapshot for ${operation.path}`);
@@ -1099,24 +1070,20 @@ class ProjectDockerRuntime {
     this.syncedProjectFileContent.set(normalizedPath, content);
   }
 
-  // ─── Teardown ───────────────────────────────────────────────────────
-
   teardown() {
     this.lastServerReady = null;
 
-    // Kill all background commands
     for (const running of this.backgroundCommands.values()) {
       try {
         running.abortController.abort();
       } catch {
-        // Best effort
+
       }
     }
     this.backgroundCommands.clear();
     this.backgroundExitPromises.clear();
     this.backgroundLastExits.clear();
 
-    // Kill the sandbox container
     if (this.sessionId) {
       const sessionId = this.sessionId;
       void fetch("/api/sandbox/kill", {
@@ -1124,7 +1091,7 @@ class ProjectDockerRuntime {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId }),
       }).catch(() => {
-        // Fire and forget
+
       });
     }
 
@@ -1135,8 +1102,6 @@ class ProjectDockerRuntime {
     this.syncedProjectFileContent.clear();
     this.syncedProjectFilePaths.clear();
   }
-
-  // ─── Internal: SSE Stream Consumer ──────────────────────────────────
 
   private async consumeSSEStream(
     response: Response,
@@ -1178,7 +1143,6 @@ class ProjectDockerRuntime {
                 if (!sanitized || isSpinnerFrame(sanitized)) continue;
                 log?.(sanitized);
 
-                // Port detection for preview
                 if (detectedPort === null) {
                   const port = detectPortFromLine(outputLine);
                   if (port !== null) {
@@ -1195,7 +1159,7 @@ class ProjectDockerRuntime {
               exitCode = parseInt(payload.data, 10) || 0;
             }
           } catch {
-            // Malformed SSE line, skip
+
           }
         }
       }
@@ -1206,8 +1170,6 @@ class ProjectDockerRuntime {
     return exitCode;
   }
 }
-
-// ─── Singleton resolution (same pattern as WebContainer version) ────────
 
 const isRuntimeCompatible = (value: unknown): value is ProjectDockerRuntime => {
   if (typeof value !== "object" || value === null) {
@@ -1259,9 +1221,4 @@ const resolveProjectDockerRuntime = () => {
   return runtime;
 };
 
-/**
- * Global singleton — drop-in replacement for `projectWebcontainerRuntime`.
- * Import this as `projectWebcontainerRuntime` in `project-id-view.tsx`
- * to swap the backend with zero UI changes.
- */
 export const projectWebcontainerRuntime = resolveProjectDockerRuntime();

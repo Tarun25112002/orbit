@@ -22,22 +22,22 @@ export const UpgradeLimitModal = ({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md bg-card/95 border-white/10 p-0 sm:rounded-[28px] overflow-hidden shadow-[0_0_100px_-20px_rgba(255,255,255,0.1)] backdrop-blur-3xl">
-        
-        {/* Decorative Header Area */}
+
+        {}
         <div className="relative h-40 w-full overflow-hidden bg-gradient-to-b from-primary/10 via-primary/5 to-transparent">
-          {/* Subtle Grid Pattern */}
+          {}
           <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:14px_14px]"></div>
-          
-          {/* Ambient Glow */}
+
+          {}
           <div className="absolute left-1/2 top-1/2 -ml-[100px] -mt-[100px] h-[200px] w-[200px] rounded-full bg-primary/40 opacity-40 blur-[60px] pointer-events-none" />
-          
-          {/* Floating Icon Container */}
+
+          {}
           <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 mt-2">
             <div className="relative flex items-center justify-center size-20 rounded-2xl border border-white/20 bg-background/60 shadow-2xl backdrop-blur-xl">
               <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-primary/20 via-transparent to-transparent opacity-50" />
               <Zap className="size-8 text-primary drop-shadow-[0_0_10px_rgba(255,255,255,0.4)]" />
-              
-              {/* Decorative sparkles around icon */}
+
+              {}
               <Sparkles className="absolute -top-3 -right-3 size-5 text-primary/60" />
               <Sparkles className="absolute -bottom-2 -left-2 size-3 text-primary/40" />
             </div>

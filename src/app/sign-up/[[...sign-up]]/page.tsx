@@ -9,17 +9,17 @@ export default function SignUpPage() {
       <div className="absolute inset-0 z-0">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
       </div>
-      
+
       <div className="relative z-10 w-full max-w-md p-6">
-        <Link 
-          href="/" 
+        <Link
+          href="/"
           className="group flex items-center text-sm font-medium text-muted-foreground hover:text-foreground  mb-8"
         >
           <ArrowLeft className="mr-2 h-4 w-4  group-hover:-translate-x-1" />
           Back to home
         </Link>
-        
-        <SignUp 
+
+        <SignUp
           appearance={{
             baseTheme: dark,
             elements: {

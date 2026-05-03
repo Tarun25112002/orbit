@@ -1,7 +1,3 @@
-/**
- * GET /api/sandbox/port — Get the mapped host port for a container port.
- */
-
 import { NextRequest, NextResponse } from "next/server";
 import { getMappedPort } from "@/lib/docker/session-manager";
 

@@ -34,10 +34,6 @@ type GitHubRepo = {
   default_branch: string;
 };
 
-/**
- * Shared hook for GitHub connection state.
- * Re-checks whenever the Clerk user changes or after OAuth redirect.
- */
 function useGitHubConnection() {
   const { user: clerkUser, isLoaded: isClerkLoaded } = useUser();
   const searchParams = useSearchParams();
@@ -62,13 +58,11 @@ function useGitHubConnection() {
     }
   }, []);
 
-  // Re-check when Clerk user changes (login, logout, switch)
   useEffect(() => {
     if (!isClerkLoaded) return;
 
     const currentId = clerkUser?.id ?? null;
 
-    // If user switched or signed out, clear immediately before fetching
     if (prevUserIdRef.current !== undefined && prevUserIdRef.current !== currentId) {
       setGhUser(null);
     }
@@ -82,7 +76,6 @@ function useGitHubConnection() {
     }
   }, [isClerkLoaded, clerkUser?.id, checkConnection]);
 
-  // Re-check after GitHub OAuth redirect (github_connected=1 in URL)
   useEffect(() => {
     const connected = searchParams.get("github_connected");
     if (connected === "1") {
@@ -105,7 +98,7 @@ export function GitHubConnectButton() {
     try {
       await fetch("/api/auth/github/disconnect", { method: "POST" });
       toast.success("GitHub account disconnected");
-      // Re-check connection state immediately
+
       await checkConnection();
     } catch {
       toast.error("Failed to disconnect GitHub");
@@ -153,16 +146,13 @@ export function GitHubDialog({
   const [view, setView] = useState<"menu" | "import" | "export">("menu");
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const [loadingRepos, setLoadingRepos] = useState(false);
-  
-  // Import state
+
   const [selectedRepo, setSelectedRepo] = useState("");
   const [importing, setImporting] = useState(false);
 
-  // Export state
   const [exportName, setExportName] = useState(project?.name || "");
   const [exporting, setExporting] = useState(false);
 
-  // Push state
   const [pushing, setPushing] = useState(false);
 
   const fetchRepos = async () => {
@@ -202,10 +192,10 @@ export function GitHubDialog({
     if (!repoObj) return;
 
     const [owner, name] = repoObj.full_name.split("/");
-    
+
     setImporting(true);
     const loadingToast = toast.loading("Importing repository...");
-    
+
     try {
       const res = await fetch("/api/github/import", {
         method: "POST",
@@ -216,9 +206,9 @@ export function GitHubDialog({
           repo: name,
         }),
       });
-      
+
       const data = await res.json();
-      
+
       if (data.success) {
         toast.success(`Imported ${data.filesImported} files!`, { id: loadingToast });
         onOpenChange(false);
@@ -234,10 +224,10 @@ export function GitHubDialog({
 
   const handleExport = async () => {
     if (!exportName.trim()) return;
-    
+
     setExporting(true);
     const loadingToast = toast.loading("Creating repository and pushing files...");
-    
+
     try {
       const res = await fetch("/api/github/export", {
         method: "POST",
@@ -248,9 +238,9 @@ export function GitHubDialog({
           isPrivate: false,
         }),
       });
-      
+
       const data = await res.json();
-      
+
       if (data.success) {
         toast.success(`Exported! Repository created at ${data.repoUrl}`, { id: loadingToast });
         onOpenChange(false);
@@ -267,16 +257,16 @@ export function GitHubDialog({
   const handlePush = async () => {
     setPushing(true);
     const loadingToast = toast.loading("Pushing updates to GitHub...");
-    
+
     try {
       const res = await fetch("/api/github/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ projectId }),
       });
-      
+
       const data = await res.json();
-      
+
       if (data.success) {
         toast.success(`Pushed ${data.filesPushed} files successfully!`, { id: loadingToast });
         onOpenChange(false);
@@ -319,18 +309,18 @@ export function GitHubDialog({
               {(project?.importRepoUrl || project?.exportRepoUrl) ? (
                 <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 p-4 text-sm">
                   <p className="mb-2 font-medium">Currently linked to:</p>
-                  <a 
-                    href={project.exportRepoUrl || project.importRepoUrl} 
-                    target="_blank" 
+                  <a
+                    href={project.exportRepoUrl || project.importRepoUrl}
+                    target="_blank"
                     rel="noreferrer"
                     className="flex items-center gap-1.5 text-primary hover:underline font-mono text-xs"
                   >
                     {project.exportRepoUrl || project.importRepoUrl}
                     <ExternalLinkIcon className="size-3" />
                   </a>
-                  
-                  <Button 
-                    className="mt-4 w-full gap-2" 
+
+                  <Button
+                    className="mt-4 w-full gap-2"
                     onClick={handlePush}
                     disabled={pushing}
                   >
@@ -379,7 +369,7 @@ export function GitHubDialog({
                     <Spinner className="size-4" />
                   </div>
                 ) : (
-                  <select 
+                  <select
                     title="Select Repository"
                     className="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                     value={selectedRepo}

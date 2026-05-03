@@ -1,7 +1,3 @@
-/**
- * POST /api/sandbox/create — Spin up a new Docker sandbox container.
- */
-
 import { NextRequest, NextResponse } from "next/server";
 import {
   createSession,

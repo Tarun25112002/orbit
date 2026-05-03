@@ -133,9 +133,9 @@ export const Navbar = ({ projectId }: NavbarProps) => {
       </div>
 
       <div className="flex items-center gap-3">
-        <Button 
-          variant="outline" 
-          size="sm" 
+        <Button
+          variant="outline"
+          size="sm"
           onClick={() => setGitHubOpen(true)}
           className="gap-2 h-8 text-xs font-medium"
         >
@@ -145,10 +145,10 @@ export const Navbar = ({ projectId }: NavbarProps) => {
         <UserButton />
       </div>
 
-      <GitHubDialog 
-        projectId={projectId} 
-        open={gitHubOpen} 
-        onOpenChange={setGitHubOpen} 
+      <GitHubDialog
+        projectId={projectId}
+        open={gitHubOpen}
+        onOpenChange={setGitHubOpen}
       />
     </header>
   );

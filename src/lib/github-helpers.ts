@@ -2,8 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { getClerkUserId, getClerkUserIdAndToken } from "@/lib/clerk-auth";
 import { decryptToken } from "@/lib/github-crypto";
 
-// ─── Cookie helpers ──────────────────────────────────────────────────────────
-
 const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
@@ -11,16 +9,11 @@ const COOKIE_OPTIONS = {
   path: "/",
 };
 
-/**
- * Clears all GitHub-related cookies from the response.
- */
 export const clearGitHubCookies = (response: NextResponse) => {
   response.cookies.set("github_token", "", { ...COOKIE_OPTIONS, maxAge: 0 });
   response.cookies.set("github_token_owner", "", { ...COOKIE_OPTIONS, maxAge: 0 });
   response.cookies.set("github_oauth_state", "", { ...COOKIE_OPTIONS, maxAge: 0 });
 };
-
-// ─── Auth result types ───────────────────────────────────────────────────────
 
 type AuthSuccess = {
   ok: true;
@@ -35,19 +28,6 @@ type AuthFailure = {
 
 export type GitHubAuthResult = AuthSuccess | AuthFailure;
 
-// ─── Main auth helper ────────────────────────────────────────────────────────
-
-/**
- * Authenticates the current request for GitHub operations.
- *
- * Checks:
- * 1. Clerk session is active (userId present)
- * 2. `github_token` cookie exists
- * 3. `github_token_owner` matches the current userId (prevents cross-user access)
- * 4. Encrypted token decrypts successfully
- *
- * On any failure, returns a structured error response and auto-clears stale cookies.
- */
 export async function getAuthenticatedGitHubToken(
   request: NextRequest,
 ): Promise<GitHubAuthResult> {
@@ -63,7 +43,6 @@ export async function getAuthenticatedGitHubToken(
   const encryptedToken = request.cookies.get("github_token")?.value;
   const tokenOwnerUserId = request.cookies.get("github_token_owner")?.value;
 
-  // No token at all
   if (!encryptedToken) {
     return {
       ok: false,
@@ -74,7 +53,6 @@ export async function getAuthenticatedGitHubToken(
     };
   }
 
-  // Token belongs to a different user — security boundary
   if (!tokenOwnerUserId || tokenOwnerUserId !== userId) {
     const response = NextResponse.json(
       { error: "GitHub session expired. Please reconnect your GitHub account." },
@@ -84,7 +62,6 @@ export async function getAuthenticatedGitHubToken(
     return { ok: false, response };
   }
 
-  // Try to decrypt
   try {
     const token = decryptToken(encryptedToken);
     return { ok: true, token, userId };
@@ -98,12 +75,6 @@ export async function getAuthenticatedGitHubToken(
   }
 }
 
-// ─── Convex auth helper ──────────────────────────────────────────────────────
-
-/**
- * Like `getAuthenticatedGitHubToken` but also obtains a Convex auth token.
- * Useful for routes that need to call Convex mutations.
- */
 export async function getAuthenticatedGitHubTokenWithConvex(
   request: NextRequest,
 ): Promise<

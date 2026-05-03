@@ -143,8 +143,6 @@ const ExecutionTimeline = ({ trace }: { trace: AiExecutionTrace }) => {
   );
 };
 
-// ─── Conversation List Item ───────────────────────────────────────────────────
-
 const ConversationListItem = ({
   title,
   isActive,
@@ -237,8 +235,6 @@ const ConversationListItem = ({
   );
 };
 
-// ─── Chat Message ─────────────────────────────────────────────────────────────
-
 const ChatMessage = ({
   role,
   content,
@@ -302,8 +298,6 @@ const ChatMessage = ({
     </Message>
   );
 };
-
-// ─── Chat View ────────────────────────────────────────────────────────────────
 
 const ChatView = ({
   conversationId,
@@ -370,7 +364,7 @@ const ChatView = ({
         headers.set("Authorization", `Bearer ${token}`);
       }
     } catch {
-      // Fall back to cookie-based auth if token retrieval fails.
+
     }
 
     return headers;
@@ -514,7 +508,6 @@ const ChatView = ({
         const classified = classifyError(err);
         setError(classified);
 
-        // Mark assistant message as failed so it doesn't stay stuck in "processing"
         if (assistantMessageId) {
           try {
             await fetch("/api/messages/complete", {
@@ -528,7 +521,7 @@ const ChatView = ({
               }),
             });
           } catch {
-            // Best-effort cleanup
+
           }
         }
       } finally {
@@ -593,7 +586,7 @@ const ChatView = ({
 
   return (
     <div className="flex h-full flex-col bg-background relative z-10 before:absolute before:inset-0 before:bg-gradient-to-t before:from-primary/5 before:to-transparent before:-z-10 before:opacity-50">
-      {/* Header */}
+      {}
       <div className="flex flex-none h-11 items-center gap-2 border-b border-border/60 bg-background/80 backdrop-blur-md px-4 shadow-sm z-20">
         <button
           type="button"
@@ -624,7 +617,7 @@ const ChatView = ({
         </div>
       </div>
 
-      {/* Messages */}
+      {}
       <Conversation className="flex-1 bg-transparent">
         <ConversationContent className="gap-6 px-4 py-6">
           {isEmpty && !isSending ? (
@@ -677,7 +670,7 @@ const ChatView = ({
         <ConversationScrollButton className="bg-card border-border hover:bg-muted shadow-md" />
       </Conversation>
 
-      {/* Error */}
+      {}
       {error && (
         <div className="px-4 py-3 text-[12px] bg-red-500/10 border-t border-red-500/20 flex flex-col gap-2">
           <div className="flex items-start gap-2.5">
@@ -706,7 +699,7 @@ const ChatView = ({
         </div>
       )}
 
-      {/* Input */}
+      {}
       {isLimitReached ? (
         <div className="border-t border-amber-500/30 bg-amber-500/5 backdrop-blur-xl p-4 z-20">
           <div className="flex items-start gap-3">
@@ -805,8 +798,6 @@ const ChatView = ({
   );
 };
 
-// ─── Main Sidebar ─────────────────────────────────────────────────────────────
-
 export const ConversationSidebar = ({
   projectId,
 }: {
@@ -828,7 +819,7 @@ export const ConversationSidebar = ({
       });
       setActiveConversationId(id);
     } catch {
-      // Error handled by Convex
+
     }
   }, [conversationCount, createConversation, projectId]);
 
@@ -840,7 +831,7 @@ export const ConversationSidebar = ({
         }
         await deleteConversation({ id });
       } catch {
-        // Error handled by Convex
+
       }
     },
     [activeConversationId, deleteConversation],
@@ -851,13 +842,12 @@ export const ConversationSidebar = ({
       try {
         await updateTitle({ id, title: newTitle });
       } catch {
-        // Error handled by Convex
+
       }
     },
     [updateTitle],
   );
 
-  // If there's an active conversation, show the chat view
   if (activeConversationId) {
     return (
       <ChatView
@@ -868,10 +858,9 @@ export const ConversationSidebar = ({
     );
   }
 
-  // Otherwise show the conversation list
   return (
     <div className="flex h-full flex-col bg-background relative z-10 border-r border-border/50 shadow-[4px_0_24px_-12px_rgba(0,0,0,0.1)]">
-      {/* Header */}
+      {}
       <div className="flex flex-none h-12 items-center justify-between border-b border-border/60 bg-card/50 backdrop-blur-md px-4 relative z-20">
         <div className="flex items-center gap-2">
           <div className="p-1 rounded bg-primary/10">
@@ -891,7 +880,7 @@ export const ConversationSidebar = ({
         </button>
       </div>
 
-      {/* Conversation List */}
+      {}
       <div className="flex-1 overflow-y-auto p-2 scrollbar-none">
         {conversations === undefined ? (
           <div className="flex items-center justify-center py-10">
@@ -937,7 +926,7 @@ export const ConversationSidebar = ({
         )}
       </div>
 
-      {/* Footer */}
+      {}
       {conversations && conversations.length > 0 && (
         <div className="border-t border-border/60 bg-card/40 backdrop-blur-md p-3">
           <button

@@ -67,7 +67,7 @@ type GitHubCreateTreeResponse = {
 
 export type { GitHubUser, GitHubRepo, GitHubBranch, GitHubTreeItem };
 
-const MAX_FILE_SIZE = 1_000_000; // 1MB — GitHub REST API limit for content
+const MAX_FILE_SIZE = 1_000_000;
 
 class GitHubApiError extends Error {
   status: number;
@@ -112,13 +112,9 @@ export class GitHubClient {
     return response.json() as Promise<T>;
   }
 
-  // ─── User ──────────────────────────────────────────────────────────
-
   async getUser(): Promise<GitHubUser> {
     return this.request<GitHubUser>("/user");
   }
-
-  // ─── Repos ─────────────────────────────────────────────────────────
 
   async listRepos(
     page = 1,
@@ -133,8 +129,6 @@ export class GitHubClient {
     return this.request<GitHubRepo>(`/repos/${owner}/${repo}`);
   }
 
-  // ─── Branches ──────────────────────────────────────────────────────
-
   async listBranches(
     owner: string,
     repo: string,
@@ -143,8 +137,6 @@ export class GitHubClient {
       `/repos/${owner}/${repo}/branches?per_page=100`,
     );
   }
-
-  // ─── Tree (Import) ────────────────────────────────────────────────
 
   async getTree(
     owner: string,
@@ -166,10 +158,6 @@ export class GitHubClient {
     );
   }
 
-  /**
-   * Fetches all files from a repo tree.
-   * Skips files > 1MB and binary files.
-   */
   async fetchRepoFiles(
     owner: string,
     repo: string,
@@ -193,7 +181,6 @@ export class GitHubClient {
         (item.size === undefined || item.size <= MAX_FILE_SIZE),
     );
 
-    // Fetch blobs in parallel with concurrency limit
     const CONCURRENCY = 10;
     for (let i = 0; i < blobs.length; i += CONCURRENCY) {
       const batch = blobs.slice(i, i + CONCURRENCY);
@@ -205,7 +192,7 @@ export class GitHubClient {
               const decoded = Buffer.from(blobData.content, "base64").toString(
                 "utf8",
               );
-              // Skip binary files (files with null bytes)
+
               if (decoded.includes("\0")) return null;
               return { path: blob.path!, content: decoded };
             }
@@ -226,8 +213,6 @@ export class GitHubClient {
     return files;
   }
 
-  // ─── Create Repo (Export) ─────────────────────────────────────────
-
   async createRepo(args: {
     name: string;
     description?: string;
@@ -245,8 +230,6 @@ export class GitHubClient {
     });
   }
 
-  // ─── Commit files (Export/Push) ───────────────────────────────────
-
   async commitFiles(args: {
     owner: string;
     repo: string;
@@ -258,18 +241,15 @@ export class GitHubClient {
     const repoInfo = await this.getRepo(owner, repo);
     const branch = args.branch || repoInfo.default_branch;
 
-    // 1. Get the latest commit on the branch
     const ref = await this.request<GitHubRefResponse>(
       `/repos/${owner}/${repo}/git/refs/heads/${branch}`,
     );
     const latestCommitSha = ref.object.sha;
 
-    // 2. Get the tree of the latest commit
     const latestCommit = await this.request<GitHubCommitResponse>(
       `/repos/${owner}/${repo}/git/commits/${latestCommitSha}`,
     );
 
-    // 3. Create blobs for all files
     const treeItems: { path: string; mode: string; type: string; sha: string }[] = [];
 
     const BLOB_CONCURRENCY = 10;
@@ -302,7 +282,6 @@ export class GitHubClient {
       }
     }
 
-    // 4. Create a new tree
     const newTree = await this.request<GitHubCreateTreeResponse>(
       `/repos/${owner}/${repo}/git/trees`,
       {
@@ -315,7 +294,6 @@ export class GitHubClient {
       },
     );
 
-    // 5. Create a new commit
     const newCommit = await this.request<GitHubCommitResponse>(
       `/repos/${owner}/${repo}/git/commits`,
       {
@@ -329,7 +307,6 @@ export class GitHubClient {
       },
     );
 
-    // 6. Update the branch reference
     await this.request(
       `/repos/${owner}/${repo}/git/refs/heads/${branch}`,
       {

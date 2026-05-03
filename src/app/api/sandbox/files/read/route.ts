@@ -1,7 +1,3 @@
-/**
- * GET /api/sandbox/files/read — Read a file from the container.
- */
-
 import { NextRequest, NextResponse } from "next/server";
 import { readFileFromContainer } from "@/lib/docker/file-sync";
 

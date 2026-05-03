@@ -170,7 +170,7 @@ export const ProjectsView = () => {
 
   return (
     <div className="relative flex min-h-screen flex-col overflow-hidden bg-background">
-      {/* Static Background */}
+      {}
       <div className="absolute inset-0 z-0 overflow-hidden">
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]"></div>
         <div className="absolute inset-x-0 bottom-0 top-[20%] z-0 bg-gradient-to-t from-background via-background/80 to-transparent" />
@@ -256,7 +256,7 @@ export const ProjectsView = () => {
                 <ProjectsList onViewAll={() => setCommandOpen(true)} />
               </div>
 
-              {/* AI Usage Bar */}
+              {}
               <div className="border-t border-border/50" />
               <div className="px-4 py-3">
                 {isUnlimited ? (

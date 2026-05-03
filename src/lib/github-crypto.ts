@@ -22,10 +22,6 @@ const getEncryptionKey = (): Buffer => {
   return key;
 };
 
-/**
- * Encrypts a GitHub access token using AES-256-GCM.
- * Returns a base64url string: `iv:ciphertext:authTag`
- */
 export const encryptToken = (token: string): string => {
   const key = getEncryptionKey();
   const iv = randomBytes(IV_LENGTH);
@@ -43,9 +39,6 @@ export const encryptToken = (token: string): string => {
   return payload.toString("base64url");
 };
 
-/**
- * Decrypts a token previously encrypted with `encryptToken`.
- */
 export const decryptToken = (encrypted: string): string => {
   const key = getEncryptionKey();
   const payload = Buffer.from(encrypted, "base64url");

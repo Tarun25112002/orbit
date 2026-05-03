@@ -9,7 +9,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Only allow disconnecting your own GitHub session
   const tokenOwnerUserId = request.cookies.get("github_token_owner")?.value;
   if (tokenOwnerUserId && tokenOwnerUserId !== userId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

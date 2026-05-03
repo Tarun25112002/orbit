@@ -1,22 +1,3 @@
-/**
- * WebSocket Terminal Bridge — Custom WS server on port 3001.
- *
- * Run this alongside Next.js via PM2 or a combined start script.
- * Each WebSocket connection attaches to a running container's shell,
- * enabling real-time xterm.js interaction.
- *
- * Protocol:
- *   Client → Server:
- *     { type: 'attach', sessionId: string }
- *     { type: 'input', data: string }
- *     { type: 'resize', cols: number, rows: number }
- *
- *   Server → Client:
- *     { type: 'output', data: string }
- *     { type: 'exit', code: number }
- *     { type: 'error', message: string }
- */
-
 import { WebSocketServer, WebSocket } from "ws";
 import Docker from "dockerode";
 import {
@@ -51,9 +32,6 @@ interface SessionAttachment {
   execStream: NodeJS.ReadWriteStream;
 }
 
-/**
- * Parse and validate an incoming WebSocket message.
- */
 function parseMessage(raw: string): ClientMessage | null {
   try {
     const msg = JSON.parse(raw) as Record<string, unknown>;
@@ -80,9 +58,6 @@ function parseMessage(raw: string): ClientMessage | null {
   }
 }
 
-/**
- * Send a typed message to the client.
- */
 function send(
   ws: WebSocket,
   payload: { type: string; data?: string; code?: number; message?: string },
@@ -92,9 +67,6 @@ function send(
   }
 }
 
-/**
- * Attach to a container's interactive shell via exec.
- */
 async function attachToContainer(
   sessionId: string,
   cols: number,
@@ -128,11 +100,8 @@ async function attachToContainer(
   return { sessionId, exec, execStream };
 }
 
-/**
- * Start the WebSocket terminal bridge server.
- */
 export function startTerminalBridge(): void {
-  // Clean up orphaned containers from previous run
+
   void cleanupOrphanedContainers();
 
   const wss = new WebSocketServer({ port: WS_PORT });
@@ -143,7 +112,6 @@ export function startTerminalBridge(): void {
     let attachment: SessionAttachment | null = null;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
-    // Heartbeat to keep connection alive
     heartbeatTimer = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.ping();
@@ -159,12 +127,12 @@ export function startTerminalBridge(): void {
       switch (message.type) {
         case "attach": {
           if (attachment) {
-            // Already attached — detach old one
+
             attachment.execStream.removeAllListeners();
             try {
               attachment.execStream.end();
             } catch {
-              // ignore
+
             }
           }
 
@@ -177,7 +145,6 @@ export function startTerminalBridge(): void {
 
             touchSession(message.sessionId);
 
-            // Pipe container stdout → WebSocket
             attachment.execStream.on("data", (chunk: Buffer) => {
               send(ws, { type: "output", data: chunk.toString("utf-8") });
               touchSession(message.sessionId);
@@ -226,7 +193,7 @@ export function startTerminalBridge(): void {
                 w: message.cols,
               });
             } catch {
-              // Resize may fail if container is shutting down
+
             }
           }
           break;
@@ -243,7 +210,7 @@ export function startTerminalBridge(): void {
         try {
           attachment.execStream.end();
         } catch {
-          // ignore
+
         }
         attachment = null;
       }
@@ -254,7 +221,7 @@ export function startTerminalBridge(): void {
         try {
           attachment.execStream.end();
         } catch {
-          // ignore
+
         }
         attachment = null;
       }
@@ -262,7 +229,6 @@ export function startTerminalBridge(): void {
   });
 }
 
-// Auto-start when this file is run directly (e.g. via `node server/terminalBridge.js`)
 if (require.main === module) {
   startTerminalBridge();
 }

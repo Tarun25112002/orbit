@@ -9,12 +9,10 @@ export async function GET(request: NextRequest) {
   const tokenOwnerUserId = request.cookies.get("github_token_owner")?.value;
   const userId = await getClerkUserId(request);
 
-  // Not logged in or no token — simply not connected
   if (!encryptedToken || !userId) {
     return NextResponse.json({ connected: false });
   }
 
-  // Token belongs to a different Clerk user — clear stale cookies
   if (!tokenOwnerUserId || tokenOwnerUserId !== userId) {
     const response = NextResponse.json({
       connected: false,
@@ -40,7 +38,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("GitHub Connection Error:", error);
-    // Token invalid or expired — clear cookies
+
     const response = NextResponse.json({
       connected: false,
       reason: "token_invalid",

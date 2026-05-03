@@ -51,7 +51,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Missing projectId" }, { status: 400 });
     }
 
-    // Get project info (Convex verifies ownership)
     const project = await convex.query(api.projects.getById, {
       id: projectId as Id<"projects">,
     });
@@ -68,7 +67,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Parse owner/repo from URL
     const urlParts = new URL(repoUrl).pathname.split("/").filter(Boolean);
     const owner = urlParts[0];
     const repo = urlParts[1];
@@ -82,8 +80,6 @@ export async function POST(request: NextRequest) {
 
     const client = new GitHubClient(authResult.token);
 
-    // Verify the authenticated user has access to the target repo
-    // (this will throw if the user's token doesn't have permission)
     try {
       await client.getRepo(owner, repo);
     } catch {
@@ -93,7 +89,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Get all project files from Convex
     const allFiles = (await convex.query(api.files.getFiles, {
       projectId: projectId as Id<"projects">,
     })) as FileDoc[];

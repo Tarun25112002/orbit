@@ -108,7 +108,7 @@ export const ProjectsCommandDialog = ({
 
   const handleSelect = (projectId: string) => {
     onOpenChange(false);
-    // Cross-origin isolation is document-scoped, so project entry must be a hard navigation.
+
     window.location.assign(`/projects/${projectId}`);
   };
 

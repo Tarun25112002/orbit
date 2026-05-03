@@ -9,11 +9,10 @@ export async function GET(request: NextRequest) {
   const requestedRedirect = searchParams.get("redirect") || "/dashboard";
 
   if (!userId) {
-    // User is genuinely not signed in — redirect to sign-in,
-    // but preserve the intended redirect so they come back here after login.
+
     const origin = new URL(request.url).origin;
     const signInUrl = new URL("/sign-in", origin);
-    // After Clerk sign-in, redirect back to this connect route
+
     signInUrl.searchParams.set(
       "redirect_url",
       `/api/auth/github/connect?redirect=${encodeURIComponent(requestedRedirect)}`

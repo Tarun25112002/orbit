@@ -162,7 +162,7 @@ const compactGroqPayloadByChars = (args: {
 }) => {
   const normalizedMaxChars = Math.max(800, args.maxChars);
   const system = args.system?.trim();
-  // Allocate 40% of budget to system prompt (planner instructions are critical)
+
   const systemBudget = system
     ? Math.min(
         Math.max(400, Math.floor(normalizedMaxChars * 0.40)),
@@ -269,7 +269,6 @@ const getGeminiFallbackModels = () => {
     .map((model) => model.trim())
     .filter(Boolean);
 
-  // User-configured models take priority over the hardcoded chain
   return Array.from(new Set([...configured, ...GEMINI_FREE_FALLBACK_CHAIN]));
 };
 
@@ -546,8 +545,6 @@ export const markGeminiModelRateLimited = (
   setModelCooldown(model, retryAfterSeconds ?? null);
 };
 
-/** Default model used across the app — configurable via GEMINI_MODEL env var.
- *  When Groq is configured (GROQ_API_KEY), defaults to the Groq model. */
 export const GEMINI_MODEL_DEFAULT = isGroqEnabled()
   ? getGroqModel()
   : getRuntimeEnvValue("GEMINI_MODEL") || GEMINI_FREE_FALLBACK_CHAIN[0];
@@ -668,7 +665,7 @@ const generateGroqCompletion = async (args: {
         text += chunk;
         args.onStreamChunk?.(chunk, text);
       }
-      
+
       text = text.trim();
 
       if (!text) {
@@ -703,8 +700,6 @@ const generateGroqCompletion = async (args: {
         continue;
       }
 
-      // 413 "Request too large" — payload can never fit within TPM budget.
-      // Throw immediately so the outer function falls back to Gemini.
       if (
         structuredStatusCode === 413 ||
         isGroqRequestTooLargeError(rawMessage)
@@ -779,10 +774,8 @@ export const generateGeminiCompletion = async (args: {
   const isExplicitGeminiModel = modelName.toLowerCase().startsWith("gemini-");
   const shouldUseGroq = isGroqEnabled() && !isExplicitGeminiModel;
 
-  // Route through Groq when available (primary provider) and a Gemini model isn't explicitly requested
   if (shouldUseGroq) {
-    // Pre-check: estimate payload size and skip Groq if it would exceed the TPM budget.
-    // This avoids a wasted 413 error on large planner payloads (system prompt + code).
+
     const estimatedPayloadTokens = estimateTokensFromGroqPayload({
       system: args.system,
       messages: args.messages.map((msg) => ({
@@ -801,7 +794,7 @@ export const generateGeminiCompletion = async (args: {
         minOutputTokens: getGroqMinOutputTokens(),
         reason: "Payload exceeds TPM budget, skipping to Gemini",
       });
-      // Fall through to Gemini pathway below
+
     } else {
     const GROQ_RATE_LIMIT_MAX_RETRIES = 3;
     let groqLastError: GeminiRequestError | null = null;
@@ -815,7 +808,7 @@ export const generateGeminiCompletion = async (args: {
           error.status === 429 &&
           groqAttempt < GROQ_RATE_LIMIT_MAX_RETRIES
         ) {
-          // Exponential backoff: 2s, 4s, 8s
+
           const backoffMs = Math.pow(2, groqAttempt) * 1000;
           console.warn("groq.rate-limit-retry", {
             attempt: groqAttempt,
@@ -827,7 +820,6 @@ export const generateGeminiCompletion = async (args: {
           continue;
         }
 
-        // If Groq fails with a non-auth error and Gemini key is available, fall back
         const geminiKey = getGeminiApiKey();
         if (
           geminiKey &&
@@ -840,14 +832,13 @@ export const generateGeminiCompletion = async (args: {
             attempts: groqAttempt,
           });
           groqLastError = error;
-          break; // Fall through to Gemini logic below
+          break;
         } else {
           throw error;
         }
       }
     }
 
-    // If all Groq retries exhausted with 429, fall through to Gemini
     if (groqLastError) {
       const geminiKey = getGeminiApiKey();
       if (!geminiKey) {
@@ -857,10 +848,9 @@ export const generateGeminiCompletion = async (args: {
         error: groqLastError.message,
       });
     }
-    } // end else (payload fits within budget)
+    }
   }
 
-  // Gemini pathway (original logic or Groq fallback)
   const attemptBudget = getRequestAttemptBudget();
 
   const modelCandidates = applyAttemptCap(
@@ -990,7 +980,7 @@ export const generateGeminiCompletion = async (args: {
         /overloaded|capacity/i.test(rawMessage);
 
       if (isServiceUnavailableError) {
-        // Cool down this model briefly so bursty multi-agent calls skip it.
+
         setModelCooldown(candidateModel, 8, activeGeminiApiKey);
 
         lastServiceUnavailableError = new GeminiRequestError({

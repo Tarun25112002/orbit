@@ -1,9 +1,3 @@
-/**
- * POST /api/sandbox/files/write — Write a file into the container.
- * POST with { sessionId, files: [{ path, content }] } for batch write.
- * POST with { sessionId, filePath, content } for single file write.
- */
-
 import { NextRequest, NextResponse } from "next/server";
 import {
   syncProjectToContainer,
@@ -26,7 +20,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Batch mode
     if (body.files && Array.isArray(body.files)) {
       await syncProjectToContainer(body.sessionId, body.files);
       return NextResponse.json({
@@ -35,7 +28,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Single file mode
     if (body.filePath && typeof body.content === "string") {
       await syncFileToContainer(body.sessionId, body.filePath, body.content);
       return NextResponse.json({ success: true });

@@ -204,9 +204,6 @@ const isFastExecutionRequest = (input: ConversationOrchestrationInput) => {
 const shouldUseFastPlannerMode = (input: ConversationOrchestrationInput) => {
   const message = input.message;
 
-  // Fast mode ONLY for explicit urgency/frustration patterns — NOT for normal
-  // project generation requests. Words like "create", "build", "file" appear in
-  // virtually every real prompt and must NOT trigger fast (low-reasoning) mode.
   if (EXECUTION_FRUSTRATION_PATTERN.test(message)) {
     return true;
   }
@@ -222,7 +219,7 @@ const shouldUseFastPlannerMode = (input: ConversationOrchestrationInput) => {
 };
 
 const inferCallBudget = (input: ConversationOrchestrationInput): number => {
-  // Fast mode still gets a generous budget since it only triggers on explicit urgency
+
   if (shouldUseFastPlannerMode(input)) {
     return Math.min(5, MAX_PLANNER_CALLS_PER_REQUEST);
   }
@@ -359,14 +356,12 @@ type ConversationOrchestrationInput = {
   projectFiles?: ConversationProjectFile[];
   executeFileOperation?: ConversationFileOperationExecutor;
   loadProjectFilesAfterOperations?: ConversationProjectFilesLoader;
-  /** Called after each operation completes with the running results so far.
-   *  Used to stream real-time progress to the user. */
+
   onOperationProgress?: (
     completed: ConversationFileOperationResult[],
     total: number,
   ) => Promise<void> | void;
-  /** Called during LLM generation with real-time text updates.
-   *  Used to stream progress indicating which file is currently being generated. */
+
   onPlanningProgress?: (status: string) => void;
 };
 
@@ -1110,21 +1105,16 @@ const extractJsonObject = (value: string) => {
   return raw.slice(arrayStart, end + 1);
 };
 
-/**
- * Attempt to repair common LLM JSON mistakes so JSON.parse succeeds.
- * Handles: trailing commas, missing closing braces/brackets, control chars.
- */
 const repairJson = (value: string): string => {
   let repaired = value
-    // Remove control characters that break JSON
+
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "")
-    // Remove trailing commas before closing braces/brackets
+
     .replace(/,\s*([\]}])/g, "$1")
-    // Remove JavaScript-style comments
+
     .replace(/\/\/[^\n]*/g, "")
     .replace(/\/\*[\s\S]*?\*\//g, "");
 
-  // Count unbalanced braces/brackets and add missing closers
   let braces = 0;
   let brackets = 0;
   let inString = false;
@@ -1151,12 +1141,10 @@ const repairJson = (value: string): string => {
     else if (char === "]") brackets--;
   }
 
-  // Close any unclosed strings
   if (inString) {
     repaired += '"';
   }
 
-  // Add missing closing brackets/braces
   while (brackets > 0) {
     repaired += "]";
     brackets--;
@@ -1166,15 +1154,11 @@ const repairJson = (value: string): string => {
     braces--;
   }
 
-  // Final trailing comma cleanup after repair
   repaired = repaired.replace(/,\s*([\]}])/g, "$1");
 
   return repaired;
 };
 
-/**
- * Try JSON.parse, falling back to repairJson + JSON.parse on failure.
- */
 const safeJsonParse = (value: string): unknown | null => {
   try {
     return JSON.parse(value);
@@ -1585,7 +1569,6 @@ const ensureFolderOperationsForWrites = (
     if (operation.type === "create_folder") {
       const folderPath = operation.path;
 
-      // Skip duplicate create_folder for folders already known or planned
       if (existingFolders.has(folderPath) || plannedFolders.has(folderPath)) {
         continue;
       }
@@ -1863,7 +1846,6 @@ const moveManagedDevServerStartToEnd = (
 
   const lastManagedStart = managedStarts[managedStarts.length - 1]!;
 
-  // Gate the dev-server start on the previous operation (npm install) succeeding.
   const gatedDevServerStart: ConversationFileOperation =
     ENABLE_INSTALL_GATE && lastManagedStart.type === "start_background_command"
       ? { ...lastManagedStart, gatedOnPreviousSuccess: true }
@@ -1911,7 +1893,7 @@ const ensureAutonomousValidationOperation = (
   operations: ConversationFileOperation[],
   projectFiles: ConversationProjectFile[] = [],
 ) => {
-  // If a build validation command already exists, nothing to do
+
   if (operations.some((operation) => isBuildValidationCommand(operation))) {
     return operations;
   }
@@ -1920,9 +1902,6 @@ const ensureAutonomousValidationOperation = (
     isManagedDevServerStartOperation(operation),
   );
 
-  // Always insert validation before dev-server — even if ENABLE_AUTONOMOUS_VALIDATION
-  // is disabled — because the dev-server gating depends on a validation step existing.
-  // Without it, a broken build would still start the dev server.
   const shouldInsertValidation =
     hasDevServer ||
     (ENABLE_AUTONOMOUS_VALIDATION &&
@@ -2082,7 +2061,7 @@ const extractImportedPackageNames = (sourceCode: string): Set<string> => {
     while ((match = regex.exec(code)) !== null) {
       const packageSpec = match[1]?.trim();
       if (!packageSpec) continue;
-      // Handle scoped packages (@scope/name) and bare specifiers (name/path)
+
       const packageName = packageSpec.startsWith("@")
         ? packageSpec.split("/").slice(0, 2).join("/")
         : packageSpec.split("/")[0]!;
@@ -2173,7 +2152,6 @@ const validatePackageJsonDependencies = (
 ): ConversationFileOperation[] => {
   if (!ENABLE_DEP_PREVALIDATION) return operations;
 
-  // Find the package.json operation
   const packageJsonOpIndex = operations.findIndex(
     (op) =>
       (op.type === "create_file" || op.type === "update_file") &&
@@ -2190,12 +2168,11 @@ const validatePackageJsonDependencies = (
     return operations;
   }
 
-  // Parse existing package.json content
   let packageJson: Record<string, unknown>;
   try {
     packageJson = JSON.parse(packageJsonOp.content) as Record<string, unknown>;
   } catch {
-    return operations; // Can't parse, skip validation
+    return operations;
   }
 
   const existingDeps = new Set<string>();
@@ -2210,7 +2187,6 @@ const validatePackageJsonDependencies = (
   addDepsFrom(packageJson.devDependencies);
   addDepsFrom(packageJson.peerDependencies);
 
-  // Collect all imported packages from source files in this batch
   const allImportedPackages = new Set<string>();
   for (const op of operations) {
     if (
@@ -2224,20 +2200,17 @@ const validatePackageJsonDependencies = (
     }
   }
 
-  // Find missing packages
   const missingPackages: string[] = [];
   for (const pkg of allImportedPackages) {
     if (existingDeps.has(pkg)) continue;
     if (NODE_BUILTIN_MODULES.has(pkg)) continue;
     if (FRAMEWORK_IMPLICIT_PACKAGES.has(pkg)) continue;
-    // Skip path aliases and relative imports that slipped through
+
     if (pkg.startsWith("@/") || pkg.startsWith("~/") || pkg.startsWith("."))
       continue;
     missingPackages.push(pkg);
   }
 
-  // Detect framework-essential dev dependencies that are ALWAYS needed
-  // but the AI frequently forgets to include
   const frameworkEssentialPackages: Array<{ name: string; version: string }> =
     [];
 
@@ -2276,7 +2249,6 @@ const validatePackageJsonDependencies = (
       /\btailwindcss\b/.test(op.content),
   );
 
-  // Vite + React → always needs @vitejs/plugin-react
   if (
     (hasVite || hasViteConfig) &&
     hasReactFiles &&
@@ -2289,7 +2261,6 @@ const validatePackageJsonDependencies = (
     });
   }
 
-  // Tailwind CSS → always needs postcss and autoprefixer
   if (existingDeps.has("tailwindcss")) {
     if (!existingDeps.has("postcss")) {
       frameworkEssentialPackages.push({ name: "postcss", version: "^8" });
@@ -2299,7 +2270,6 @@ const validatePackageJsonDependencies = (
     }
   }
 
-  // Vite + TypeScript → needs typescript
   if (
     (hasVite || hasViteConfig) &&
     hasTsSourceFiles &&
@@ -2308,7 +2278,6 @@ const validatePackageJsonDependencies = (
     frameworkEssentialPackages.push({ name: "typescript", version: "^5" });
   }
 
-  // React projects → need @types/react and @types/react-dom
   if (
     hasReactFiles &&
     (existingDeps.has("react") || allImportedPackages.has("react"))
@@ -2337,7 +2306,6 @@ const validatePackageJsonDependencies = (
     });
   }
 
-  // Add missing packages to dependencies with "latest" version
   const deps =
     typeof packageJson.dependencies === "object" &&
     packageJson.dependencies !== null
@@ -2353,7 +2321,6 @@ const validatePackageJsonDependencies = (
     deps[pkg] = "latest";
   }
 
-  // Add framework essential packages to devDependencies
   for (const { name, version } of frameworkEssentialPackages) {
     if (!existingDeps.has(name)) {
       devDeps[name] = version;
@@ -2393,9 +2360,6 @@ const validatePackageJsonDependencies = (
     devDeps.tailwindcss = "^3.4.17";
   }
 
-  // ─── Correct Commonly Hallucinated Package Versions ──────────────────
-  // AI models frequently generate non-existent versions (clsx@^4, framer-motion@^11).
-  // This map overrides hallucinated versions with the latest known-good versions.
   const KNOWN_GOOD_VERSIONS: Record<string, { maxMajor: number; goodVersion: string }> = {
     clsx: { maxMajor: 2, goodVersion: "^2.1.1" },
     "framer-motion": { maxMajor: 12, goodVersion: "^12.0.0" },
@@ -2417,7 +2381,6 @@ const validatePackageJsonDependencies = (
       const knownGood = KNOWN_GOOD_VERSIONS[pkg];
       if (!knownGood) continue;
 
-      // Extract major version from spec like "^4.0.0", "~11.0.8", "4.0.0"
       const majorMatch = spec.match(/^[\^~]?(\d+)/);
       if (!majorMatch) continue;
       const major = parseInt(majorMatch[1]!, 10);
@@ -3126,8 +3089,6 @@ const validateFileOperationPlan = (operations: ConversationFileOperation[]) => {
       );
     }
 
-    // Only reject truly empty placeholder files (< 50 chars and only TODO/TBD)
-    // Do NOT reject real code files that happen to contain TODO comments
     const trimmedContent = operation.content.trim();
     if (
       trimmedContent.length < 50 &&
@@ -3164,7 +3125,7 @@ const PLANNER_KEY_FILE_PATTERNS = [
   "tailwind.config.js",
   "postcss.config.mjs",
   "postcss.config.js",
-  // Main source files — critical for follow-up changes
+
   "index.html",
   "src/main.tsx",
   "src/App.tsx",
@@ -3750,7 +3711,6 @@ const buildRecoveryCommandOperations = (args: {
       continue;
     }
 
-    // Skip dev-server starts — they will be re-appended at the end with a build gate
     if (
       failure.operation.type === "start_background_command" &&
       failure.operation.key === DEV_SERVER_KEY
@@ -3774,8 +3734,6 @@ const buildRecoveryCommandOperations = (args: {
     seenRecoverySignatures.add(signature);
   }
 
-  // If any dev-server start was skipped/failed, append a build validation + dev-server restart
-  // at the end of recovery operations so the preview retries within the fixup iteration.
   const hasSkippedDevServer = args.failures.some(
     (f) =>
       (f.status === "skipped" || f.status === "failed") &&
@@ -3784,7 +3742,7 @@ const buildRecoveryCommandOperations = (args: {
   );
 
   if (hasSkippedDevServer) {
-    // Check if the fixup planner already included a dev-server start
+
     const fixupAlreadyHasDevServer = args.plannedOperations.some(
       (op) =>
         op.type === "start_background_command" &&
@@ -3860,7 +3818,7 @@ const runFileOpsPlannerDirect = async (
     responseMimeType: "application/json",
     onStreamChunk: (chunk, fullText) => {
       if (args?.onPlanningProgress) {
-        // Find the last file path the LLM started generating
+
         const matches = [...fullText.matchAll(/"path"\s*:\s*"([^"]+)"/g)];
         if (matches.length > 0) {
           const lastPath = matches[matches.length - 1][1];
@@ -3951,7 +3909,7 @@ const planConversationFileOperations = async (
       .join("\n\n");
 
   const extractOperations = (output: string): ConversationFileOperation[] => {
-    // Strip markdown code fences that the model sometimes wraps JSON in.
+
     const cleaned = output
       .replace(/^```(?:json)?\s*\n?/i, "")
       .replace(/\n?```\s*$/i, "")
@@ -4080,7 +4038,6 @@ const planConversationFileOperations = async (
           FILE_OPS_MODEL;
         const preferredModel = pickPlannerModelForAttempt(rotatedCandidate, 0);
 
-        // Build enriched context from previous chunks — include actual file contents
         const previousChunkFilesList = aggregateChunkOperations
           .filter(
             (op) => op.type === "create_file" || op.type === "update_file",
@@ -4491,7 +4448,7 @@ const executePlannedFileOperations = async (
   const totalOps = operations.length;
 
   for (const operation of operations) {
-    // Gate check: skip this operation if previous operation failed and this op requires it to succeed
+
     const isGated =
       (operation.type === "run_command" ||
         operation.type === "start_background_command") &&
@@ -4508,12 +4465,11 @@ const executePlannedFileOperations = async (
         try {
           await onOperationProgress?.(results, totalOps);
         } catch {
-          /* best-effort */
+
         }
         continue;
       }
 
-      // Also skip if the previous command exited with a non-zero code
       if (
         previousResult.commandExitCode !== undefined &&
         previousResult.commandExitCode !== null &&
@@ -4527,7 +4483,7 @@ const executePlannedFileOperations = async (
         try {
           await onOperationProgress?.(results, totalOps);
         } catch {
-          /* best-effort */
+
         }
         continue;
       }
@@ -4548,7 +4504,7 @@ const executePlannedFileOperations = async (
       try {
         await onOperationProgress?.(results, totalOps);
       } catch {
-        /* best-effort */
+
       }
       continue;
     }
@@ -4570,11 +4526,10 @@ const executePlannedFileOperations = async (
       });
     }
 
-    // Fire progress callback after each operation so the UI updates in real-time
     try {
       await onOperationProgress?.(results, totalOps);
     } catch {
-      /* best-effort */
+
     }
   }
 
@@ -4863,7 +4818,6 @@ const buildStructuredCodeResponse = (args: {
       r.status === "applied" && r.operation.type === "start_background_command",
   );
 
-  // Build summary header
   const summaryParts: string[] = [];
   if (args.changedFiles.length > 0) {
     const verb = args.intent === "code_update" ? "Updated" : "Created";
@@ -4885,7 +4839,6 @@ const buildStructuredCodeResponse = (args: {
 
   const sections: string[] = [];
 
-  // Header confirming actions
   if (summaryParts.length > 0) {
     sections.push(
       failedCount > 0
@@ -4895,7 +4848,6 @@ const buildStructuredCodeResponse = (args: {
     sections.push("");
   }
 
-  // Project structure
   if (structureLines.length > 0) {
     sections.push(
       "### Project Structure",
@@ -4906,7 +4858,6 @@ const buildStructuredCodeResponse = (args: {
     );
   }
 
-  // File list with brief descriptions (no full code dumps)
   if (args.changedFiles.length > 0) {
     const label =
       args.intent === "code_update"
@@ -4919,7 +4870,6 @@ const buildStructuredCodeResponse = (args: {
     sections.push("");
   }
 
-  // Command operations
   const commandOps = args.operationResults.filter(
     (result) =>
       result.status === "applied" &&
@@ -4935,7 +4885,6 @@ const buildStructuredCodeResponse = (args: {
     sections.push("");
   }
 
-  // Failures
   if (failedCount > 0) {
     const failedOps = args.operationResults.filter(
       (r) => r.status === "failed",
@@ -4949,7 +4898,6 @@ const buildStructuredCodeResponse = (args: {
     sections.push("");
   }
 
-  // Summary stats
   if (appliedCount > 0) {
     sections.push(
       `*${appliedCount} operation${appliedCount === 1 ? "" : "s"} applied successfully${failedCount > 0 ? `, ${failedCount} failed` : ""}.*`,
@@ -5154,11 +5102,6 @@ export const runConversationAgentOrchestration = async (
     input.onOperationProgress,
   );
 
-  // ─── Iterative Fixup Loop ───────────────────────────────────────────
-  // Detect failures (commands, file writes) and attempt repair up to
-  // MAX_FIXUP_ITERATIONS times, feeding actual error output back to the
-  // planner so it can make informed corrections.
-
   const collectFailures = (results: ConversationFileOperationResult[]) =>
     results.filter(
       (result) =>
@@ -5189,7 +5132,6 @@ export const runConversationAgentOrchestration = async (
       })),
     });
 
-    // Build failure summary with actual command output
     const failureSummary = currentFailures
       .map((r) => {
         const parts = [
@@ -5207,7 +5149,6 @@ export const runConversationAgentOrchestration = async (
       })
       .join("\n\n");
 
-    // Reload project files to see current state after previous operations
     let fixupProjectFiles = input.projectFiles ?? [];
     if (input.loadProjectFilesAfterOperations) {
       try {
@@ -5217,10 +5158,8 @@ export const runConversationAgentOrchestration = async (
       }
     }
 
-    // Build enhanced fixup prompt with error context
     const keyFileContents = buildPlannerKeyFileContext(fixupProjectFiles);
 
-    // Find all source files that were created to analyze imports
     const createdSourceFiles = allOperations
       .filter(
         (op) =>
@@ -5344,7 +5283,6 @@ export const runConversationAgentOrchestration = async (
             fixupFailed,
           });
 
-          // Update failures for the next iteration
           currentFailures = collectFailures(fixupResults);
 
           if (currentFailures.length === 0) {
@@ -5374,12 +5312,6 @@ export const runConversationAgentOrchestration = async (
       break;
     }
   }
-
-  // ─── Post-Fixup Dev-Server Restart ─────────────────────────────────
-  // If the dev-server start was skipped/failed during the initial execution
-  // (due to build validation failure + gating), and the fixup loop resolved
-  // the issues, attempt a final build validation + dev-server restart.
-  // This guarantees the user gets a working preview after successful fixes.
 
   const devServerWasSkippedOrFailed = operationResults.some(
     (result) =>

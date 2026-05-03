@@ -1,8 +1,3 @@
-// ─── Error Classification ─────────────────────────────────────────────────────
-//
-// Converts raw technical errors into clear, user-friendly messages.
-// Used across both the API layer and the client to ensure consistent messaging.
-
 export type ErrorCategory =
   | "rate_limit"
   | "quota_exceeded"
@@ -15,17 +10,15 @@ export type ErrorCategory =
   | "unknown";
 
 export interface ClassifiedError {
-  /** Short, user-friendly message safe to show in UI */
+
   message: string;
-  /** Underlying technical category */
+
   category: ErrorCategory;
-  /** Seconds to wait before retrying (if applicable) */
+
   retryAfterSeconds?: number;
-  /** Whether the action can reasonably be retried */
+
   retryable: boolean;
 }
-
-// ─── Pattern matchers ─────────────────────────────────────────────────────────
 
 const RATE_LIMIT_PATTERNS = [
   /rate.?limit/i,
@@ -109,8 +102,6 @@ const AI_PROVIDER_CONTEXT_PATTERNS = [
   /\bai\s+service\b/i,
 ];
 
-// ─── User-friendly messages per category ──────────────────────────────────────
-
 const USER_MESSAGES: Record<ErrorCategory, string> = {
   rate_limit:
     "AI is temporarily busy due to rate limits. Please wait a moment and try again.",
@@ -128,8 +119,6 @@ const USER_MESSAGES: Record<ErrorCategory, string> = {
   server: "Something went wrong on our end. Please try again shortly.",
   unknown: "Something unexpected happened. Please try again.",
 };
-
-// ─── Retry-after parser ───────────────────────────────────────────────────────
 
 const parseRetrySeconds = (text: string): number | undefined => {
   const match = text.match(/retry\s*(?:in|after)\s+([\d.]+)\s*s/i);
@@ -318,15 +307,6 @@ const extractRetryAfterSeconds = (error: unknown, text: string) => {
   return undefined;
 };
 
-// ─── Main classifier ─────────────────────────────────────────────────────────
-
-/**
- * Classify any error into a user-friendly message.
- *
- * Designed to accept Error objects, raw strings, or unknown values.
- * Handles Gemini API errors, network failures, authentication issues,
- * quota/rate-limit problems, and everything in between.
- */
 export const classifyError = (error: unknown): ClassifiedError => {
   const rawMessage = getErrorMessageText(error);
 
@@ -401,7 +381,6 @@ export const classifyError = (error: unknown): ClassifiedError => {
     };
   }
 
-  // Check rate limiting first (most common AI error)
   if (RATE_LIMIT_PATTERNS.some((p) => p.test(text))) {
     return {
       message: USER_MESSAGES.rate_limit,
@@ -411,7 +390,6 @@ export const classifyError = (error: unknown): ClassifiedError => {
     };
   }
 
-  // Quota exceeded (API plan issue)
   if (QUOTA_PATTERNS.some((p) => p.test(text))) {
     return {
       message: USER_MESSAGES.quota_exceeded,
@@ -421,7 +399,6 @@ export const classifyError = (error: unknown): ClassifiedError => {
     };
   }
 
-  // Authentication / authorization
   if (AUTH_PATTERNS.some((p) => p.test(text))) {
     return {
       message: USER_MESSAGES.auth,
@@ -430,7 +407,6 @@ export const classifyError = (error: unknown): ClassifiedError => {
     };
   }
 
-  // Network issues
   if (NETWORK_PATTERNS.some((p) => p.test(text))) {
     return {
       message: USER_MESSAGES.network,
@@ -439,7 +415,6 @@ export const classifyError = (error: unknown): ClassifiedError => {
     };
   }
 
-  // Timeouts
   if (TIMEOUT_PATTERNS.some((p) => p.test(text))) {
     return {
       message: USER_MESSAGES.timeout,
@@ -456,7 +431,6 @@ export const classifyError = (error: unknown): ClassifiedError => {
     };
   }
 
-  // AI service issues (5xx, model not found, etc.)
   if (AI_UNAVAILABLE_PATTERNS.some((p) => p.test(text))) {
     if (!hasAiProviderContext) {
       return {
@@ -473,15 +447,12 @@ export const classifyError = (error: unknown): ClassifiedError => {
     };
   }
 
-  // Fallback
   return {
     message: text || USER_MESSAGES.unknown,
     category: "unknown",
     retryable: false,
   };
 };
-
-// ─── Convex error sanitizer ──────────────────────────────────────────────────
 
 const sanitizeConvexErrorMessage = (message: string) => {
   const flattened = message.replace(/\s+/g, " ").trim();
@@ -512,8 +483,6 @@ const sanitizeConvexErrorMessage = (message: string) => {
   return withoutEnvelope.replace(/\s+Called by client$/i, "").trim();
 };
 
-// ─── Simple message extractor (legacy helper) ────────────────────────────────
-
 export const getErrorMessage = (
   error: unknown,
   fallback = "Something went wrong.",
@@ -531,11 +500,6 @@ export const getErrorMessage = (
   return fallback;
 };
 
-/**
- * Get a user-friendly error message from any error.
- *
- * Shorthand for `classifyError(error).message` with an optional fallback.
- */
 export const getFriendlyErrorMessage = (
   error: unknown,
   fallback?: string,

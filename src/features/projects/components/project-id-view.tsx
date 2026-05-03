@@ -155,7 +155,7 @@ const detectPackageManager = (filesByPath: Map<string, string>) => {
 };
 
 const hashRuntimeDependencySource = (source: string) => {
-  // FNV-1a 32-bit hash for compact deterministic fingerprinting.
+
   let hash = 0x811c9dc5;
 
   for (let index = 0; index < source.length; index += 1) {
@@ -2929,9 +2929,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           );
         }
 
-        // Only auto-start the dev server if the managed preview wasn't already attempted
-        // during the trace loop. This prevents double-starts when the AI includes
-        // start_background_command[dev-server] in the execution trace.
         if (
           !managedPreviewAttempted &&
           (!hasBackgroundRuntimeOperation || previewRequestedByOperations)

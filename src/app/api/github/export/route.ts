@@ -17,7 +17,6 @@ type FileDoc = {
   updatedAt: number;
 };
 
-/** Recursively build flat file paths from the Convex file tree */
 const buildFilePaths = (
   files: FileDoc[],
   parentId: Id<"files"> | undefined,
@@ -61,7 +60,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Mark export as started (Convex verifies project ownership)
     await convex.mutation(api.projects.startGithubExport, {
       projectId: projectId as Id<"projects">,
     });
@@ -69,17 +67,14 @@ export async function POST(request: NextRequest) {
     const client = new GitHubClient(authResult.token);
     const user = await client.getUser();
 
-    // Create the GitHub repository under the authenticated user's account
     const repo = await client.createRepo({
       name: repoName,
       description: description || "Exported from Orbit",
       isPrivate: isPrivate ?? false,
     });
 
-    // Wait briefly for GitHub to initialize the repo
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // Get all project files from Convex (verifies ownership)
     const allFiles = (await convex.query(api.files.getFiles, {
       projectId: projectId as Id<"projects">,
     })) as FileDoc[];
@@ -87,7 +82,7 @@ export async function POST(request: NextRequest) {
     const filesToCommit = buildFilePaths(allFiles, undefined, "");
 
     if (filesToCommit.length > 0) {
-      // Commit all files to the user's new repo
+
       await client.commitFiles({
         owner: user.login,
         repo: repo.name,
@@ -96,7 +91,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Mark export as completed
     await convex.mutation(api.projects.completeGithubExport, {
       projectId: projectId as Id<"projects">,
       exportRepoUrl: repo.html_url,
@@ -110,7 +104,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("GitHub export error:", error);
 
-    // Try to mark export as failed
     try {
       const body = (await request.clone().json()) as { projectId?: string };
       if (body.projectId) {
@@ -119,7 +112,7 @@ export async function POST(request: NextRequest) {
         });
       }
     } catch {
-      // ignore
+
     }
 
     return NextResponse.json(

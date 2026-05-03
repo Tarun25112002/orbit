@@ -1,7 +1,3 @@
-/**
- * GET /api/sandbox/stats — Resource monitoring endpoint.
- */
-
 import { NextResponse } from "next/server";
 import { getStats } from "@/lib/docker/resource-guard";
 

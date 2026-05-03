@@ -30,7 +30,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Mark import as started (Convex verifies project ownership)
     await convex.mutation(api.projects.startGithubImport, {
       projectId: projectId as Id<"projects">,
       githubUrl: `https://github.com/${owner}/${repo}`,
@@ -38,10 +37,8 @@ export async function POST(request: NextRequest) {
 
     const client = new GitHubClient(authResult.token);
 
-    // Fetch all files from the user's GitHub repo
     const files = await client.fetchRepoFiles(owner, repo, branch);
 
-    // Write files to Convex (createFile auto-creates folder hierarchy)
     for (const file of files) {
       try {
         await convex.mutation(api.files.createFile, {
@@ -50,14 +47,13 @@ export async function POST(request: NextRequest) {
           content: file.content,
         });
       } catch (error) {
-        // Skip duplicate files (e.g. if import is re-run)
+
         const msg = error instanceof Error ? error.message : "";
         if (msg.includes("already exists")) continue;
         console.warn(`Skipped file ${file.path}:`, msg);
       }
     }
 
-    // Mark import as completed
     await convex.mutation(api.projects.completeGithubImport, {
       projectId: projectId as Id<"projects">,
       importRepoUrl: `https://github.com/${owner}/${repo}`,
@@ -71,7 +67,6 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error("GitHub import error:", error);
 
-    // Try to mark import as failed
     try {
       const body = (await request.clone().json()) as { projectId?: string };
       if (body.projectId) {
@@ -80,7 +75,7 @@ export async function POST(request: NextRequest) {
         });
       }
     } catch {
-      // ignore
+
     }
 
     return NextResponse.json(

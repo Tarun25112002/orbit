@@ -1,7 +1,3 @@
-/**
- * POST /api/sandbox/exec — Execute a command and stream output via SSE.
- */
-
 import { NextRequest } from "next/server";
 import { getContainer, touchSession } from "@/lib/docker/session-manager";
 
@@ -57,7 +53,7 @@ export async function POST(request: NextRequest) {
             const payload = JSON.stringify({ type, data });
             controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
           } catch {
-            // Stream already closed by consumer
+
             closed = true;
           }
         };
@@ -68,18 +64,17 @@ export async function POST(request: NextRequest) {
           try {
             controller.close();
           } catch {
-            // Already closed
+
           }
         };
 
-        // Dockerode demultiplexes stdout/stderr from the raw stream
         execStream.on("data", (chunk: Buffer) => {
           const text = chunk.toString("utf-8");
           sendEvent("stdout", text);
         });
 
         execStream.on("end", () => {
-          // Get exit code
+
           exec
             .inspect()
             .then((info) => {

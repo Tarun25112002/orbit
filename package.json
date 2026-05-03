@@ -10,7 +10,6 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "inngest": "inngest-cli dev"
   },
@@ -94,7 +93,6 @@
     "eslint-config-next": "16.2.0",
     "inngest-cli": "^1.17.9",
     "tailwindcss": "^4",
-    "typescript": "^5",
-    "vitest": "^3.2.4"
+    "typescript": "^5"
   }
 }

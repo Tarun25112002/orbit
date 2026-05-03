@@ -8,19 +8,19 @@ const TIER_CONFIG: Record<
 > = {
   basic: {
     name: "Orbit Basic Plan",
-    amount: 100000, // ₹1000 in paisa
+    amount: 100000,
     description: "10 AI projects with standard model access",
     currency: "inr",
   },
   pro: {
     name: "Orbit Pro Plan",
-    amount: 250000, // ₹2500 in paisa
+    amount: 250000,
     description: "50 AI projects with advanced model access",
     currency: "inr",
   },
   advance: {
     name: "Orbit Advanced Plan",
-    amount: 500000, // ₹5000 in paisa
+    amount: 500000,
     description: "Unlimited AI projects with all models and team features",
     currency: "inr",
   },

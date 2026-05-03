@@ -105,15 +105,15 @@ const PricingPage = () => {
 
   return (
     <div className="relative min-h-screen bg-background overflow-hidden text-foreground selection:bg-primary/20">
-      {/* Premium Dynamic Background */}
+      {}
       <div className="fixed inset-0 z-0 pointer-events-none">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,#2a2a2a_0%,transparent_100%)] opacity-40" />
         <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:32px_32px]" />
-        {/* Glow Effects */}
+        {}
         <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 h-[500px] w-[800px] rounded-[100%] bg-primary/10 opacity-30 blur-[100px] mix-blend-screen" />
       </div>
 
-      {/* Header */}
+      {}
       <header className="relative z-10 flex items-center justify-between p-6 max-w-6xl mx-auto w-full transition-all duration-300">
         <button
           onClick={() => router.push("/dashboard")}
@@ -132,7 +132,7 @@ const PricingPage = () => {
         </div>
       </header>
 
-      {/* Hero Section */}
+      {}
       <main className="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 pt-8 pb-20 flex flex-col items-center">
         <div className="text-center mb-16 flex flex-col items-center max-w-2xl">
           <div className="inline-flex items-center rounded-full border border-primary/20 bg-primary/10 px-3 py-1 font-mono text-[11px] font-medium text-primary backdrop-blur-md mb-6 shadow-[0_0_15px_rgba(var(--primary),0.1)]">
@@ -147,7 +147,7 @@ const PricingPage = () => {
           </p>
         </div>
 
-        {/* Pricing Cards */}
+        {}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8 w-full max-w-5xl">
           {TIERS.map((tier) => {
             const Icon = tier.icon;
@@ -164,7 +164,7 @@ const PricingPage = () => {
                     : "border border-border/50 bg-gradient-to-b from-background/60 to-background/20 backdrop-blur-lg hover:border-border/80"
                 )}
               >
-                {/* Popular Badge */}
+                {}
                 {tier.popular && (
                   <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 w-max z-10">
                     <div className="relative">
@@ -177,13 +177,13 @@ const PricingPage = () => {
                   </div>
                 )}
 
-                {/* Card Header */}
+                {}
                 <div className="flex items-center gap-4 mb-4 mt-2">
                   <div
                     className={cn(
                       "p-3 rounded-2xl transition-colors duration-300",
-                      tier.popular 
-                        ? "bg-primary/10 text-primary shadow-inner shadow-primary/20" 
+                      tier.popular
+                        ? "bg-primary/10 text-primary shadow-inner shadow-primary/20"
                         : "bg-surface-100 text-foreground/70 group-hover:text-foreground"
                     )}
                   >
@@ -198,7 +198,7 @@ const PricingPage = () => {
                   {tier.description}
                 </p>
 
-                {/* Price */}
+                {}
                 <div className="mt-6 mb-8 flex items-baseline gap-1.5 relative">
                   <div className="absolute -left-5 top-1/2 -translate-y-1/2 w-1 h-6 rounded-full bg-primary opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
                   <span className="text-4xl sm:text-5xl font-black tracking-tighter text-foreground">
@@ -211,7 +211,7 @@ const PricingPage = () => {
 
                 <div className="h-px w-full bg-gradient-to-r from-border/10 via-border/60 to-border/10 mb-8" />
 
-                {/* Features List */}
+                {}
                 <ul className="space-y-4 mb-10 flex-1">
                   {tier.features.map((feature, i) => (
                     <li
@@ -231,7 +231,7 @@ const PricingPage = () => {
                   ))}
                 </ul>
 
-                {/* CTA Button */}
+                {}
                 <div className="mt-auto">
                   {isCurrentPlan ? (
                     <div className="w-full h-12 rounded-xl bg-emerald-500/10 text-emerald-500 font-bold text-sm flex items-center justify-center gap-2 border border-emerald-500/20 shadow-sm">
@@ -270,7 +270,7 @@ const PricingPage = () => {
           })}
         </div>
 
-        {/* Footer info */}
+        {}
         <div className="mt-16 text-center animate-in fade-in duration-1000 delay-500">
           <div className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full bg-muted/40 border border-border/50 backdrop-blur-sm">
             <Shield className="size-3.5 text-muted-foreground" />

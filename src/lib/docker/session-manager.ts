@@ -1,29 +1,10 @@
-/**
- * Docker Session Manager — Server-side singleton
- *
- * Manages the full lifecycle of per-user sandbox containers:
- * create → track → idle-kill → cleanup.
- *
- * Architecture decisions:
- * - Server-side only (never import from client code)
- * - One container per sessionId
- * - Containers use a custom bridge network (orbit-network)
- * - Each container gets a host-side workspace volume
- * - Idle containers are auto-killed after IDLE_TIMEOUT_MS
- * - On server restart, orphaned orbit-* containers are cleaned up
- */
-
 import Docker from "dockerode";
 import { existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-/** Supported sandbox runtimes */
 export type SandboxRuntime = "node" | "python" | "bash";
 
-/** A tracked sandbox session */
 export interface SandboxSession {
   sessionId: string;
   containerId: string;
@@ -34,14 +15,11 @@ export interface SandboxSession {
   lastActivityAt: number;
 }
 
-/** Result of creating a new session */
 export interface CreateSessionResult {
   sessionId: string;
   containerId: string;
   workspacePath: string;
 }
-
-// ─── Constants ──────────────────────────────────────────────────────────────
 
 const CONTAINER_PREFIX = "orbit-session-";
 const NETWORK_NAME = "orbit-network";
@@ -52,28 +30,19 @@ const NODE_MODULES_CACHE_BASE =
   join(tmpdir(), "orbit-node-modules-cache");
 const CONTAINER_WORKSPACE = "/workspace";
 
-const MEMORY_LIMIT = 1.5 * 1024 * 1024 * 1024; // 1.5 GB
-const CPU_QUOTA = 50_000; // 0.5 CPUs (out of 100_000)
+const MEMORY_LIMIT = 1.5 * 1024 * 1024 * 1024;
+const CPU_QUOTA = 50_000;
 const CPU_PERIOD = 100_000;
 const MAX_CONTAINERS = 10;
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-const CLEANUP_INTERVAL_MS = 60 * 1000; // Check every 60s
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const CLEANUP_INTERVAL_MS = 60 * 1000;
 
-/** Maps runtime → Docker image name */
 const RUNTIME_IMAGES: Record<SandboxRuntime, string> = {
   node: "orbit-node:latest",
   python: "orbit-python:latest",
   bash: "ubuntu:22.04",
 };
 
-// ─── Docker client ──────────────────────────────────────────────────────────
-
-/**
- * Resolve the Docker connection config based on platform.
- * - DOCKER_HOST env var takes precedence (e.g. tcp://localhost:2375)
- * - Windows: named pipe //./pipe/docker_engine
- * - Linux/Mac: /var/run/docker.sock
- */
 function createDockerClient(): Docker {
   if (process.env.DOCKER_HOST) {
     return new Docker({ host: process.env.DOCKER_HOST });
@@ -87,8 +56,6 @@ function createDockerClient(): Docker {
 }
 
 const docker = createDockerClient();
-
-// ─── Session store ──────────────────────────────────────────────────────────
 
 declare global {
   // eslint-disable-next-line no-var
@@ -104,9 +71,6 @@ if (process.env.NODE_ENV !== "production") {
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 let networkEnsured = false;
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/** Ensure the custom Docker bridge network exists */
 async function ensureNetwork(): Promise<void> {
   if (networkEnsured) return;
 
@@ -124,22 +88,18 @@ async function ensureNetwork(): Promise<void> {
   }
 }
 
-/** Build the container name from a session ID */
 function containerName(sessionId: string): string {
   return `${CONTAINER_PREFIX}${sessionId}`;
 }
 
-/** Build the host workspace path for a session */
 function workspacePath(sessionId: string): string {
   return join(WORKSPACE_BASE, `workspace-${sessionId}`);
 }
 
-/** Build the host path for persisted node_modules cache for a project key */
 function nodeModulesCachePath(projectKey: string): string {
   return join(NODE_MODULES_CACHE_BASE, `node-modules-${projectKey}`);
 }
 
-/** Normalize project key to a safe path segment */
 function normalizeProjectKey(value: string | undefined): string | null {
   if (!value) {
     return null;
@@ -156,21 +116,19 @@ function normalizeProjectKey(value: string | undefined): string | null {
   return normalized || null;
 }
 
-/** Ensure the host workspace directory exists */
 function ensureWorkspaceDir(dirPath: string): void {
   if (!existsSync(dirPath)) {
     mkdirSync(dirPath, { recursive: true });
   }
 }
 
-/** Remove the host workspace directory */
 function removeWorkspaceDir(dirPath: string): void {
   try {
     if (existsSync(dirPath)) {
       rmSync(dirPath, { recursive: true, force: true });
     }
   } catch {
-    // Best-effort cleanup
+
   }
 }
 
@@ -186,19 +144,6 @@ const isContainerMissingError = (error: unknown) => {
   return statusCode === 404 || CONTAINER_MISSING_PATTERN.test(message);
 };
 
-// ─── Public API ─────────────────────────────────────────────────────────────
-
-/**
- * Create a new sandbox session.
- *
- * Spins up an isolated Docker container with the requested runtime,
- * resource limits, and a mounted workspace volume.
- *
- * @param sessionId - Unique session identifier (typically from the client)
- * @param runtime - The runtime environment to use
- * @returns Session metadata including containerId and workspacePath
- * @throws If the container limit is reached or Docker fails
- */
 export async function createSession(
   sessionId: string,
   runtime: SandboxRuntime,
@@ -206,7 +151,6 @@ export async function createSession(
 ): Promise<CreateSessionResult> {
   const projectKey = normalizeProjectKey(options?.projectKey);
 
-  // Guard: already exists
   const existing = sessions.get(sessionId);
   if (existing) {
     try {
@@ -227,9 +171,8 @@ export async function createSession(
     }
   }
 
-  // Guard: capacity
   if (sessions.size >= MAX_CONTAINERS) {
-    // Try to evict the oldest idle session
+
     const evicted = findOldestIdleSession();
     if (evicted) {
       await killSession(evicted.sessionId);
@@ -275,7 +218,7 @@ export async function createSession(
       SecurityOpt: ["no-new-privileges"],
       CapDrop: ["ALL"],
       CapAdd: ["CHOWN", "SETUID", "SETGID"],
-      // Expose a port range for dev servers
+
       PublishAllPorts: true,
     },
     ExposedPorts: {
@@ -319,13 +262,6 @@ export async function createSession(
   };
 }
 
-/**
- * Retrieve an active session by its ID.
- * Also bumps lastActivityAt to reset the idle timer.
- *
- * @param sessionId - Session to look up
- * @returns The session, or null if not found
- */
 export function getSession(sessionId: string): SandboxSession | null {
   const session = sessions.get(sessionId);
   if (!session) return null;
@@ -334,11 +270,6 @@ export function getSession(sessionId: string): SandboxSession | null {
   return session;
 }
 
-/**
- * Kill a session: stop + remove the container, clean up workspace.
- *
- * @param sessionId - The session to kill
- */
 export async function killSession(sessionId: string): Promise<void> {
   const session = sessions.get(sessionId);
   sessions.delete(sessionId);
@@ -349,48 +280,31 @@ export async function killSession(sessionId: string): Promise<void> {
       await container.stop({ t: 2 }).catch(() => {});
       await container.remove({ force: true }).catch(() => {});
     } catch {
-      // Container may already be gone
+
     }
     removeWorkspaceDir(session.workspacePath);
   } else {
-    // Try by container name in case the session wasn't tracked
+
     try {
       const name = containerName(sessionId);
       const container = docker.getContainer(name);
       await container.stop({ t: 2 }).catch(() => {});
       await container.remove({ force: true }).catch(() => {});
     } catch {
-      // Best effort
+
     }
     removeWorkspaceDir(workspacePath(sessionId));
   }
 }
 
-/**
- * List all active sandbox sessions.
- *
- * @returns Array of current sessions
- */
 export function listActiveSessions(): SandboxSession[] {
   return Array.from(sessions.values());
 }
 
-/**
- * Get the underlying Docker client.
- * Used by other modules (file sync, terminal bridge) that need direct access.
- *
- * @returns The dockerode instance
- */
 export function getDockerClient(): Docker {
   return docker;
 }
 
-/**
- * Get the Docker container instance for a session.
- *
- * @param sessionId - Session to look up
- * @returns The dockerode Container, or null
- */
 export function getContainer(sessionId: string): Docker.Container | null {
   const session = sessions.get(sessionId);
   if (session) {
@@ -398,18 +312,9 @@ export function getContainer(sessionId: string): Docker.Container | null {
     return docker.getContainer(session.containerId);
   }
 
-  // Fallback path for multi-worker dev mode where the in-memory map may not
-  // contain a session created by another worker. Container name is deterministic.
   return docker.getContainer(containerName(sessionId));
 }
 
-/**
- * Get the mapped host port for a container's internal port.
- *
- * @param sessionId - The session to inspect
- * @param containerPort - The port inside the container (e.g. 3000)
- * @returns The host port number, or null if not mapped
- */
 export async function getMappedPort(
   sessionId: string,
   containerPort: number,
@@ -427,17 +332,12 @@ export async function getMappedPort(
       return isNaN(hostPort) ? null : hostPort;
     }
   } catch {
-    // Container may be gone
+
   }
 
   return null;
 }
 
-/**
- * Record activity for a session (resets the idle timer).
- *
- * @param sessionId - Session to touch
- */
 export function touchSession(sessionId: string): void {
   const session = sessions.get(sessionId);
   if (session) {
@@ -445,10 +345,6 @@ export function touchSession(sessionId: string): void {
   }
 }
 
-/**
- * Cleanup orphaned orbit-* containers from a previous server run.
- * Call this once at server startup.
- */
 export async function cleanupOrphanedContainers(): Promise<void> {
   try {
     const containers = await docker.listContainers({
@@ -462,7 +358,6 @@ export async function cleanupOrphanedContainers(): Promise<void> {
 
       const sessionId = name.replace(CONTAINER_PREFIX, "");
 
-      // Skip if this session is actively tracked (shouldn't happen on fresh boot)
       if (sessions.has(sessionId)) continue;
 
       try {
@@ -472,20 +367,18 @@ export async function cleanupOrphanedContainers(): Promise<void> {
         }
         await container.remove({ force: true }).catch(() => {});
       } catch {
-        // Best effort
+
       }
 
       removeWorkspaceDir(workspacePath(sessionId));
     }
   } catch {
-    // Docker may not be available during dev on Windows/Mac
+
     console.warn(
       "[orbit:sandbox] Could not clean up orphaned containers (Docker may not be available)",
     );
   }
 }
-
-// ─── Internal ───────────────────────────────────────────────────────────────
 
 function findOldestIdleSession(): SandboxSession | null {
   let oldest: SandboxSession | null = null;
@@ -522,14 +415,12 @@ function startCleanupTimer(): void {
       });
     }
 
-    // Stop timer if no sessions left
     if (sessions.size === 0 && cleanupTimer) {
       clearInterval(cleanupTimer);
       cleanupTimer = null;
     }
   }, CLEANUP_INTERVAL_MS);
 
-  // Don't keep the Node.js process alive just for this timer
   if (
     cleanupTimer &&
     typeof cleanupTimer === "object" &&

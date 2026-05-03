@@ -1,12 +1,5 @@
 "use client";
 
-/**
- * useSandbox — React hook for managing a Docker sandbox session.
- *
- * Handles session lifecycle (create, sync files, kill) with
- * automatic cleanup on unmount.
- */
-
 import { useCallback, useEffect, useRef, useState } from "react";
 
 interface UseSandboxOptions {
@@ -93,7 +86,7 @@ export function useSandbox(options: UseSandboxOptions = {}) {
         body: JSON.stringify({ sessionId: sid }),
       });
     } catch {
-      // Fire and forget
+
     }
 
     sessionIdRef.current = null;
@@ -163,7 +156,7 @@ export function useSandbox(options: UseSandboxOptions = {}) {
               exitCode = parseInt(payload.data, 10) || 0;
             }
           } catch {
-            // skip
+
           }
         }
       }
@@ -173,14 +166,12 @@ export function useSandbox(options: UseSandboxOptions = {}) {
     [],
   );
 
-  // Auto-create on mount
   useEffect(() => {
     if (autoCreate && !state.isReady && !state.isBooting) {
       void create();
     }
   }, [autoCreate, create, state.isReady, state.isBooting]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       const sid = sessionIdRef.current;

@@ -19,8 +19,6 @@ export const getActive = query({
   },
 });
 
-// Called by the Stripe webhook after a successful checkout.
-// Intentionally skips verifyAuth — only called from our secure server-side webhook handler.
 export const activate = mutation({
   args: {
     ownerId: v.string(),

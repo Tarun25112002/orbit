@@ -426,10 +426,6 @@ const isSandboxSessionMissingError = (error: unknown) => {
   return statusCode === 404 || SANDBOX_SESSION_MISSING_PATTERN.test(message);
 };
 
-/**
- * Execute a shell command inside a Docker container and capture output.
- * Returns the exit code and captured stdout/stderr text.
- */
 const execCommandInContainer = async (args: {
   sessionId: string;
   command: string;
@@ -458,7 +454,7 @@ const execCommandInContainer = async (args: {
       try {
         execStream.destroy();
       } catch {
-        // Best effort
+
       }
       resolve({ exitCode: 1, output: "Command timed out." });
     }, args.timeoutMs ?? SANDBOX_COMMAND_TIMEOUT_MS);
@@ -498,10 +494,6 @@ const execCommandInContainer = async (args: {
   });
 };
 
-/**
- * Ensure a sandbox session exists for a project and sync its files.
- * Returns the sessionId to use for subsequent command execution.
- */
 const ensureSandboxForProject = async (args: {
   projectId: Id<"projects">;
   projectFiles: ConversationProjectFile[];
@@ -509,7 +501,6 @@ const ensureSandboxForProject = async (args: {
   const sessionId = `inngest-${args.projectId}`;
   const syncStartedDirtyVersion = getSandboxDirtyVersion(args.projectId);
 
-  // Create session if it doesn't already exist
   const existing = getSession(sessionId);
   if (!existing) {
     await createSession(sessionId, "node", {
@@ -517,7 +508,6 @@ const ensureSandboxForProject = async (args: {
     });
   }
 
-  // Sync project files into the container
   const filesToSync = args.projectFiles
     .filter(
       (
@@ -536,7 +526,6 @@ const ensureSandboxForProject = async (args: {
   return sessionId;
 };
 
-/** Track sandbox session IDs created during Inngest execution for cleanup. */
 const activeSandboxSessions = new Map<string, string>();
 const sandboxNeedsResync = new Map<string, boolean>();
 const sandboxDirtyVersions = new Map<string, number>();
@@ -1218,8 +1207,7 @@ const executeConversationFileOperation = async (args: {
       }
 
       if (sandboxError) {
-        // Prefer a hard failure so fixup can see terminal/runtime problems.
-        // Client-side queue fallback remains available behind an explicit env flag.
+
         console.warn("conversation.sandbox.exec.fallback", {
           projectId,
           command: displayCommand,
@@ -1642,7 +1630,6 @@ const buildExecutionTraceSummary = (
 
   const lines: string[] = ["[Previous AI Actions]"];
 
-  // Summarize file operations
   const fileOps = trace.operationResults.filter(
     (r) =>
       r.operation.type !== "run_command" &&
@@ -1671,7 +1658,6 @@ const buildExecutionTraceSummary = (
     }
   }
 
-  // Summarize command operations
   const commandOps = trace.operationResults.filter(
     (r) =>
       r.operation.type === "run_command" ||
@@ -1720,7 +1706,6 @@ const buildConversationHistoryBlock = (
       const role = historyMessage.role === "assistant" ? "Assistant" : "User";
       const contentBlock = `${role}: ${historyMessage.content}`;
 
-      // Append execution trace summary for assistant messages (if available and enabled)
       if (
         ENABLE_TRACE_HISTORY &&
         historyMessage.role === "assistant" &&
@@ -2006,11 +1991,11 @@ export const conversationMessageRequested = inngest.createFunction(
                 content: status,
               });
             } catch {
-              // Best-effort
+
             }
           },
           onOperationProgress: async (completedResults, totalOps) => {
-            // Build a real-time progress message the user can see
+
             const lines: string[] = [
               `> ⚡ **Building project** (${completedResults.length}/${totalOps} operations)`,
               "",
@@ -2056,7 +2041,7 @@ export const conversationMessageRequested = inngest.createFunction(
                 content: progressContent,
               });
             } catch {
-              // Best-effort — don't fail the pipeline if progress update fails
+
             }
           },
           loadProjectFilesAfterOperations: async () => {
@@ -2257,9 +2242,7 @@ export const conversationMessageRequested = inngest.createFunction(
 
       throw error;
     } finally {
-      // SAFETY NET: Guarantee the message is never left stuck in "processing".
-      // If the try or catch paths already finalized it, this is a no-op since
-      // completeMessageIfProcessing only updates messages still in "processing".
+
       try {
         await convex.mutation(api.system.completeMessageIfProcessing, {
           messageId: assistantMessageId as Id<"messages">,
@@ -2268,8 +2251,7 @@ export const conversationMessageRequested = inngest.createFunction(
           status: "failed",
         });
       } catch {
-        // Best-effort — if this also fails, the message will stay stuck but
-        // at least we logged the real error above.
+
       }
     }
   },

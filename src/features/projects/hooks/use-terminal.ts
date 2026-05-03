@@ -1,10 +1,5 @@
 "use client";
 
-/**
- * useTerminal — React hook for connecting xterm.js to the Docker sandbox
- * via WebSocket terminal bridge.
- */
-
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const WS_URL =
@@ -59,7 +54,7 @@ export function useTerminal(options: UseTerminalOptions) {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      // Attach to the sandbox session
+
       ws.send(JSON.stringify({ type: "attach", sessionId }));
       if (mountedRef.current) {
         setIsConnected(true);
@@ -86,7 +81,7 @@ export function useTerminal(options: UseTerminalOptions) {
           onOutput?.(`\r\n[Process exited with code ${message.code ?? 0}]\r\n`);
         }
       } catch {
-        // Malformed message
+
       }
     };
 
@@ -94,7 +89,6 @@ export function useTerminal(options: UseTerminalOptions) {
       if (mountedRef.current) {
         setIsConnected(false);
 
-        // Auto-reconnect after 2 seconds
         if (sessionId) {
           reconnectTimerRef.current = setTimeout(() => {
             if (mountedRef.current && sessionId) {
@@ -125,7 +119,6 @@ export function useTerminal(options: UseTerminalOptions) {
     }
   }, []);
 
-  // Auto-connect when sessionId is set
   useEffect(() => {
     if (autoConnect && sessionId) {
       connect();

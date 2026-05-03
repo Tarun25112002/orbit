@@ -62,7 +62,7 @@ export default defineSchema({
       )
     }).index("by_conversation", ["conversationId"])
     .index("by_project_status", ["projectId", "status"]),
-    
+
     subscriptions: defineTable({
       ownerId: v.string(),
       tier: v.union(v.literal("basic"), v.literal("pro"), v.literal("advance")),

@@ -68,7 +68,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Check AI usage limits ──────────────────────────────────────────────
     const aiAccess = await userConvex.query(api.projects.checkAiAccess, {});
     if (!aiAccess.allowed) {
       return NextResponse.json(

@@ -1,7 +1,3 @@
-/**
- * POST /api/sandbox/kill — Destroy a sandbox session.
- */
-
 import { NextRequest, NextResponse } from "next/server";
 import { killSession } from "@/lib/docker/session-manager";
 
