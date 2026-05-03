@@ -432,7 +432,7 @@ erDiagram
 
 ## Key Features
 
-### 🤖 Multi-Agent AI Orchestration
+### Multi-Agent AI Orchestration
 - **Supervisor Agent** — Classifies user intent and delegates to specialist agents
 - **Architecture Agent** — Analyzes component structure, state management, and data flow
 - **Code Quality Agent** — Finds bugs, edge cases, regressions, and type-safety issues
@@ -441,7 +441,7 @@ erDiagram
 - **File Operations Planner** — Produces executable JSON traces (create, update, delete, rename, run_command)
 - **Synthesis Agent** — Composes the final user-facing response after execution
 
-### 🐳 Docker Sandbox Runtime
+### Docker Sandbox Runtime
 - Isolated container execution per project session (Node, Python, Bash runtimes)
 - Memory-limited (1.5 GB), CPU-throttled (50% quota), capability-dropped (`--cap-drop ALL`)
 - Automatic `node_modules` caching per project key
@@ -449,7 +449,7 @@ erDiagram
 - Port detection and host-port mapping for live previews
 - File sync engine with tar-stream archiving for bulk container writes
 
-### 💻 Browser-Based IDE
+### Browser-Based IDE
 - **Monaco Editor** with TypeScript IntelliSense, Emmet abbreviations, and custom themes
 - **Multi-tab editing** with preview tabs, pinning, close-others, and scroll overflow
 - **File Explorer** with drag-and-drop, rename, create, delete, and context menus
@@ -460,7 +460,7 @@ erDiagram
 - **AI Selection Bar** — select code → get inline AI suggestions
 - **Editor Status Bar** — language, line/column, encoding, word count
 
-### 🔄 Self-Healing Build Pipeline
+### Self-Healing Build Pipeline
 - Autonomous validation loop (`npm run build` / `tsc --noEmit` / `vite build`)
 - Up to 5 fix-up iterations when builds fail — AI reads errors and patches code
 - Automatic package manager detection and fallback (pnpm → yarn → npm)
@@ -470,7 +470,7 @@ erDiagram
 - Build-gate: dev server only starts after successful build validation
 - Dev server crash detection with failure-window tracking (max 3 failures in 2 min)
 
-### 🧠 Intelligent Code Suggestions
+### Intelligent Code Suggestions
 - **Autocomplete mode** — inline completions as you type (synchronous, sub-200ms)
 - **Transform mode** — select code + instruction → full-file rewrite (async via Inngest)
 - Request deduplication with fingerprint-based caching
@@ -479,26 +479,26 @@ erDiagram
 - Request lifecycle: queued → processing → retrying → completed
 - SSE streaming and polling endpoints for async results
 
-### 🔐 Authentication & Authorization
+### Authentication & Authorization
 - Clerk-based authentication with GitHub OAuth support
 - Middleware-level route protection (Next.js 16 `proxy.ts`)
 - Encrypted GitHub token storage with AES-256-GCM
 - Automatic stale cookie cleanup on sign-out
 - Subscription-aware project limits (Free: 3, Basic: 10, Pro: 50, Advanced: ∞)
 
-### 💳 Subscription & Billing
+### Subscription & Billing
 - Stripe Checkout integration with INR pricing (₹1,000 / ₹2,500 / ₹5,000 per month)
 - Webhook-driven subscription activation with idempotent processing
 - Real-time usage enforcement — blocks AI execution when limits exceeded
 - Glassmorphic upgrade modal with tier comparison
 
-### 🔗 GitHub Integration
+### GitHub Integration
 - OAuth flow with encrypted token persistence
 - Import repositories into Orbit workspace
 - Export/push workspace files to GitHub repos
 - Repository browser with connection status management
 
-### 🌐 Preview Proxy System
+### Preview Proxy System
 - Standalone HTTP proxy server for iframe-based previews
 - Cookie-based session routing to correct container port
 - WebSocket upgrade support for HMR
