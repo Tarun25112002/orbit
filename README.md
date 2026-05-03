@@ -29,39 +29,354 @@ This is not a wrapper around ChatGPT. Orbit features a **custom agentic pipeline
 
 ## Architecture
 
+### High-Level System Architecture
+
+```mermaid
+graph TB
+    subgraph Client["Client — Browser"]
+        UI["Next.js 16 App Router<br/>React 19 + TypeScript 5"]
+        Monaco["Monaco Editor<br/>IntelliSense + Emmet"]
+        Term["xterm.js Terminal"]
+        Preview["Live Preview iFrame"]
+        State["Zustand Store<br/>Editor + Tab State"]
+    end
+
+    subgraph Server["Server — Next.js 16"]
+        Proxy["proxy.ts Middleware<br/>Auth + Route Protection"]
+        API["API Routes<br/>25+ REST Endpoints"]
+
+        subgraph Auth["Authentication & Billing"]
+            Clerk["Clerk Auth<br/>OAuth + Sessions"]
+            Stripe["Stripe Billing<br/>Webhooks + Checkout"]
+        end
+
+        subgraph AI["AI Orchestration Engine"]
+            Inngest["Inngest Step Functions<br/>Durable Execution"]
+            Agents["Multi-Agent Pipeline<br/>Supervisor + Specialists"]
+            Planner["File Ops Planner<br/>JSON Trace Generator"]
+        end
+
+        subgraph Sandbox["Docker Sandbox Runtime"]
+            SessionMgr["Session Manager<br/>Create + Kill + Evict"]
+            FileSync["File Sync Engine<br/>tar-stream Archiving"]
+            PortDetect["Port Detector<br/>Host-Port Mapping"]
+            ResGuard["Resource Guard<br/>1.5GB RAM, 50% CPU"]
+        end
+
+        subgraph Services["Supporting Services"]
+            ProxyServer["Preview Proxy<br/>HTTP + WebSocket"]
+            TermBridge["Terminal Bridge<br/>WebSocket to Docker"]
+            Suggest["Code Suggestions<br/>Autocomplete + Transform"]
+        end
+    end
+
+    subgraph External["External Services"]
+        Convex["Convex<br/>Realtime Database"]
+        Groq["Groq<br/>GPT-OSS-120B"]
+        Gemini["Google Gemini<br/>2.5 Flash/Pro, 3.x"]
+        OpenRouter["OpenRouter<br/>Code Completions"]
+        GitHub["GitHub API<br/>Import/Export/Push"]
+        Firecrawl["Firecrawl<br/>Web Scraping"]
+        Sentry["Sentry<br/>Error Monitoring"]
+    end
+
+    UI -->|REST / SSE| API
+    Monaco -->|WebSocket| TermBridge
+    Term -->|WebSocket| TermBridge
+    Preview -->|HTTP Proxy| ProxyServer
+    State --> UI
+
+    Proxy --> API
+    API --> Clerk
+    API --> Stripe
+    API --> Inngest
+    API --> SessionMgr
+    API --> Suggest
+
+    Inngest --> Agents
+    Agents --> Planner
+    Planner --> FileSync
+    Agents -->|LLM Calls| Groq
+    Agents -->|Fallback| Gemini
+    Suggest --> OpenRouter
+
+    SessionMgr --> PortDetect
+    SessionMgr --> ResGuard
+    TermBridge --> SessionMgr
+    ProxyServer --> PortDetect
+    FileSync --> SessionMgr
+
+    API --> Convex
+    API --> GitHub
+    Agents --> Firecrawl
+    UI --> Sentry
+
+    style Client fill:#1e293b,stroke:#475569,color:#e2e8f0
+    style Server fill:#0f172a,stroke:#334155,color:#e2e8f0
+    style External fill:#172554,stroke:#1e40af,color:#bfdbfe
+    style AI fill:#1e1b4b,stroke:#4338ca,color:#c7d2fe
+    style Sandbox fill:#1c1917,stroke:#78716c,color:#d6d3d1
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        CLIENT (Browser)                         │
-│  Next.js 16 App Router · React 19 · Monaco Editor · xterm.js   │
-│  Allotment Panels · Framer Motion · Zustand State Management    │
-└────────────────────────┬─────────────────────────────────────────┘
-                         │ REST / WebSocket / Convex Realtime
-┌────────────────────────▼─────────────────────────────────────────┐
-│                     SERVER (Next.js 16)                          │
-│                                                                  │
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
-│  │  Clerk Auth  │  │ Stripe Billing│  │   Convex Backend DB    │  │
-│  │  Middleware   │  │  Webhooks    │  │  (Projects/Files/Chat) │  │
-│  └─────────────┘  └──────────────┘  └────────────────────────┘  │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              AI Orchestration Engine                      │   │
-│  │  Supervisor → Specialist Agents → File Ops Planner       │   │
-│  │  Groq (GPT-OSS-120B) ←→ Gemini Fallback Chain           │   │
-│  │  Inngest Step Functions (Durable Execution)              │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │              Docker Sandbox Runtime                       │   │
-│  │  Session Manager · File Sync · Port Detector              │   │
-│  │  Resource Guard · Orphan Cleanup · Container Pooling      │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │  Preview Proxy │  │ Terminal WS  │  │ Code Suggestions     │  │
-│  │  (HTTP Proxy) │  │  Bridge      │  │ (OpenRouter/Gemini)  │  │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
+
+### AI Multi-Agent Pipeline
+
+```mermaid
+flowchart TD
+    UserMsg["User Message"] --> IntentDetect{"Intent Detection<br/>Regex Pattern Matching"}
+
+    IntentDetect -->|"Analysis Request<br/>(how, explain, why)"| AnalysisPath
+    IntentDetect -->|"Code Request<br/>(create, build, fix)"| ExecutionPath
+    IntentDetect -->|"Fast Execution<br/>(do it, apply, step by step)"| FastPath
+
+    subgraph AnalysisPath["Analysis Path"]
+        Supervisor["Supervisor Agent<br/>Classifies + Delegates"] --> Arch["Architecture Agent<br/>Structure + Data Flow"]
+        Supervisor --> Quality["Code Quality Agent<br/>Bugs + Edge Cases"]
+        Supervisor --> Impl["Implementation Agent<br/>Code Proposals"]
+        Supervisor --> Web["Web Context Agent<br/>URL Scraping"]
+        Arch & Quality & Impl & Web --> Synthesis["Synthesis Agent<br/>Final Response"]
+    end
+
+    subgraph ExecutionPath["Execution Path"]
+        ComplexCheck{"Complex Build?<br/>Multi-page, Dashboard,<br/>E2E App"} -->|Yes| Chunker["Deterministic Chunker<br/>Split into 2-4 Chunks"]
+        ComplexCheck -->|No| SinglePlan["Single Planner Call"]
+
+        Chunker --> PlanLoop
+        SinglePlan --> PlanLoop
+
+        subgraph PlanLoop["Planner Loop — up to 15 calls"]
+            FileOps["File Ops Planner<br/>Generate JSON Trace"] --> ParseTrace["Parse + Validate<br/>Execution Trace"]
+            ParseTrace --> Execute["Execute Operations<br/>create_file, update_file,<br/>run_command, delete_path"]
+            Execute --> ModelRotate{"Success?"}
+            ModelRotate -->|Fail + Retries Left| FileOps
+        end
+    end
+
+    subgraph FastPath["Fast Execution Path"]
+        FastPlan["Planner — Budget: 5 calls<br/>Skip Supervisor"] --> PlanLoop
+    end
+
+    PlanLoop --> SandboxExec["Docker Sandbox<br/>File Sync + Command Exec"]
+    SandboxExec --> BuildGate{"Build Validation<br/>npm build / tsc / vite"}
+    BuildGate -->|Pass| DevServer["Start Dev Server<br/>Live Preview"]
+    BuildGate -->|Fail| FixLoop{"Fix-up Iteration<br/>Max 5 attempts"}
+    FixLoop -->|"AI reads errors,<br/>patches code"| SandboxExec
+    FixLoop -->|"Max retries hit"| ErrorReport["Report Build Errors"]
+    DevServer --> FinalSynth["Synthesis Agent<br/>Summarize Changes"]
+    ErrorReport --> FinalSynth
+
+    style IntentDetect fill:#4338ca,stroke:#6366f1,color:#e0e7ff
+    style AnalysisPath fill:#1e1b4b,stroke:#4338ca,color:#c7d2fe
+    style ExecutionPath fill:#1e1b4b,stroke:#4338ca,color:#c7d2fe
+    style FastPath fill:#1e1b4b,stroke:#4338ca,color:#c7d2fe
+    style PlanLoop fill:#312e81,stroke:#6366f1,color:#e0e7ff
+    style BuildGate fill:#92400e,stroke:#f59e0b,color:#fef3c7
+```
+
+### LLM Model Routing & Fallback Chain
+
+```mermaid
+flowchart LR
+    Request["LLM Request"] --> TPMCheck{"Estimate Tokens<br/>vs TPM Budget"}
+
+    TPMCheck -->|"Within Budget"| GroqPrimary["Groq — GPT-OSS-120B<br/>131K context, fast inference"]
+    TPMCheck -->|"Exceeds Budget"| SkipGroq["Skip Groq<br/>→ Gemini Direct"]
+
+    GroqPrimary -->|Success| Done["Return Response"]
+    GroqPrimary -->|"413 Payload Too Large"| Compact["Auto-Compact Payload<br/>Truncate Head/Tail"]
+    Compact --> GroqRetry["Groq Retry<br/>Up to 4 compaction attempts"]
+    GroqRetry -->|Success| Done
+    GroqRetry -->|"Still Too Large"| SkipGroq
+
+    GroqPrimary -->|"429 Rate Limited"| Gemini1
+    GroqPrimary -->|"Network Error"| Gemini1
+
+    SkipGroq --> Gemini1["Gemini 2.5 Flash"]
+    Gemini1 -->|Success| Done
+    Gemini1 -->|"429 + Cooldown Set"| Gemini2["Gemini 2.5 Pro"]
+    Gemini2 -->|Success| Done
+    Gemini2 -->|"429 + Cooldown Set"| Gemini3["Gemini 3 Flash Preview"]
+    Gemini3 -->|Success| Done
+    Gemini3 -->|"429 + Cooldown Set"| Gemini4["Gemini 3.1 Flash Live"]
+    Gemini4 -->|Success| Done
+    Gemini4 -->|All Exhausted| Error["GeminiRequestError<br/>Return to User"]
+
+    style GroqPrimary fill:#059669,stroke:#10b981,color:#ecfdf5
+    style Gemini1 fill:#2563eb,stroke:#60a5fa,color:#eff6ff
+    style Gemini2 fill:#2563eb,stroke:#60a5fa,color:#eff6ff
+    style Gemini3 fill:#2563eb,stroke:#60a5fa,color:#eff6ff
+    style Gemini4 fill:#2563eb,stroke:#60a5fa,color:#eff6ff
+    style Error fill:#dc2626,stroke:#f87171,color:#fef2f2
+```
+
+### Docker Sandbox Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle: No Active Session
+
+    Idle --> Creating: createSession()
+    Creating --> Running: container.start()
+    Running --> Syncing: syncProjectToContainer()
+    Syncing --> Ready: Files Written
+
+    Ready --> Executing: execCommandInContainer()
+    Executing --> Ready: Command Complete
+    Ready --> Executing: New Command
+
+    Ready --> PortMapped: getMappedPort()
+    PortMapped --> Previewing: Proxy Routes to Container
+
+    Ready --> IdleTimeout: 30 min no activity
+    IdleTimeout --> Killing: killSession()
+    Killing --> Cleaned: Remove Container + Workspace
+    Cleaned --> [*]
+
+    Running --> Evicted: MAX_CONTAINERS reached
+    Evicted --> Killing: Oldest Idle Session
+
+    note right of Creating
+        Memory: 1.5 GB
+        CPU: 50% quota
+        Cap Drop: ALL
+        Security: no-new-privileges
+        Network: orbit-network
+    end note
+
+    note right of Syncing
+        tar-stream archiving
+        Bulk container writes
+        node_modules volume cache
+    end note
+```
+
+### Request Sequence — User Message to Preview
+
+```mermaid
+sequenceDiagram
+    participant U as User Browser
+    participant API as /api/messages
+    participant Inn as Inngest
+    participant CX as Convex DB
+    participant AI as AI Agents
+    participant LLM as Groq / Gemini
+    participant DK as Docker Container
+    participant PX as Preview Proxy
+
+    U->>API: POST /api/messages {message, projectId}
+    API->>CX: Create message (status: processing)
+    API->>Inn: inngest.send("conversation.message")
+    API-->>U: 200 OK {messageId}
+
+    Inn->>CX: Load project files + history
+    Inn->>AI: runConversationAgentOrchestration()
+
+    AI->>LLM: Supervisor prompt (classify intent)
+    LLM-->>AI: {assignments: [...agents]}
+
+    loop Specialist Agents (parallel)
+        AI->>LLM: Agent-specific prompt
+        LLM-->>AI: Specialist report
+    end
+
+    AI->>LLM: File Ops Planner prompt
+    LLM-->>AI: JSON execution trace
+
+    loop Each Operation
+        AI->>DK: create_file / update_file / run_command
+        DK-->>AI: {status, output}
+    end
+
+    AI->>DK: npm run build (validation)
+    DK-->>AI: Build result
+
+    alt Build Failed
+        loop Fix-up (max 5)
+            AI->>LLM: Error context → patch prompt
+            LLM-->>AI: Fixed file operations
+            AI->>DK: Apply fixes + rebuild
+        end
+    end
+
+    AI->>DK: npm run dev (background)
+    DK-->>AI: Dev server started on :4173
+
+    AI->>LLM: Synthesis prompt
+    LLM-->>AI: User-facing summary
+
+    Inn->>CX: Update message (status: completed, content)
+    CX-->>U: Realtime subscription update
+
+    U->>PX: GET preview iframe
+    PX->>DK: Proxy HTTP to container:4173
+    DK-->>PX: HTML response
+    PX-->>U: Rendered preview
+```
+
+### Data Model (ER Diagram)
+
+```mermaid
+erDiagram
+    USERS ||--o{ PROJECTS : owns
+    USERS ||--o| SUBSCRIPTIONS : has
+    PROJECTS ||--o{ FILES : contains
+    PROJECTS ||--o{ CONVERSATIONS : has
+    CONVERSATIONS ||--o{ MESSAGES : contains
+    FILES ||--o{ FILES : "parent → children"
+
+    USERS {
+        string id PK "Clerk User ID"
+    }
+
+    PROJECTS {
+        string id PK
+        string name
+        string ownerId FK
+        number updatedAt
+        string importStatus "importing | completed | failed"
+        string exportStatus "exporting | completed | failed | cancelled"
+        string importRepoUrl
+        string exportRepoUrl
+    }
+
+    FILES {
+        string id PK
+        string projectId FK
+        string parentId FK "nullable — root files"
+        string name
+        string type "file | folder"
+        string content "nullable — folders have none"
+        string storageId "Convex storage ref"
+        number updatedAt
+    }
+
+    CONVERSATIONS {
+        string id PK
+        string projectId FK
+        string title
+        number updatedAt
+    }
+
+    MESSAGES {
+        string id PK
+        string conversationId FK
+        string projectId FK
+        string role "user | assistant"
+        string content
+        json reasoning_details
+        array thinking_logs
+        string status "processing | completed | failed | cancelled"
+    }
+
+    SUBSCRIPTIONS {
+        string id PK
+        string ownerId FK
+        string tier "basic | pro | advance"
+        string stripeSessionId
+        string stripePaymentIntentId
+        string status "pending | active | failed"
+        number createdAt
+        number updatedAt
+    }
 ```
 
 ---
@@ -189,62 +504,8 @@ This is not a wrapper around ChatGPT. Orbit features a **custom agentic pipeline
 - WebSocket upgrade support for HMR
 - Cross-origin isolation handling for secure embedding
 
----
 
-## AI Pipeline — Deep Dive
 
-### Request Flow
-
-```
-User Message
-     │
-     ▼
-┌─────────────┐     ┌──────────────────┐
-│  Intent      │────▶│  Analysis Path   │─── Supervisor → Specialists → Synthesis
-│  Detection   │     └──────────────────┘
-│              │     ┌──────────────────┐
-│              │────▶│  Execution Path  │─── File Ops Planner → Sandbox Execution
-│              │     └──────────────────┘         │
-└─────────────┘                                    ▼
-                                          ┌────────────────┐
-                                          │  Build Gate     │
-                                          │  Validation     │
-                                          │  Fix-up Loop    │
-                                          └────────┬───────┘
-                                                   ▼
-                                          ┌────────────────┐
-                                          │  Dev Server     │
-                                          │  Live Preview   │
-                                          └────────────────┘
-```
-
-### Model Routing Strategy
-
-| Priority | Provider | Model | Use Case |
-|---|---|---|---|
-| 1 | Groq | GPT-OSS-120B (131K ctx) | Primary — fast inference, large context |
-| 2 | Google | Gemini 2.5 Flash | Fallback — rate-limit or payload too large |
-| 3 | Google | Gemini 2.5 Pro | Secondary fallback |
-| 4 | Google | Gemini 3 Flash Preview | Tertiary fallback |
-| 5 | Google | Gemini 3.1 Flash Live | Final fallback |
-
-- **TPM-aware routing**: Estimates token count before sending; skips Groq if payload exceeds budget
-- **Automatic compaction**: Truncates prompts while preserving head/tail context when tokens exceed limits
-- **Per-model cooldown**: Rate-limited models are paused with retry-after tracking
-- **Chained fallback**: On Groq failure (non-auth), automatically cascades through Gemini model chain
-
-### Complex Build Chunking
-
-For large project requests (e.g., "build a full e-commerce dashboard"), Orbit decomposes the work into deterministic chunks:
-
-1. **Design Foundation & Config** — `package.json`, Vite config, Tailwind, TypeScript, `index.html`
-2. **Core Layout & Navigation** — App shell, routing, navbar, footer, layout wrapper
-3. **Feature Components & Content** — Pages, data, interactive elements, responsive grids
-4. **Advanced Features & Polish** — Search/filter, modals, form validation, micro-animations
-
-Each chunk is executed sequentially with up to 15 planner calls per request, 3 retries per call, and model rotation on failure.
-
----
 
 ## Project Structure
 
