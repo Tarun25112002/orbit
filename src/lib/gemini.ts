@@ -258,10 +258,8 @@ const toModelCooldownKey = (model: string, apiKey: string) =>
 
 const GEMINI_FREE_FALLBACK_CHAIN = [
   "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
   "gemini-2.5-pro",
   "gemini-3-flash-preview",
-  "gemini-3.1-flash-lite-preview",
   "gemini-3.1-flash-live-preview",
 ] as const;
 
@@ -271,7 +269,8 @@ const getGeminiFallbackModels = () => {
     .map((model) => model.trim())
     .filter(Boolean);
 
-  return Array.from(new Set([...GEMINI_FREE_FALLBACK_CHAIN, ...configured]));
+  // User-configured models take priority over the hardcoded chain
+  return Array.from(new Set([...configured, ...GEMINI_FREE_FALLBACK_CHAIN]));
 };
 
 const getGeminiModelCandidates = (preferredModel: string) =>
@@ -704,6 +703,18 @@ const generateGroqCompletion = async (args: {
         continue;
       }
 
+      // 413 "Request too large" — payload can never fit within TPM budget.
+      // Throw immediately so the outer function falls back to Gemini.
+      if (
+        structuredStatusCode === 413 ||
+        isGroqRequestTooLargeError(rawMessage)
+      ) {
+        throw new GeminiRequestError({
+          message: `Groq payload too large (${rawMessage.slice(0, 150)}). Falling back to Gemini.`,
+          status: 413,
+        });
+      }
+
       const isRateLimited = isRateLimitedGeminiError({
         statusCode: structuredStatusCode,
         message: rawMessage,
@@ -770,6 +781,28 @@ export const generateGeminiCompletion = async (args: {
 
   // Route through Groq when available (primary provider) and a Gemini model isn't explicitly requested
   if (shouldUseGroq) {
+    // Pre-check: estimate payload size and skip Groq if it would exceed the TPM budget.
+    // This avoids a wasted 413 error on large planner payloads (system prompt + code).
+    const estimatedPayloadTokens = estimateTokensFromGroqPayload({
+      system: args.system,
+      messages: args.messages.map((msg) => ({
+        role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
+        content: msg.content,
+      })),
+    });
+    const tpmBudget = getGroqTpmBudget();
+    const payloadExceedsBudget =
+      estimatedPayloadTokens + getGroqMinOutputTokens() > tpmBudget;
+
+    if (payloadExceedsBudget && getGeminiApiKey()) {
+      console.warn("groq.skip-payload-too-large", {
+        estimatedTokens: estimatedPayloadTokens,
+        tpmBudget,
+        minOutputTokens: getGroqMinOutputTokens(),
+        reason: "Payload exceeds TPM budget, skipping to Gemini",
+      });
+      // Fall through to Gemini pathway below
+    } else {
     const GROQ_RATE_LIMIT_MAX_RETRIES = 3;
     let groqLastError: GeminiRequestError | null = null;
 
@@ -824,6 +857,7 @@ export const generateGeminiCompletion = async (args: {
         error: groqLastError.message,
       });
     }
+    } // end else (payload fits within budget)
   }
 
   // Gemini pathway (original logic or Groq fallback)

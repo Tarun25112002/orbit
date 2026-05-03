@@ -295,20 +295,25 @@ const buildDeterministicChunks = (
 
   if (!hasExistingPackageJson) {
     chunks.push({
-      title: "Project Foundation",
-      goal: "Create package.json with all needed dependencies (vite, react, react-dom, @vitejs/plugin-react, tailwindcss, postcss, autoprefixer, typescript), config files (tsconfig.json, vite.config.ts, postcss.config.js, tailwind.config.js), index.html, and src/index.css with Tailwind directives. Include COMPLETE dependency list so npm install succeeds in one pass.",
+      title: "Design Foundation & Config",
+      goal: "Create package.json with ALL dependencies (vite, react, react-dom, @vitejs/plugin-react, tailwindcss@^3, postcss, autoprefixer, typescript, @types/react, @types/react-dom, lucide-react, framer-motion, clsx, react-router-dom). Create config files (tsconfig.json, vite.config.ts, postcss.config.js, tailwind.config.js with custom animations + font families). Create index.html with Google Fonts (Inter + Outfit) link tags. Create src/index.css with Tailwind directives PLUS animation keyframes (fadeIn, slideUp, slideDown, scaleIn, float, shimmer, pulse-glow) and base body styles. Include COMPLETE dependency list so npm install succeeds in one pass.",
     });
   }
 
   chunks.push({
-    title: "Core Implementation",
-    goal: `Implement the main application code: entry point (src/main.tsx), App component, pages, components, and core UI logic for: ${message.slice(0, 250)}. Write COMPLETE, RUNNABLE files with proper imports/exports. Use Tailwind CSS for all styling.`,
+    title: "Core Layout & Navigation",
+    goal: `Build the app shell with premium design: entry point (src/main.tsx), App component with routing (react-router-dom), a sticky glassmorphic Navbar component (backdrop-blur, logo, nav links, mobile hamburger), a Footer component, and page layout wrapper. Use lucide-react icons. Apply the design system (Inter font, indigo/violet accent palette, rounded-2xl cards, gradient buttons). For: ${message.slice(0, 200)}`,
+  });
+
+  chunks.push({
+    title: "Feature Components & Content",
+    goal: `Implement the main page content and feature components for: ${message.slice(0, 200)}. Create ALL page components with REALISTIC mock data (real names, real prices, real descriptions — never 'Item 1' or 'Lorem ipsum'). Use gradient placeholders for images (bg-gradient-to-br). Include hover animations (hover:-translate-y-1 hover:shadow-xl), staggered fade-in animations, interactive states (loading skeletons, empty states). Use framer-motion for page transitions. Every component must be polished and responsive (grid-cols-1 sm:grid-cols-2 lg:grid-cols-3).`,
   });
 
   if (COMPLEX_FEATURE_SCOPE_PATTERN.test(message)) {
     chunks.push({
-      title: "Features & Polish",
-      goal: "Implement additional UI features (routing, state management, forms, data visualization, etc.), connect all components, add proper error handling, loading states, responsive layouts, and type safety.",
+      title: "Advanced Features & Polish",
+      goal: "Implement advanced UI features (search/filter, modals, form validation, state management with React context/hooks, data visualization with CSS charts). Add micro-interactions (button press active:scale-95, input focus rings, card hover lifts). Ensure full mobile responsiveness with hamburger menu. Add loading skeletons, error boundaries, empty states with icons. Connect all routing and navigation. Ensure type safety throughout.",
     });
   }
 
@@ -485,39 +490,166 @@ const CODE_QUALITY_SYSTEM_PROMPT = [
 
 const IMPLEMENTATION_SYSTEM_PROMPT = [
   "You are Orbit's Implementation Specialist — the PRIMARY code-generation engine.",
+  "You build STUNNING, PRODUCTION-GRADE frontend applications that rival Lovable, Bolt, and V0.",
   "",
-  "IMPORTANT: You ONLY generate FRONTEND code. You use Vite + React + TypeScript exclusively.",
+  "═══════════════════════════════════════════════════",
+  "PLATFORM CONSTRAINT — FRONTEND ONLY",
+  "═══════════════════════════════════════════════════",
+  "",
+  "You ONLY generate FRONTEND code using Vite + React + TypeScript.",
   "NEVER generate backend code, API routes, Express servers, database code, or server-side logic.",
-  "For data, use mock data, localStorage, or browser APIs. NOT real backends.",
+  "For data needs use: mock data / hardcoded JSON arrays, localStorage, browser APIs, React state.",
   "",
-  "YOUR CODE MUST BE PRODUCTION-QUALITY:",
+  "═══════════════════════════════════════════════════",
+  "DESIGN EXCELLENCE — NON-NEGOTIABLE",
+  "═══════════════════════════════════════════════════",
+  "",
+  "Every project you generate MUST look like it was designed by a senior UI/UX designer.",
+  "A plain, unstyled, or generic-looking result is an ABSOLUTE FAILURE.",
+  "",
+  "CURATED COLOR PALETTES (use these, never plain red/blue/green):",
+  "  Dark theme:  bg-slate-950/slate-900, surface bg-slate-800/slate-800/50, accent indigo-500/violet-500,",
+  "                text slate-100/slate-300, border slate-700/slate-600, glow via ring-indigo-500/20",
+  "  Light theme: bg-slate-50/white, surface white/slate-50, accent indigo-600/violet-600,",
+  "                text slate-900/slate-600, border slate-200/slate-100, shadow-lg/shadow-xl",
+  "  Gradients:   bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 (hero/CTA)",
+  "                bg-gradient-to-r from-blue-600 to-indigo-600 (buttons)",
+  "                bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 (dark cards)",
+  "",
+  "TYPOGRAPHY SYSTEM:",
+  "  - Primary font: font-sans (Inter via Google Fonts)",
+  "  - Display font: 'Outfit' for hero headlines",
+  "  - Heading scale: text-5xl/6xl (hero), text-3xl/4xl (section), text-xl/2xl (card), text-lg (sub)",
+  "  - Font weights: font-extrabold (hero), font-bold (headings), font-semibold (sub), font-medium (body)",
+  "  - Letter spacing: tracking-tight (headings), tracking-normal (body)",
+  "  - Line height: leading-tight (headings), leading-relaxed (body text)",
+  "",
+  "GLASSMORPHISM & DEPTH RECIPES:",
+  "  - Glass card: bg-white/10 backdrop-blur-xl border border-white/20 shadow-xl rounded-2xl",
+  "  - Dark glass:  bg-slate-900/60 backdrop-blur-xl border border-slate-700/50 rounded-2xl",
+  "  - Elevated card: bg-white rounded-2xl shadow-[0_4px_24px_rgba(0,0,0,0.06)] border border-slate-100",
+  "  - Floating card: bg-white rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:shadow-[0_16px_48px_rgba(0,0,0,0.12)] transition-all duration-300 hover:-translate-y-1",
+  "  - Glow border: ring-1 ring-indigo-500/20 shadow-[0_0_20px_rgba(99,102,241,0.15)]",
+  "",
+  "MICRO-ANIMATIONS (use CSS animations / Tailwind animate utilities):",
+  "  - Fade in elements on mount: animate-[fadeIn_0.6s_ease-out]",
+  "  - Slide up on scroll: animate-[slideUp_0.5s_ease-out]",
+  "  - Scale on hover: hover:scale-105 transition-transform duration-300",
+  "  - Shimmer loading: animate-pulse or custom shimmer gradient",
+  "  - Floating elements: animate-[float_6s_ease-in-out_infinite]",
+  "  - Button press: active:scale-95 transition-transform",
+  "  - Stagger children: use style={{ animationDelay: `${index * 100}ms` }}",
+  "  - Gradient text: bg-clip-text text-transparent bg-gradient-to-r from-indigo-500 to-purple-500",
+  "  - Soft glow pulse: animate-[pulse-glow_2s_ease-in-out_infinite]",
+  "",
+  "═══════════════════════════════════════════════════",
+  "COMPONENT BLUEPRINTS",
+  "═══════════════════════════════════════════════════",
+  "",
+  "HERO SECTION: min-h-[80vh] flex items-center, gradient or dark background, oversized heading",
+  "  with gradient text, subtitle in text-slate-400, CTA button with gradient bg + hover glow,",
+  "  optional floating decorative elements (blur circles, grid patterns).",
+  "",
+  "NAVIGATION BAR: sticky top-0 z-50 backdrop-blur-xl bg-white/80 dark:bg-slate-900/80",
+  "  border-b border-slate-200/50, flex items-center justify-between px-6 h-16,",
+  "  logo + nav links (hover:text-indigo-500 transition) + CTA button.",
+  "  Mobile: hamburger menu with slide-in drawer (framer-motion AnimatePresence).",
+  "",
+  "PRODUCT/FEATURE CARD: group relative bg-white rounded-2xl shadow-sm border border-slate-100",
+  "  hover:shadow-xl hover:-translate-y-1 transition-all duration-300 overflow-hidden,",
+  "  image with aspect-video object-cover, content with p-6, price/badge with rounded-full bg.",
+  "",
+  "PRICING CARD: relative bg-white rounded-2xl p-8 border, popular plan gets",
+  "  ring-2 ring-indigo-500 + 'Popular' badge (absolute -top-4 bg-indigo-500 text-white rounded-full px-4 py-1).",
+  "  Feature list with check icons (lucide-react Check), CTA button at bottom.",
+  "",
+  "FOOTER: bg-slate-900 text-slate-400, grid cols for links, bottom border-t border-slate-800,",
+  "  social icons, copyright.",
+  "",
+  "FORM INPUTS: w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl",
+  "  focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all,",
+  "  label with text-sm font-medium text-slate-700 mb-1.5.",
+  "",
+  "BUTTONS:",
+  "  Primary: bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-6 py-3 rounded-xl",
+  "    font-semibold hover:shadow-lg hover:shadow-indigo-500/25 active:scale-95 transition-all",
+  "  Secondary: bg-slate-100 text-slate-700 px-6 py-3 rounded-xl font-semibold hover:bg-slate-200",
+  "  Ghost: text-slate-600 hover:text-slate-900 hover:bg-slate-100 px-4 py-2 rounded-lg",
+  "  Icon: p-2 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-slate-700",
+  "",
+  "LOADING STATES: skeleton with bg-slate-200 rounded-lg animate-pulse",
+  "  Shimmer: relative overflow-hidden + after:absolute after:inset-0 after:bg-gradient-to-r",
+  "  after:from-transparent after:via-white/60 after:to-transparent after:animate-shimmer",
+  "",
+  "EMPTY STATES: flex flex-col items-center justify-center py-16 text-center,",
+  "  large icon (lucide-react, 48px, text-slate-300), heading text-slate-500, CTA button.",
+  "",
+  "═══════════════════════════════════════════════════",
+  "PROJECT-TYPE DESIGN RECIPES",
+  "═══════════════════════════════════════════════════",
+  "",
+  "E-COMMERCE: Product grid (grid-cols-2 md:grid-cols-3 lg:grid-cols-4), product cards with",
+  "  image hover zoom (group-hover:scale-110 transition-transform duration-500),",
+  "  cart sidebar/modal, category filters, search bar with Command-K style,",
+  "  star ratings, price with sale strikethrough, Add to Cart with cart icon animation.",
+  "  Include 8-12 realistic mock products with real names, prices ($29.99–$299.99), descriptions.",
+  "",
+  "DASHBOARD: Sidebar navigation (w-64 bg-slate-900 text-slate-300), main content area,",
+  "  stat cards grid (revenue, users, orders, growth — with trend arrows and percentage change),",
+  "  charts area (use CSS-based bar/progress charts or simple SVG), data tables with",
+  "  sortable headers and pagination, activity feed with timestamps.",
+  "  Include realistic dashboard data (not 'Item 1', 'Item 2').",
+  "",
+  "PORTFOLIO: Full-width hero with name + role + gradient text, project grid with",
+  "  hover overlays showing project details, skills section with tech badges,",
+  "  about section with photo placeholder, contact form, smooth scroll navigation.",
+  "",
+  "LANDING PAGE: Hero section (min-h-screen), features grid (3-column icons+text),",
+  "  social proof section (logos/testimonials), pricing table, CTA section, footer.",
+  "  Use decorative elements: gradient orbs, grid patterns, blur shapes.",
+  "",
+  "BLOG: Article cards with featured image, reading time badge, category tag,",
+  "  article detail page with proper typography (prose styles), sidebar with",
+  "  recent posts and category list.",
+  "",
+  "SOCIAL MEDIA: Post feed with user avatars, like/comment/share interactions,",
+  "  story bar at top, new post composer, profile page with stats grid.",
+  "",
+  "═══════════════════════════════════════════════════",
+  "MOCK DATA QUALITY",
+  "═══════════════════════════════════════════════════",
+  "",
+  "NEVER use placeholder data like 'Lorem ipsum', 'Item 1', 'User 1', 'Product A'.",
+  "Always generate REALISTIC mock data:",
+  "  - Products: 'Wireless Noise-Cancelling Headphones', 'Organic Cotton T-Shirt', 'Smart Home Hub'",
+  "  - People: 'Sarah Chen', 'Marcus Johnson', 'Elena Rodriguez'",
+  "  - Prices: $49.99, $129.00, $24.95 (realistic ranges)",
+  "  - Dates: recent realistic dates (use new Date() for relative)",
+  "  - Images: use gradient placeholders with div (bg-gradient-to-br) or emoji icons instead of broken URLs",
+  "  - Metrics: 12,847 users, $48,295 revenue, +12.5% growth",
+  "",
+  "═══════════════════════════════════════════════════",
+  "DEPENDENCIES TO INCLUDE",
+  "═══════════════════════════════════════════════════",
+  "",
+  "Always include these in package.json for rich UI:",
+  "  - lucide-react: modern icon library (import { Icon } from 'lucide-react')",
+  "  - framer-motion: animations (motion.div, AnimatePresence, useInView)",
+  "  - clsx: conditional className utility",
+  "  - react-router-dom: for multi-page apps (BrowserRouter, Routes, Route, Link)",
+  "",
+  "═══════════════════════════════════════════════════",
+  "CODE QUALITY",
+  "═══════════════════════════════════════════════════",
+  "",
   "- Write COMPLETE, RUNNABLE files — never stubs, never TODOs, never placeholders.",
-  "- For UI: create BEAUTIFUL, MODERN interfaces with polished styling.",
-  "  Use vibrant gradients, responsive states, proper spacing, and modern fonts.",
-  "  Every page must look like it was designed by a professional — not a plain HTML page.",
-  "- For React: include proper state management, loading states, error boundaries,",
-  "  responsive layouts, accessibility attributes, and semantic HTML.",
-  "- Use Tailwind CSS for all styling. Include tailwindcss in dependencies.",
-  "",
-  "STYLING STANDARDS:",
-  "- Use modern color palettes (not plain red/blue/green). Prefer HSL-based harmonious schemes.",
-  "- Dark mode: use dark backgrounds (#0a0a0a to #1a1a2e) with subtle borders and glows.",
-  "- Light mode: use soft whites (#fafafa to #f0f4f8) with gentle shadows.",
-  "- Typography: use system font stacks or Google Fonts (Inter, Outfit, Plus Jakarta Sans).",
-  "- Spacing: consistent padding/margins using 4px/8px grid system.",
-  "- Border radius: use modern rounded corners (8-16px for cards, 6-8px for buttons).",
-  "- Shadows: layered shadows for depth (0 1px 3px, 0 4px 12px patterns).",
-  "",
-  "COMPONENT QUALITY:",
+  "- Use TypeScript (.tsx/.ts) with proper types/interfaces — NEVER use `any`.",
   "- Each component must handle: loading, error, empty, and success states.",
-  "- Forms: include validation, disabled states, loading indicators on submit.",
-  "- Lists: include empty states, loading skeletons, and proper key props.",
-  "- Navigation: active states, hover effects, mobile responsiveness.",
-  "- Use React Router for multi-page navigation when needed.",
+  "- Include responsive layouts (mobile-first with sm:/md:/lg: breakpoints).",
+  "- Use semantic HTML and accessibility attributes (aria-label, role, etc.).",
+  "- Include ALL necessary files — pages, components, styles, types, utilities.",
   "",
-  "Write code that makes users say 'wow, this looks amazing' at first glance.",
-  "Include ALL necessary files — pages, components, styles, types, utilities.",
-  "Include package.json updates for any new dependencies.",
+  "Write code that makes users say 'wow, this looks INCREDIBLE' at first glance.",
 ].join("\n");
 
 const WEB_CONTEXT_SYSTEM_PROMPT = [
@@ -559,7 +691,7 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "- Authentication backends (passport, JWT servers, etc.)",
   "",
   "Instead, for data needs use:",
-  "- Mock data / hardcoded JSON arrays",
+  "- Mock data / hardcoded JSON arrays with REALISTIC content",
   "- localStorage / sessionStorage for persistence",
   "- Browser APIs (fetch to public APIs, geolocation, etc.)",
   "- React state (useState, useReducer, Context, Zustand)",
@@ -609,22 +741,21 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "═══════════════════════════════════════════════════",
   "",
   "Every new project MUST include these files:",
-  "  - package.json (vite, react, react-dom, @vitejs/plugin-react, tailwindcss, postcss, autoprefixer, typescript, @types/react, @types/react-dom)",
+  "  - package.json (vite, react, react-dom, @vitejs/plugin-react, tailwindcss, postcss, autoprefixer, typescript, @types/react, @types/react-dom, lucide-react, framer-motion, clsx)",
   "  - vite.config.ts (import react plugin from @vitejs/plugin-react)",
   "  - tsconfig.json (Vite-compatible: jsx 'react-jsx', module 'ESNext', moduleResolution 'bundler')",
   "  - tsconfig.node.json (for vite.config.ts)",
   "  - postcss.config.js (tailwindcss + autoprefixer plugins)",
-  "  - tailwind.config.js (content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'])",
-  "  - index.html (with <div id='root'> and <script type='module' src='/src/main.tsx'>)",
+  "  - tailwind.config.js (content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'], extend with custom animations + fonts)",
+  "  - index.html (with <div id='root'>, <script type='module' src='/src/main.tsx'>, AND Google Fonts link for Inter + Outfit)",
   "  - src/main.tsx (ReactDOM.createRoot render)",
   "  - src/App.tsx (main app component with routing if multi-page)",
-  "  - src/index.css (Tailwind directives: @tailwind base; @tailwind components; @tailwind utilities;)",
+  "  - src/index.css (Tailwind directives PLUS custom animation keyframes and design system CSS)",
   "",
-  "  Optional but recommended:",
-  "  - src/components/ — reusable UI components",
+  "  Essential for ANY project (not optional):",
+  "  - src/components/ — reusable UI components (Navbar, Footer, Card, Button, etc.)",
   "  - src/pages/ — page-level components (for React Router)",
-  "  - src/hooks/ — custom React hooks",
-  "  - src/lib/ — utility functions",
+  "  - src/data/ — mock data files with REALISTIC content",
   "  - src/types/ — TypeScript type definitions",
   "",
   "  For multi-page apps, use react-router-dom:",
@@ -633,30 +764,69 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "  - Create page components in src/pages/",
   "",
   "═══════════════════════════════════════════════════",
-  "CODE QUALITY & UI/UX REQUIREMENTS",
+  "DESIGN EXCELLENCE — MANDATORY",
   "═══════════════════════════════════════════════════",
   "",
-  "TYPESCRIPT:",
+  "Every project MUST look like a premium, professionally designed application.",
+  "A plain, unstyled, or generic-looking result is an ABSOLUTE FAILURE.",
+  "",
+  "MANDATORY DESIGN ELEMENTS:",
+  "1. GOOGLE FONTS — ALWAYS add to index.html <head>:",
+  '   <link rel="preconnect" href="https://fonts.googleapis.com" />',
+  '   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />',
+  '   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />',
+  "",
+  "2. ANIMATION KEYFRAMES — ALWAYS add to src/index.css after Tailwind directives:",
+  "   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }",
+  "   @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }",
+  "   @keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }",
+  "   @keyframes scaleIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }",
+  "   @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }",
+  "   @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }",
+  "   @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 20px rgba(99,102,241,0.15); } 50% { box-shadow: 0 0 40px rgba(99,102,241,0.3); } }",
+  "",
+  "3. TAILWIND CONFIG — ALWAYS extend with custom animations in tailwind.config.js:",
+  "   animation: { 'fade-in': 'fadeIn 0.6s ease-out', 'slide-up': 'slideUp 0.5s ease-out', 'slide-down': 'slideDown 0.5s ease-out', 'scale-in': 'scaleIn 0.4s ease-out', 'float': 'float 6s ease-in-out infinite', 'shimmer': 'shimmer 2s infinite', 'pulse-glow': 'pulse-glow 2s ease-in-out infinite' }",
+  "   fontFamily: { sans: ['Inter', ...defaultTheme.fontFamily.sans], display: ['Outfit', 'Inter', 'sans-serif'] }",
+  "",
+  "4. CURATED COLOR PALETTE — NEVER use plain red/blue/green:",
+  "   Dark: bg-slate-950, surface slate-800/900, accent indigo-500/violet-500, text slate-100/300, border slate-700",
+  "   Light: bg-slate-50/white, surface white, accent indigo-600/violet-600, text slate-900/600, border slate-200",
+  "   Gradients: from-indigo-500 via-purple-500 to-pink-500 (heroes), from-blue-600 to-indigo-600 (buttons)",
+  "",
+  "5. ICONS — ALWAYS use lucide-react:",
+  "   import { ShoppingCart, Star, Heart, Search, Menu, X, ArrowRight, Check, etc. } from 'lucide-react'",
+  "",
+  "6. COMPONENT POLISH:",
+  "   Navigation: sticky top-0 z-50 backdrop-blur-xl bg-white/80 border-b border-slate-200/50",
+  "   Cards: rounded-2xl shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300",
+  "   Buttons: gradient bg, rounded-xl, hover:shadow-lg, active:scale-95 transition-all",
+  "   Inputs: rounded-xl, focus:ring-2 focus:ring-indigo-500, focus:border-transparent",
+  "   Glass: bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl",
+  "",
+  "7. MOCK DATA — ALWAYS use REALISTIC content:",
+  "   Products: 'Wireless Noise-Cancelling Headphones' ($249.99), NOT 'Product 1' ($10)",
+  "   People: 'Sarah Chen', 'Marcus Johnson', NOT 'User 1', 'User 2'",
+  "   Metrics: '12,847 users', '$48,295 revenue', NOT 'X users', 'Y revenue'",
+  "   Images: Use gradient div placeholders (bg-gradient-to-br from-indigo-400 to-purple-500) or emoji, NOT broken image URLs",
+  "",
+  "8. RESPONSIVE LAYOUT — ALWAYS mobile-first:",
+  "   Grid: grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4",
+  "   Container: max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
+  "   Typography: text-3xl sm:text-4xl lg:text-5xl xl:text-6xl (scale up with breakpoints)",
+  "   Navigation: mobile hamburger menu + desktop horizontal nav",
+  "",
+  "═══════════════════════════════════════════════════",
+  "CODE QUALITY & TYPESCRIPT",
+  "═══════════════════════════════════════════════════",
+  "",
   "- Use TypeScript (.tsx/.ts) for ALL files",
   "- Use proper imports (named imports, not require())",
   "- Include proper TypeScript types/interfaces — NEVER use `any`",
-  "",
-  "STYLING — USE TAILWIND CSS:",
-  "- Use Tailwind CSS utility classes for ALL styling.",
-  "- NEVER create plain, unstyled HTML. Every page MUST look polished and professional.",
-  "- Use modern design: gradients, subtle shadows, crisp state changes, rounded corners.",
-  "- Color palette: use harmonious HSL-based colors, NOT plain red/blue/green.",
-  "  Example dark theme: bg-slate-900, surface bg-slate-800, accent indigo-500/violet-500, text slate-200",
-  "  Example light theme: bg-slate-50, surface white, accent indigo-600/violet-600, text slate-900",
-  "- Typography: use font-sans (Inter) with proper font weights.",
-  "- Spacing: use Tailwind spacing scale (p-2, p-4, p-6, p-8, etc.).",
-  "- Buttons: bg-gradient-to-r, rounded-lg, hover:shadow-lg, px-5 py-2.5, font-medium.",
-  "- Cards: bg-white dark:bg-slate-800, rounded-xl, shadow-sm, border border-slate-200, p-6.",
-  "- Inputs: w-full, px-4 py-2.5, border border-slate-300, rounded-lg, focus:ring-2 focus:ring-indigo-500.",
-  "- Layout: use flex/grid. Make responsive with sm:/md:/lg: prefixes.",
-  "- Navigation: sticky top-0, backdrop-blur, border-b, flex items-center justify-between.",
-  "- Empty states: flex flex-col items-center justify-center with icon + message + CTA button.",
-  "- Loading: use animated skeleton placeholders or spinner.",
+  "- Use Tailwind CSS utility classes for ALL styling",
+  "- Include responsive states, loading skeletons, empty states, error states",
+  "- Every interactive element needs hover/active/focus states",
+  "- Use framer-motion for page transitions and element animations where appropriate",
   "",
   "═══════════════════════════════════════════════════",
   "OUTPUT FORMAT",
@@ -674,10 +844,13 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "- A PARTIAL file that crashes is WORSE than fewer complete files.",
   "- If the project has 10 files, generate all 10. Do NOT generate 3 and leave 7 missing.",
   "- package.json MUST include ALL dependencies on the FIRST pass — missing deps cause npm install failures that waste fixup iterations.",
+  "- REQUIRED DEPS for every project: react, react-dom, vite, @vitejs/plugin-react, tailwindcss, postcss, autoprefixer, typescript, @types/react, @types/react-dom, lucide-react, framer-motion, clsx",
+  "- For multi-page apps also add: react-router-dom",
   "- For create_file: include the ENTIRE file content even if it is long (200+ lines is fine).",
   "- For update_file: include the FULL new file, not a partial patch.",
   "- When generating a full project: ALWAYS include config files (tsconfig.json, vite.config.ts, postcss.config.js, tailwind.config.js) — missing configs cause build failures.",
   "- ALWAYS end with npm install + dev server start for new projects.",
+  "- ALWAYS include animation keyframes in src/index.css and custom animations in tailwind.config.js.",
 ].join("\n");
 
 const SPECIALIST_SYSTEM_PROMPTS: Record<SpecialistKey, string> = {
@@ -1626,15 +1799,17 @@ const shouldNormalizeNpmInstallOperation = (
 
 const normalizeInstallOperationForExecution = (
   operation: ConversationFileOperation,
-) => {
+): ConversationFileOperation => {
   if (!shouldNormalizeNpmInstallOperation(operation)) {
     return operation;
   }
 
+  const runOp = operation as Extract<ConversationFileOperation, { type: "run_command" }>;
+
   return {
-    ...operation,
-    commandArgs: normalizeNpmInstallArgs(operation.commandArgs ?? []),
-  } satisfies ConversationFileOperation;
+    ...runOp,
+    commandArgs: normalizeNpmInstallArgs(runOp.commandArgs ?? []),
+  };
 };
 
 const normalizeInstallOperationsForExecution = (
@@ -1736,12 +1911,25 @@ const ensureAutonomousValidationOperation = (
   operations: ConversationFileOperation[],
   projectFiles: ConversationProjectFile[] = [],
 ) => {
-  if (
-    !ENABLE_AUTONOMOUS_VALIDATION ||
-    !hasFilesystemMutation(operations) ||
-    !hasPackageJsonAvailable(operations, projectFiles) ||
-    operations.some((operation) => isBuildValidationCommand(operation))
-  ) {
+  // If a build validation command already exists, nothing to do
+  if (operations.some((operation) => isBuildValidationCommand(operation))) {
+    return operations;
+  }
+
+  const hasDevServer = operations.some((operation) =>
+    isManagedDevServerStartOperation(operation),
+  );
+
+  // Always insert validation before dev-server — even if ENABLE_AUTONOMOUS_VALIDATION
+  // is disabled — because the dev-server gating depends on a validation step existing.
+  // Without it, a broken build would still start the dev server.
+  const shouldInsertValidation =
+    hasDevServer ||
+    (ENABLE_AUTONOMOUS_VALIDATION &&
+      hasFilesystemMutation(operations) &&
+      hasPackageJsonAvailable(operations, projectFiles));
+
+  if (!shouldInsertValidation) {
     return operations;
   }
 
@@ -2205,6 +2393,49 @@ const validatePackageJsonDependencies = (
     devDeps.tailwindcss = "^3.4.17";
   }
 
+  // ─── Correct Commonly Hallucinated Package Versions ──────────────────
+  // AI models frequently generate non-existent versions (clsx@^4, framer-motion@^11).
+  // This map overrides hallucinated versions with the latest known-good versions.
+  const KNOWN_GOOD_VERSIONS: Record<string, { maxMajor: number; goodVersion: string }> = {
+    clsx: { maxMajor: 2, goodVersion: "^2.1.1" },
+    "framer-motion": { maxMajor: 12, goodVersion: "^12.0.0" },
+    "lucide-react": { maxMajor: 0, goodVersion: "^0.460.0" },
+    "react-router-dom": { maxMajor: 7, goodVersion: "^7.0.0" },
+    "react-router": { maxMajor: 7, goodVersion: "^7.0.0" },
+    recharts: { maxMajor: 2, goodVersion: "^2.15.0" },
+    zustand: { maxMajor: 5, goodVersion: "^5.0.0" },
+    "class-variance-authority": { maxMajor: 0, goodVersion: "^0.7.1" },
+    "tailwind-merge": { maxMajor: 2, goodVersion: "^2.6.0" },
+    "@tanstack/react-query": { maxMajor: 5, goodVersion: "^5.62.0" },
+    "@tanstack/react-table": { maxMajor: 8, goodVersion: "^8.20.0" },
+    axios: { maxMajor: 1, goodVersion: "^1.7.0" },
+    zod: { maxMajor: 3, goodVersion: "^3.24.0" },
+  };
+
+  const fixVersionInMap = (depMap: Record<string, string>) => {
+    for (const [pkg, spec] of Object.entries(depMap)) {
+      const knownGood = KNOWN_GOOD_VERSIONS[pkg];
+      if (!knownGood) continue;
+
+      // Extract major version from spec like "^4.0.0", "~11.0.8", "4.0.0"
+      const majorMatch = spec.match(/^[\^~]?(\d+)/);
+      if (!majorMatch) continue;
+      const major = parseInt(majorMatch[1]!, 10);
+
+      if (major > knownGood.maxMajor) {
+        console.info("conversation.planner.dep-version-fix", {
+          package: pkg,
+          hallucinated: spec,
+          corrected: knownGood.goodVersion,
+        });
+        depMap[pkg] = knownGood.goodVersion;
+      }
+    }
+  };
+
+  fixVersionInMap(deps);
+  fixVersionInMap(devDeps);
+
   packageJson.dependencies = deps;
   if (Object.keys(devDeps).length > 0) {
     packageJson.devDependencies = devDeps;
@@ -2302,6 +2533,9 @@ const parseFileOperation = (
   const path = normalizeOperationPath(
     getStringField(record, [
       "path",
+      "file",
+      "fileName",
+      "name",
       "filePath",
       "filepath",
       "folderPath",
@@ -2488,6 +2722,9 @@ const buildViteStarterPackageJson = () =>
       dependencies: {
         react: "^19.1.0",
         "react-dom": "^19.1.0",
+        "lucide-react": "^0.460.0",
+        "framer-motion": "^12",
+        clsx: "^2",
       },
       devDependencies: {
         "@types/react": "^19",
@@ -2614,18 +2851,18 @@ const buildDeterministicViteScaffoldOperations = (
     upsertPlannerFileOperation({
       path: "tailwind.config.js",
       content:
-        '/** @type {import(\'tailwindcss\').Config} */\nexport default {\n  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],\n  theme: {\n    extend: {},\n  },\n  plugins: [],\n};\n',
+        '/** @type {import(\'tailwindcss\').Config} */\nimport defaultTheme from "tailwindcss/defaultTheme";\n\nexport default {\n  content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],\n  theme: {\n    extend: {\n      fontFamily: {\n        sans: ["Inter", ...defaultTheme.fontFamily.sans],\n        display: ["Outfit", "Inter", "sans-serif"],\n      },\n      animation: {\n        "fade-in": "fadeIn 0.6s ease-out",\n        "slide-up": "slideUp 0.5s ease-out",\n        "slide-down": "slideDown 0.5s ease-out",\n        "scale-in": "scaleIn 0.4s ease-out",\n        float: "float 6s ease-in-out infinite",\n        shimmer: "shimmer 2s infinite",\n        "pulse-glow": "pulse-glow 2s ease-in-out infinite",\n      },\n    },\n  },\n  plugins: [],\n};\n',
       existingPaths,
     }),
     upsertPlannerFileOperation({
       path: "index.html",
       content:
-        '<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Orbit App</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n',
+        '<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <link rel="preconnect" href="https://fonts.googleapis.com" />\n    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />\n    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />\n    <title>Orbit App</title>\n  </head>\n  <body>\n    <div id="root"></div>\n    <script type="module" src="/src/main.tsx"></script>\n  </body>\n</html>\n',
       existingPaths,
     }),
     upsertPlannerFileOperation({
       path: "src/index.css",
-      content: "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n",
+      content: "@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }\n@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }\n@keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }\n@keyframes scaleIn { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: scale(1); } }\n@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }\n@keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }\n@keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 20px rgba(99,102,241,0.15); } 50% { box-shadow: 0 0 40px rgba(99,102,241,0.3); } }\n\nhtml { scroll-behavior: smooth; }\nbody { font-family: 'Inter', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }\n::selection { background-color: rgba(99,102,241,0.2); }\n::-webkit-scrollbar { width: 8px; }\n::-webkit-scrollbar-track { background: transparent; }\n::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }\n::-webkit-scrollbar-thumb:hover { background: #64748b; }\n",
       existingPaths,
     }),
     upsertPlannerFileOperation({
@@ -2636,8 +2873,62 @@ const buildDeterministicViteScaffoldOperations = (
     }),
     upsertPlannerFileOperation({
       path: "src/App.tsx",
-      content:
-        'export default function App() {\n  return (\n    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex items-center justify-center">\n      <div className="text-center space-y-4">\n        <h1 className="text-4xl font-bold text-slate-900">Vite + React</h1>\n        <p className="text-slate-600">\n          Your project is ready. Edit <code className="bg-slate-200 px-2 py-1 rounded text-sm">src/App.tsx</code> to get started.\n        </p>\n      </div>\n    </div>\n  );\n}\n',
+      content: [
+        'import { Sparkles, Rocket, Zap } from "lucide-react";',
+        '',
+        'export default function App() {',
+        '  return (',
+        '    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 flex items-center justify-center relative overflow-hidden">',
+        '      {/* Decorative gradient orbs */}',
+        '      <div className="absolute top-1/4 -left-32 w-96 h-96 bg-indigo-500/20 rounded-full blur-3xl animate-float" />',
+        '      <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-purple-500/20 rounded-full blur-3xl animate-float" style={{ animationDelay: "3s" }} />',
+        '      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-indigo-500/5 rounded-full blur-3xl" />',
+        '',
+        '      <div className="text-center space-y-8 relative z-10 animate-fade-in px-6">',
+        '        <div className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-full text-indigo-300 text-sm font-medium animate-slide-down">',
+        '          <Sparkles className="w-4 h-4" />',
+        '          <span>Ready to build something amazing</span>',
+        '        </div>',
+        '',
+        '        <h1 className="text-5xl sm:text-6xl lg:text-7xl font-extrabold font-display tracking-tight">',
+        '          <span className="bg-clip-text text-transparent bg-gradient-to-r from-white via-indigo-200 to-indigo-400">',
+        '            Vite + React',
+        '          </span>',
+        '        </h1>',
+        '',
+        '        <p className="text-lg sm:text-xl text-slate-400 max-w-lg mx-auto leading-relaxed animate-slide-up" style={{ animationDelay: "200ms" }}>',
+        '          Your project is ready. Start building your next masterpiece with a premium design foundation.',
+        '        </p>',
+        '',
+        '        <div className="flex flex-col sm:flex-row gap-4 justify-center animate-slide-up" style={{ animationDelay: "400ms" }}>',
+        '          <button className="inline-flex items-center gap-2 px-8 py-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-semibold text-lg hover:shadow-lg hover:shadow-indigo-500/25 active:scale-95 transition-all duration-200">',
+        '            <Rocket className="w-5 h-5" />',
+        '            Get Started',
+        '          </button>',
+        '          <button className="inline-flex items-center gap-2 px-8 py-4 bg-white/5 border border-white/10 text-white rounded-xl font-semibold text-lg hover:bg-white/10 transition-all duration-200">',
+        '            <Zap className="w-5 h-5" />',
+        '            Learn More',
+        '          </button>',
+        '        </div>',
+        '',
+        '        <div className="grid grid-cols-3 gap-8 pt-12 max-w-md mx-auto animate-slide-up" style={{ animationDelay: "600ms" }}>',
+        '          {[',
+        '            { label: "Fast HMR", value: "<1ms" },',
+        '            { label: "TypeScript", value: "100%" },',
+        '            { label: "Tailwind", value: "v3" },',
+        '          ].map((stat) => (',
+        '            <div key={stat.label} className="text-center">',
+        '              <div className="text-2xl font-bold text-white">{stat.value}</div>',
+        '              <div className="text-sm text-slate-500">{stat.label}</div>',
+        '            </div>',
+        '          ))}',
+        '        </div>',
+        '      </div>',
+        '    </div>',
+        '  );',
+        '}',
+        '',
+      ].join('\n'),
       existingPaths,
     }),
   );
@@ -2648,10 +2939,16 @@ const buildDeterministicViteScaffoldOperations = (
     commandArgs: ["install", ...NPM_STABLE_INSTALL_FLAGS],
   });
   operations.push({
+    type: "run_command",
+    command: ORBIT_VALIDATE_COMMAND,
+    gatedOnPreviousSuccess: true,
+  });
+  operations.push({
     type: "start_background_command",
     key: "dev-server",
     command: "npm",
     commandArgs: ["run", "dev"],
+    gatedOnPreviousSuccess: true,
   });
 
   return operations;
@@ -2905,9 +3202,6 @@ const buildFileOperationPlannerPrompt = (
 ) => {
   const fileInventory = buildProjectFileInventory(input.projectFiles);
   const keyFileBlocks = buildPlannerKeyFileContext(input.projectFiles);
-  const includeFrontendStyleGuidance = FRONTEND_PLANNER_STYLE_HINT_PATTERN.test(
-    input.message,
-  );
   const hasPackageJson = input.projectFiles?.some(
     (f) => f.path === "package.json" || f.path.endsWith("/package.json"),
   );
@@ -2928,7 +3222,7 @@ const buildFileOperationPlannerPrompt = (
       : []),
     hasPackageJson
       ? "package.json EXISTS — use update_file with the FULL updated content to add dependencies"
-      : "NO package.json — create one with create_file including all needed dependencies",
+      : "NO package.json — create one with create_file including all needed dependencies (including lucide-react, framer-motion, clsx)",
     "",
     "PROJECT CONTEXT:",
     input.projectContext?.slice(0, MAX_PLANNER_PROJECT_CONTEXT_CHARS) ||
@@ -2943,15 +3237,19 @@ const buildFileOperationPlannerPrompt = (
     '- To start dev server: {"type":"start_background_command","key":"dev-server","command":"npm","commandArgs":["run","dev"]}',
     "- For Vite scaffolds, include at minimum: package.json, vite.config.ts, tsconfig.json, index.html, src/main.tsx, src/App.tsx, src/index.css.",
     "- Create ALL files needed for the task. Do not leave gaps or TODOs.",
-    ...(includeFrontendStyleGuidance
-      ? [
-          "",
-          "CODE QUALITY — FRONTEND:",
-          "- UI files must include polished, modern CSS. Avoid plain unstyled markup.",
-          "- Include responsive states (loading/error/empty) and accessible controls.",
-          "- Keep styling cohesive with clear color tokens and reusable classes.",
-        ]
-      : []),
+    "",
+    "DESIGN MANDATE (applies to EVERY build — not optional):",
+    "- ALWAYS include Google Fonts (Inter + Outfit) link in index.html.",
+    "- ALWAYS include animation keyframes (fadeIn, slideUp, float, shimmer, etc.) in src/index.css.",
+    "- ALWAYS extend tailwind.config.js with custom animations and fontFamily.",
+    "- ALWAYS include lucide-react, framer-motion, clsx in dependencies.",
+    "- Use curated color palettes: indigo/violet/purple accents, slate backgrounds — NEVER plain red/blue/green.",
+    "- Cards: rounded-2xl, shadow-sm, hover:shadow-xl, hover:-translate-y-1, transition-all duration-300.",
+    "- Buttons: gradient bg (from-indigo-600 to-purple-600), rounded-xl, active:scale-95, hover:shadow-lg.",
+    "- Navigation: sticky top-0 z-50 backdrop-blur-xl bg-white/80 border-b border-slate-200/50.",
+    "- Use REALISTIC mock data: real product names, real prices, real person names — NEVER 'Item 1' or 'Lorem ipsum'.",
+    "- Use gradient div placeholders for images (bg-gradient-to-br from-indigo-400 to-purple-500) — NEVER broken image URLs.",
+    "- Every component needs hover/focus/active states and responsive breakpoints (sm:/md:/lg:).",
     "",
     'Return ONLY valid JSON: {"operations":[...]}',
   ]
@@ -3452,6 +3750,14 @@ const buildRecoveryCommandOperations = (args: {
       continue;
     }
 
+    // Skip dev-server starts — they will be re-appended at the end with a build gate
+    if (
+      failure.operation.type === "start_background_command" &&
+      failure.operation.key === DEV_SERVER_KEY
+    ) {
+      continue;
+    }
+
     const signature = commandOperationSignature(failure.operation);
     if (
       !signature ||
@@ -3466,6 +3772,39 @@ const buildRecoveryCommandOperations = (args: {
       gatedOnPreviousSuccess: true,
     });
     seenRecoverySignatures.add(signature);
+  }
+
+  // If any dev-server start was skipped/failed, append a build validation + dev-server restart
+  // at the end of recovery operations so the preview retries within the fixup iteration.
+  const hasSkippedDevServer = args.failures.some(
+    (f) =>
+      (f.status === "skipped" || f.status === "failed") &&
+      f.operation.type === "start_background_command" &&
+      (f.operation as { key?: string }).key === DEV_SERVER_KEY,
+  );
+
+  if (hasSkippedDevServer) {
+    // Check if the fixup planner already included a dev-server start
+    const fixupAlreadyHasDevServer = args.plannedOperations.some(
+      (op) =>
+        op.type === "start_background_command" &&
+        (op as { key?: string }).key === DEV_SERVER_KEY,
+    );
+
+    if (!fixupAlreadyHasDevServer) {
+      recoveryOperations.push({
+        type: "run_command",
+        command: ORBIT_VALIDATE_COMMAND,
+        gatedOnPreviousSuccess: true,
+      });
+      recoveryOperations.push({
+        type: "start_background_command",
+        key: DEV_SERVER_KEY,
+        command: "npm",
+        commandArgs: ["run", "dev"],
+        gatedOnPreviousSuccess: true,
+      });
+    }
   }
 
   return recoveryOperations;
@@ -5034,6 +5373,75 @@ export const runConversationAgentOrchestration = async (
       });
       break;
     }
+  }
+
+  // ─── Post-Fixup Dev-Server Restart ─────────────────────────────────
+  // If the dev-server start was skipped/failed during the initial execution
+  // (due to build validation failure + gating), and the fixup loop resolved
+  // the issues, attempt a final build validation + dev-server restart.
+  // This guarantees the user gets a working preview after successful fixes.
+
+  const devServerWasSkippedOrFailed = operationResults.some(
+    (result) =>
+      (result.status === "skipped" || result.status === "failed") &&
+      result.operation.type === "start_background_command" &&
+      result.operation.key === DEV_SERVER_KEY,
+  );
+
+  const devServerWasSuccessfullyStarted = operationResults.some(
+    (result) =>
+      result.status === "applied" &&
+      result.operation.type === "start_background_command" &&
+      result.operation.key === DEV_SERVER_KEY,
+  );
+
+  if (
+    devServerWasSkippedOrFailed &&
+    !devServerWasSuccessfullyStarted &&
+    input.executeFileOperation
+  ) {
+    console.info("conversation.planner.post-fixup-dev-server-restart", {
+      reason: "dev-server was skipped/failed, attempting restart after fixups",
+    });
+
+    const restartOps: ConversationFileOperation[] = [
+      {
+        type: "run_command",
+        command: ORBIT_VALIDATE_COMMAND,
+        gatedOnPreviousSuccess: false,
+      },
+      {
+        type: "start_background_command",
+        key: DEV_SERVER_KEY,
+        command: "npm",
+        commandArgs: ["run", "dev"],
+        gatedOnPreviousSuccess: true,
+      },
+    ];
+
+    const restartResults = await executePlannedFileOperations(
+      restartOps,
+      input.executeFileOperation,
+      input.onOperationProgress,
+    );
+
+    allOperations = [...allOperations, ...restartOps];
+    operationResults = [...operationResults, ...restartResults];
+
+    const restartSuccess = restartResults.some(
+      (r) =>
+        r.status === "applied" &&
+        r.operation.type === "start_background_command",
+    );
+
+    console.info("conversation.planner.post-fixup-dev-server-restart.result", {
+      restartSuccess,
+      results: restartResults.map((r) => ({
+        op: describeFileOperation(r.operation),
+        status: r.status,
+        msg: r.message.slice(0, 200),
+      })),
+    });
   }
 
   const changedFiles = collectStructuredChangedFiles(operationResults);
