@@ -637,13 +637,18 @@ const Tab = ({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={isActive}
       onClick={onClick}
       className={cn(
-        "inline-flex h-7 items-center rounded-md border border-transparent px-3 text-[12px] font-medium text-muted-foreground hover:bg-muted/70 hover:text-foreground",
-        isActive && "border-border/70 bg-card text-foreground shadow-sm",
+        "inline-flex h-8 min-w-[5rem] items-center justify-center rounded-md px-3 text-xs font-medium transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        isActive
+          ? "bg-primary text-primary-foreground shadow-sm"
+          : "text-muted-foreground hover:bg-muted/80 hover:text-foreground",
       )}
     >
-      <span>{label}</span>
+      {label}
     </button>
   );
 };
@@ -3126,22 +3131,30 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      <nav className="flex h-10 items-center gap-1 border-b border-border/70 bg-background px-2">
-        <Tab
-          label="Code"
-          isActive={activeView === "editor"}
-          onClick={() => setActiveView("editor")}
-        />
-        <Tab
-          label="Preview"
-          isActive={activeView === "preview"}
-          onClick={() => setActiveView("preview")}
-        />
-        <Tab
-          label="Runtime"
-          isActive={activeView === "runtime"}
-          onClick={() => setActiveView("runtime")}
-        />
+      <nav
+        aria-label="Workspace"
+        className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/30 px-2.5 py-1.5 backdrop-blur-sm"
+      >
+        <div
+          className="inline-flex rounded-lg border border-border/60 bg-background/90 p-0.5 shadow-sm"
+          role="tablist"
+        >
+          <Tab
+            label="Code"
+            isActive={activeView === "editor"}
+            onClick={() => setActiveView("editor")}
+          />
+          <Tab
+            label="Preview"
+            isActive={activeView === "preview"}
+            onClick={() => setActiveView("preview")}
+          />
+          <Tab
+            label="Runtime"
+            isActive={activeView === "runtime"}
+            onClick={() => setActiveView("runtime")}
+          />
+        </div>
       </nav>
       <div className="relative min-h-0 flex-1">
         <div
@@ -3269,10 +3282,10 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
             activeView === "preview" ? "visible" : "invisible",
           )}
         >
-          <div className="flex h-full flex-col bg-[#111111]">
-            <div className="flex h-10 items-center gap-2 border-b border-[#2d2d2d] px-3">
+          <div className="flex h-full flex-col bg-muted/30">
+            <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 bg-card/90 px-3 backdrop-blur-sm">
               <Button
-                className="h-7 px-2.5 text-xs"
+                className="h-8 px-3 text-xs font-medium"
                 disabled={isPreviewBooting || isRuntimeBusy}
                 onClick={() => {
                   previewAutoLaunchTriedRef.current = true;
@@ -3290,15 +3303,15 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                     : "Start Preview"}
               </Button>
               <Button
-                className="h-7 px-2.5 text-xs"
+                className="h-8 px-3 text-xs font-medium"
                 onClick={() => setActiveView("runtime")}
                 type="button"
                 variant="secondary"
               >
-                Runtime Logs
+                Runtime logs
               </Button>
               <Button
-                className="h-7 px-2.5 text-xs"
+                className="h-8 px-3 text-xs font-medium"
                 disabled={!runtimePreviewUrl && !hasInlineHtmlPreview}
                 onClick={() => {
                   if (runtimePreviewUrl) {
@@ -3329,55 +3342,59 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
               >
                 {runtimePreviewUrl ? "Open Connected Tab" : "Open New Tab"}
               </Button>
-              <div className="ml-auto truncate text-[11px] text-[#8f8f8f]">
+              <div className="ml-auto hidden min-w-0 max-w-[min(24rem,45%)] truncate text-[11px] text-muted-foreground sm:block">
                 {runtimePreviewUrl
-                  ? `Live preview: ${runtimePreviewUrl}`
+                  ? `Live: ${runtimePreviewUrl}`
                   : hasInlineHtmlPreview
-                    ? `Inline preview: ${selectedFilePath ?? selectedFile?.name ?? "HTML"}`
+                    ? `Inline: ${selectedFilePath ?? selectedFile?.name ?? "HTML"}`
                     : isPreviewBooting
-                      ? "Booting preview..."
-                      : "Preview idle."}
+                      ? "Booting preview…"
+                      : "Idle"}
               </div>
             </div>
 
-            <div className="min-h-0 flex-1">
+            <div className="min-h-0 flex-1 bg-muted/40">
               {isRuntimeBusy ? (
-                <div className="h-full w-full bg-background border-t border-border/50">
+                <div className="h-full w-full border-t border-border/50 bg-background">
                   <OrbitBuildingAnimation />
                 </div>
               ) : runtimePreviewUrl ? (
                 <iframe
-                  className="h-full w-full"
+                  className="h-full w-full bg-background"
                   sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-presentation"
                   src={runtimePreviewUrl}
                   title="Generated app preview"
                 />
               ) : hasInlineHtmlPreview && inlineHtmlPreviewDocument ? (
                 <iframe
-                  className="h-full w-full bg-white"
+                  className="h-full w-full bg-background"
                   sandbox="allow-scripts allow-forms allow-modals allow-pointer-lock allow-popups"
                   srcDoc={inlineHtmlPreviewDocument}
                   title="Inline HTML preview"
                 />
               ) : (
                 <div className="flex h-full items-center justify-center p-6">
-                  <div className="max-w-xl text-center">
-                    <p className="text-sm text-[#cccccc]">
-                      Generate code, then launch preview to view the app output.
+                  <div className="max-w-md rounded-xl border border-border/60 bg-card p-8 text-center shadow-sm">
+                    <p className="text-sm leading-relaxed text-foreground">
+                      Run your dev server to see live output here, or open in a
+                      new tab once the sandbox is ready.
                     </p>
                     {previewError ? (
-                      <p className="mt-2 text-xs text-red-300">
-                        Preview failed: {previewError}
+                      <p
+                        role="alert"
+                        className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+                      >
+                        {previewError}
                       </p>
                     ) : (
-                      <p className="mt-2 text-xs text-[#8f8f8f]">
-                        Preview uses a Docker sandbox and your project dev
-                        script.
+                      <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                        Uses your project&apos;s <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px]">dev</code>{" "}
+                        script in the sandbox.
                       </p>
                     )}
-                    <div className="mt-4 flex items-center justify-center gap-2">
+                    <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
                       <Button
-                        className="h-8 px-3 text-xs"
+                        className="h-9 px-4 text-xs font-medium"
                         disabled={isPreviewBooting || isRuntimeBusy}
                         onClick={() => {
                           previewAutoLaunchTriedRef.current = true;
@@ -3391,12 +3408,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                         {isPreviewBooting ? "Starting..." : "Start Preview"}
                       </Button>
                       <Button
-                        className="h-8 px-3 text-xs"
+                        className="h-9 px-4 text-xs font-medium"
                         onClick={() => setActiveView("runtime")}
                         type="button"
                         variant="secondary"
                       >
-                        View Runtime Logs
+                        Runtime logs
                       </Button>
                     </div>
                   </div>

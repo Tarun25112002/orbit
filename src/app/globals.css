@@ -227,3 +227,69 @@
     transform: translateX(100%);
   }
 }
+
+@keyframes orbit-hero-shimmer {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes orbit-float-slow {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(-2%, -1.5%, 0);
+  }
+}
+
+@keyframes orbit-float-delayed {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(2.5%, 2%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .orbit-landing-grain {
+    background-image:
+      repeating-linear-gradient(
+        0deg,
+        oklch(0.5 0 0 / 0.035) 0px,
+        transparent 1px,
+        transparent 3px,
+        oklch(0.5 0 0 / 0.02) 4px
+      ),
+      repeating-linear-gradient(
+        90deg,
+        oklch(0.5 0 0 / 0.02) 0px,
+        transparent 1px,
+        transparent 3px,
+        oklch(0.5 0 0 / 0.035) 4px
+      );
+  }
+
+  .orbit-aurora-blob-a {
+    animation: orbit-float-slow 28s ease-in-out infinite;
+  }
+
+  .orbit-aurora-blob-b {
+    animation: orbit-float-delayed 36s ease-in-out infinite;
+  }
+
+  .orbit-hero-gradient-shimmer {
+    background-size: 200% 200%;
+    animation: orbit-hero-shimmer 14s ease-in-out infinite;
+  }
+}
