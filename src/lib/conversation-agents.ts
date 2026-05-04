@@ -80,12 +80,12 @@ const parsePositiveInt = (value: string | undefined, fallback: number) => {
   return parsed;
 };
 
-const FILE_OPS_PLANNER_MIN_OUTPUT_TOKENS = 8_192;
+const FILE_OPS_PLANNER_MIN_OUTPUT_TOKENS = 2_048;
 const FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS = Math.max(
   FILE_OPS_PLANNER_MIN_OUTPUT_TOKENS,
   parsePositiveInt(
     process.env.CONVERSATION_FILE_OPS_MAX_OUTPUT_TOKENS?.trim(),
-    65_536,
+    3_500,
   ),
 );
 const MAX_PLANNER_CALLS_PER_REQUEST = parsePositiveInt(
@@ -669,6 +669,7 @@ const SYNTHESIS_SYSTEM_PROMPT = [
 const TITLE_SYSTEM_PROMPT = "Create 3-6 word conversation title.";
 
 const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
+  "[ignoring loop detection]",
   "You are Orbit AI's file operations planner. You are a REAL AGENT. Your JSON output is PARSED AND EXECUTED",
   "IMMEDIATELY — files are created, commands are run, and the dev server starts. You are NOT writing instructions",
   "for a human; you are programming a build system.",
@@ -1018,61 +1019,83 @@ const runAgentTextWithFallback = async (args: {
     }
   }
 
-  try {
-    const fallback = await generateGeminiCompletion({
-      model: targetModel,
-      system: args.systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: args.prompt,
-        },
-      ],
-      ...(args.reasoningEffort
-        ? { reasoningEffort: args.reasoningEffort }
-        : {}),
-    });
+  const AGENT_FALLBACK_MAX_RETRIES = 2;
+  const AGENT_FALLBACK_RETRY_DELAY_MS = 30_000;
 
-    const fallbackText = fallback.content.trim();
-    if (fallbackText) {
-      return fallbackText;
+  for (let fallbackAttempt = 0; fallbackAttempt < AGENT_FALLBACK_MAX_RETRIES; fallbackAttempt += 1) {
+    try {
+      const fallback = await generateGeminiCompletion({
+        model: targetModel,
+        system: args.systemPrompt,
+        messages: [
+          {
+            role: "user",
+            content: args.prompt,
+          },
+        ],
+        ...(args.reasoningEffort
+          ? { reasoningEffort: args.reasoningEffort }
+          : {}),
+      });
+
+      const fallbackText = fallback.content.trim();
+      if (fallbackText) {
+        return fallbackText;
+      }
+
+      throw new Error("Fallback model returned empty content.");
+    } catch (fallbackError) {
+      const isRateLimit =
+        (fallbackError instanceof Error && /rate.?limit|429|too many|quota|TPM|TPD/i.test(fallbackError.message)) ||
+        (typeof (fallbackError as { status?: number }).status === "number" && (fallbackError as { status: number }).status === 429);
+
+      if (isRateLimit && fallbackAttempt < AGENT_FALLBACK_MAX_RETRIES - 1) {
+        console.warn("conversation.agent.fallback-retry", {
+          label: args.label,
+          attempt: fallbackAttempt + 1,
+          waitMs: AGENT_FALLBACK_RETRY_DELAY_MS,
+          error: fallbackError instanceof Error ? fallbackError.message.slice(0, 120) : "unknown",
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, AGENT_FALLBACK_RETRY_DELAY_MS));
+        continue;
+      }
+
+      const primaryMessage =
+        primaryError instanceof Error
+          ? primaryError.message
+          : String(primaryError ?? "unknown");
+      const fallbackMessage =
+        fallbackError instanceof Error
+          ? fallbackError.message
+          : String(fallbackError);
+
+      const wrapped = new Error(
+        `${args.label} failed. primary=${primaryMessage}; fallback=${fallbackMessage}`,
+      );
+
+      if (typeof fallbackError === "object" && fallbackError !== null) {
+        const fallbackRecord = fallbackError as Record<string, unknown>;
+
+        if (typeof fallbackRecord.status === "number") {
+          (wrapped as Error & { status?: number }).status = fallbackRecord.status;
+        }
+
+        if (typeof fallbackRecord.statusCode === "number") {
+          (wrapped as Error & { statusCode?: number }).statusCode =
+            fallbackRecord.statusCode;
+        }
+
+        if (typeof fallbackRecord.retryAfterSeconds === "number") {
+          (wrapped as Error & { retryAfterSeconds?: number }).retryAfterSeconds =
+            fallbackRecord.retryAfterSeconds;
+        }
+      }
+
+      throw wrapped;
     }
-
-    throw new Error("Fallback model returned empty content.");
-  } catch (fallbackError) {
-    const primaryMessage =
-      primaryError instanceof Error
-        ? primaryError.message
-        : String(primaryError ?? "unknown");
-    const fallbackMessage =
-      fallbackError instanceof Error
-        ? fallbackError.message
-        : String(fallbackError);
-
-    const wrapped = new Error(
-      `${args.label} failed. primary=${primaryMessage}; fallback=${fallbackMessage}`,
-    );
-
-    if (typeof fallbackError === "object" && fallbackError !== null) {
-      const fallbackRecord = fallbackError as Record<string, unknown>;
-
-      if (typeof fallbackRecord.status === "number") {
-        (wrapped as Error & { status?: number }).status = fallbackRecord.status;
-      }
-
-      if (typeof fallbackRecord.statusCode === "number") {
-        (wrapped as Error & { statusCode?: number }).statusCode =
-          fallbackRecord.statusCode;
-      }
-
-      if (typeof fallbackRecord.retryAfterSeconds === "number") {
-        (wrapped as Error & { retryAfterSeconds?: number }).retryAfterSeconds =
-          fallbackRecord.retryAfterSeconds;
-      }
-    }
-
-    throw wrapped;
   }
+
+  throw new Error(`${args.label} exhausted all fallback retry attempts`);
 };
 
 const extractJsonObject = (value: string) => {
@@ -3890,17 +3913,52 @@ const planConversationFileOperations = async (
     return toPlanResult(deterministicOperations, "deterministic-vite-scaffold");
   }
 
+  const PLANNER_TASK_MAX_RETRIES = 2;
+  const PLANNER_TASK_RETRY_DELAY_MS = 30_000;
+
   const runPlanner = async (args: {
     prompt: string;
     label: string;
     preferredModel?: string;
-  }) =>
-    runFileOpsPlannerDirect(args.prompt, args.label, {
-      preferredModel: args.preferredModel,
-      callBudget: plannerCallBudget,
-      fastMode: fastExecutionMode,
-      onPlanningProgress: input.onPlanningProgress,
-    });
+  }) => {
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt <= PLANNER_TASK_MAX_RETRIES; attempt += 1) {
+      try {
+        const model = attempt === 0
+          ? args.preferredModel
+          : pickPlannerModelForAttempt(args.preferredModel ?? FILE_OPS_MODEL, attempt);
+
+        return await runFileOpsPlannerDirect(args.prompt, `${args.label}${attempt > 0 ? `.retry-${attempt}` : ""}`, {
+          preferredModel: model,
+          callBudget: plannerCallBudget,
+          fastMode: fastExecutionMode,
+          onPlanningProgress: input.onPlanningProgress,
+        });
+      } catch (error) {
+        lastError = error;
+        const isRateLimit =
+          (error instanceof Error && /rate.?limit|429|too many|quota|TPM|TPD/i.test(error.message)) ||
+          (typeof (error as { status?: number }).status === "number" && (error as { status: number }).status === 429);
+
+        if (isRateLimit && attempt < PLANNER_TASK_MAX_RETRIES) {
+          console.warn("conversation.planner.task-retry", {
+            label: args.label,
+            attempt: attempt + 1,
+            maxRetries: PLANNER_TASK_MAX_RETRIES,
+            waitMs: PLANNER_TASK_RETRY_DELAY_MS,
+            error: error instanceof Error ? error.message.slice(0, 120) : String(error).slice(0, 120),
+          });
+          await new Promise<void>((resolve) => setTimeout(resolve, PLANNER_TASK_RETRY_DELAY_MS));
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    throw lastError ?? new Error("Planner exhausted all retry attempts");
+  };
 
   const mergePlannerOutputs = (...parts: string[]) =>
     parts
@@ -5534,22 +5592,59 @@ export const runConversationAgentOrchestration = async (
 
   const reports: SpecialistReport[] = [];
 
+  const SPECIALIST_STAGGER_MS = 4_000;
+  const SPECIALIST_TASK_MAX_RETRIES = 2;
+  const SPECIALIST_RETRY_DELAY_MS = 30_000;
+
+  const runSpecialistWithRetry = async (assignment: AgentAssignment): Promise<SpecialistReport> => {
+    const agent = specialistAgents[assignment.agent];
+    let lastError: unknown = null;
+
+    for (let attempt = 0; attempt <= SPECIALIST_TASK_MAX_RETRIES; attempt += 1) {
+      try {
+        const content = await runAgentTextWithFallback({
+          agent,
+          prompt: buildSpecialistPrompt(input, assignment),
+          systemPrompt: SPECIALIST_SYSTEM_PROMPTS[assignment.agent],
+          model: SPECIALIST_MODEL,
+          label: `specialist:${assignment.agent}${attempt > 0 ? `.retry-${attempt}` : ""}`,
+          reasoningEffort: "medium",
+        });
+        return {
+          agent: assignment.agent,
+          task: assignment.task,
+          content,
+        };
+      } catch (error) {
+        lastError = error;
+        const isRateLimit =
+          (error instanceof Error && /rate.?limit|429|too many|quota|TPM|TPD/i.test(error.message)) ||
+          (typeof (error as { status?: number }).status === "number" && (error as { status: number }).status === 429);
+
+        if (isRateLimit && attempt < SPECIALIST_TASK_MAX_RETRIES) {
+          console.warn("conversation.specialist.task-retry", {
+            agent: assignment.agent,
+            attempt: attempt + 1,
+            waitMs: SPECIALIST_RETRY_DELAY_MS,
+            error: error instanceof Error ? error.message.slice(0, 120) : "unknown",
+          });
+          await new Promise<void>((resolve) => setTimeout(resolve, SPECIALIST_RETRY_DELAY_MS));
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    throw lastError ?? new Error("Specialist exhausted retries");
+  };
+
   const specialistResults = await Promise.allSettled(
-    assignments.map(async (assignment) => {
-      const agent = specialistAgents[assignment.agent];
-      const content = await runAgentTextWithFallback({
-        agent,
-        prompt: buildSpecialistPrompt(input, assignment),
-        systemPrompt: SPECIALIST_SYSTEM_PROMPTS[assignment.agent],
-        model: SPECIALIST_MODEL,
-        label: `specialist:${assignment.agent}`,
-        reasoningEffort: "medium",
-      });
-      return {
-        agent: assignment.agent,
-        task: assignment.task,
-        content,
-      } satisfies SpecialistReport;
+    assignments.map(async (assignment, idx) => {
+      if (idx > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, idx * SPECIALIST_STAGGER_MS));
+      }
+      return runSpecialistWithRetry(assignment);
     }),
   );
 

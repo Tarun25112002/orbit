@@ -138,29 +138,73 @@ const isGroqKeyCoolingDown = (apiKey: string): boolean => {
   return true;
 };
 
+const GROQ_MIN_DELAY_BETWEEN_REQUESTS_MS = 2_500;
+const GROQ_MAX_COOLDOWN_WAIT_MS = 25_000;
+
+const groqKeyLastRequestMs = new Map<string, number>();
+
+const getGroqKeyTimeSinceLastRequest = (apiKey: string): number => {
+  const last = groqKeyLastRequestMs.get(apiKey);
+  if (!last) return Infinity;
+  return Date.now() - last;
+};
+
+const markGroqKeyUsed = (apiKey: string) => {
+  groqKeyLastRequestMs.set(apiKey, Date.now());
+};
+
+const getGroqKeyReadyInMs = (apiKey: string): number => {
+  const cooldownUntil = groqKeyCooldownUntilMs.get(apiKey);
+  const cooldownRemaining = cooldownUntil ? Math.max(0, cooldownUntil - Date.now()) : 0;
+
+  const timeSinceLast = getGroqKeyTimeSinceLastRequest(apiKey);
+  const spacingRemaining = Math.max(0, GROQ_MIN_DELAY_BETWEEN_REQUESTS_MS - timeSinceLast);
+
+  return Math.max(cooldownRemaining, spacingRemaining);
+};
+
 const pickAvailableGroqKey = (): { key: string; index: number } | null => {
   const keys = getGroqKeys();
   if (keys.length === 0) return null;
+
+  let bestPick: { key: string; index: number; readyIn: number } | null = null;
+
   for (let offset = 0; offset < keys.length; offset += 1) {
     const index = (groqKeyRoundRobinIndex + offset) % keys.length;
     const key = keys[index]!;
-    if (!isGroqKeyCoolingDown(key)) {
+    const readyIn = getGroqKeyReadyInMs(key);
+
+    if (readyIn === 0) {
       groqKeyRoundRobinIndex = (index + 1) % keys.length;
       return { key, index };
     }
+
+    if (!bestPick || readyIn < bestPick.readyIn) {
+      bestPick = { key, index, readyIn };
+    }
   }
-  let bestKey: string | null = null;
-  let bestIndex = 0;
-  let earliestExpiry = Infinity;
-  for (let i = 0; i < keys.length; i += 1) {
-    const until = groqKeyCooldownUntilMs.get(keys[i]!) ?? 0;
-    if (until < earliestExpiry) { earliestExpiry = until; bestKey = keys[i]!; bestIndex = i; }
+
+  if (bestPick) {
+    groqKeyRoundRobinIndex = (bestPick.index + 1) % keys.length;
+    return { key: bestPick.key, index: bestPick.index };
   }
-  if (bestKey) {
-    groqKeyRoundRobinIndex = (bestIndex + 1) % keys.length;
-    return { key: bestKey, index: bestIndex };
-  }
+
   return null;
+};
+
+const waitForGroqKeyReady = async (apiKey: string): Promise<void> => {
+  const readyIn = getGroqKeyReadyInMs(apiKey);
+  if (readyIn <= 0) return;
+
+  const waitMs = Math.min(readyIn, GROQ_MAX_COOLDOWN_WAIT_MS);
+  if (waitMs > 0) {
+    console.info("groq.rate-limiter.waiting", {
+      keySlice: apiKey.slice(-6),
+      waitMs,
+      reason: readyIn > GROQ_MIN_DELAY_BETWEEN_REQUESTS_MS ? "cooldown" : "spacing",
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+  }
 };
 
 const getGroqModel = () =>
@@ -708,6 +752,7 @@ const generateGroqCompletionWithKey = async (args: {
         messages: retryPayload.messages,
         maxOutputTokens: tokenPlan.maxOutputTokens,
         temperature: args.temperature ?? 0.2,
+        maxRetries: 0,
         ...(args.reasoningEffort
           ? { providerOptions: { groq: { reasoningEffort: args.reasoningEffort } } }
           : {}),
@@ -731,22 +776,25 @@ const generateGroqCompletionWithKey = async (args: {
       const rawMessage = extractRawErrorMessage(error);
       const structuredStatusCode = extractStructuredStatusCode(error);
 
-      if (attempt < maxAttempts && isRateLimitedGeminiError({ statusCode: structuredStatusCode, message: rawMessage }) && isGroqRequestTooLargeError(rawMessage)) {
+      const looksLikeRateLimit = isRateLimitedGeminiError({ statusCode: structuredStatusCode, message: rawMessage });
+      const looksLikeTooLarge = isGroqRequestTooLargeError(rawMessage) || structuredStatusCode === 413;
+
+      if (attempt < maxAttempts && looksLikeRateLimit && looksLikeTooLarge) {
         charBudget = Math.max(1_000, Math.floor(charBudget * 0.65));
         lastError = error;
         continue;
       }
 
-      if (structuredStatusCode === 413 || isGroqRequestTooLargeError(rawMessage)) {
-        throw new GeminiRequestError({ message: `Groq payload too large (${rawMessage.slice(0, 150)}). Falling back.`, status: 413 });
+      if (looksLikeTooLarge) {
+        setGroqKeyCooldown(args.apiKey, 60);
+        throw new GeminiRequestError({ message: `Groq payload too large for key #${args.keyIndex + 1} (${rawMessage.slice(0, 120)}). Rotating.`, status: 429 });
       }
 
-      const isRateLimited = isRateLimitedGeminiError({ statusCode: structuredStatusCode, message: rawMessage });
-      if (isRateLimited) {
-        const retrySeconds = parseRetryAfterSeconds(rawMessage) ?? extractStructuredRetryAfterSeconds(error) ?? 15;
+      if (looksLikeRateLimit) {
+        const retrySeconds = parseRetryAfterSeconds(rawMessage) ?? extractStructuredRetryAfterSeconds(error) ?? 30;
         setGroqKeyCooldown(args.apiKey, retrySeconds);
         console.warn("groq.key-rate-limited", { keyIndex: args.keyIndex, keySlice: args.apiKey.slice(-6), retrySeconds, model: modelId });
-        throw new GeminiRequestError({ message: `Groq key #${args.keyIndex + 1} rate-limited for ${retrySeconds}s. ${rawMessage}`, status: 429 });
+        throw new GeminiRequestError({ message: `Groq key #${args.keyIndex + 1} rate-limited for ${retrySeconds}s. ${rawMessage.slice(0, 120)}`, status: 429 });
       }
 
       if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed|abort/i.test(rawMessage)) {
@@ -756,6 +804,12 @@ const generateGroqCompletionWithKey = async (args: {
       if (/api.?key|permission.?denied|forbidden|unauthorized/i.test(rawMessage)) {
         setGroqKeyCooldown(args.apiKey, 600);
         throw new GeminiRequestError({ message: `Groq API key #${args.keyIndex + 1} is invalid. Cooling down for 10 min.`, status: 401 });
+      }
+
+      if (/looping content|loop detection/i.test(rawMessage)) {
+        setGroqKeyCooldown(args.apiKey, 5);
+        console.warn("groq.loop-detection", { keyIndex: args.keyIndex, keySlice: args.apiKey.slice(-6), model: modelId });
+        throw new GeminiRequestError({ message: `Groq loop detection triggered on key #${args.keyIndex + 1}. Rotating.`, status: 429 });
       }
 
       throw new GeminiRequestError({ message: rawMessage || "Groq service encountered an error. Please try again.", status: structuredStatusCode ?? 500 });
@@ -787,6 +841,9 @@ const generateGroqCompletion = async (args: {
     const picked = pickAvailableGroqKey();
     if (!picked || triedKeyIndices.has(picked.index)) continue;
     triedKeyIndices.add(picked.index);
+
+    await waitForGroqKeyReady(picked.key);
+    markGroqKeyUsed(picked.key);
 
     console.info("groq.multi-key.attempt", { round: round + 1, totalKeys: keys.length, keyIndex: picked.index, keySlice: picked.key.slice(-6) });
 
