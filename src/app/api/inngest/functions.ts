@@ -3,6 +3,7 @@ import { convex } from "@/lib/convex-client";
 import { suggestionRuntime } from "@/lib/completion-runtime";
 import { generateGeminiCompletion, GEMINI_MODEL_PREFERRED } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
+import { withIngestSecret } from "@/lib/convex-ingest";
 import { buildWebContextFromText } from "@/lib/web-context";
 import {
   createSession,
@@ -562,9 +563,10 @@ const markSandboxCleanAfterIncrementalSync = (
 const loadLatestProjectFilesForSandbox = async (
   projectId: Id<"projects">,
 ): Promise<ConversationProjectFile[]> => {
-  const latestFiles = await convex.query(api.system.getProjectFiles, {
-    projectId,
-  });
+  const latestFiles = await convex.query(
+    api.system.getProjectFiles,
+    withIngestSecret({ projectId }),
+  );
 
   const latestFileNodes: ProjectFileTreeNode[] = latestFiles.map((file) => ({
     name: file.name,
@@ -1244,12 +1246,15 @@ const executeConversationFileOperation = async (args: {
     }
 
     if (operation.type === "create_file") {
-      const result = await convex.mutation(api.system.agentCreateFileByPath, {
-        projectId,
-        path: operation.path,
-        content: operation.content,
-        overwrite: operation.overwrite,
-      });
+      const result = await convex.mutation(
+        api.system.agentCreateFileByPath,
+        withIngestSecret({
+          projectId,
+          path: operation.path,
+          content: operation.content,
+          overwrite: operation.overwrite,
+        }),
+      );
 
       await syncAppliedOperationToActiveSandbox({ projectId, operation });
 
@@ -1263,10 +1268,13 @@ const executeConversationFileOperation = async (args: {
     }
 
     if (operation.type === "create_folder") {
-      const result = await convex.mutation(api.system.agentCreateFolderByPath, {
-        projectId,
-        path: operation.path,
-      });
+      const result = await convex.mutation(
+        api.system.agentCreateFolderByPath,
+        withIngestSecret({
+          projectId,
+          path: operation.path,
+        }),
+      );
 
       if (result.action === "created") {
         await syncAppliedOperationToActiveSandbox({ projectId, operation });
@@ -1282,12 +1290,15 @@ const executeConversationFileOperation = async (args: {
     }
 
     if (operation.type === "update_file") {
-      const result = await convex.mutation(api.system.agentUpdateFileByPath, {
-        projectId,
-        path: operation.path,
-        content: operation.content,
-        createIfMissing: operation.createIfMissing,
-      });
+      const result = await convex.mutation(
+        api.system.agentUpdateFileByPath,
+        withIngestSecret({
+          projectId,
+          path: operation.path,
+          content: operation.content,
+          createIfMissing: operation.createIfMissing,
+        }),
+      );
 
       await syncAppliedOperationToActiveSandbox({ projectId, operation });
 
@@ -1301,10 +1312,13 @@ const executeConversationFileOperation = async (args: {
     }
 
     if (operation.type === "delete_path") {
-      const result = await convex.mutation(api.system.agentDeletePath, {
-        projectId,
-        path: operation.path,
-      });
+      const result = await convex.mutation(
+        api.system.agentDeletePath,
+        withIngestSecret({
+          projectId,
+          path: operation.path,
+        }),
+      );
 
       if (result.status === "missing") {
         return {
@@ -1326,12 +1340,15 @@ const executeConversationFileOperation = async (args: {
       };
     }
 
-    const result = await convex.mutation(api.system.agentRenamePath, {
-      projectId,
-      path: operation.path,
-      newPath: operation.newPath,
-      createMissingParents: operation.createMissingParents,
-    });
+    const result = await convex.mutation(
+      api.system.agentRenamePath,
+      withIngestSecret({
+        projectId,
+        path: operation.path,
+        newPath: operation.newPath,
+        createMissingParents: operation.createMissingParents,
+      }),
+    );
 
     if (result.status === "unchanged") {
       return {
@@ -1477,11 +1494,11 @@ const updateAssistantMessage = async (args: {
   status: "completed" | "failed";
   reasoningDetails?: unknown;
 }) => {
-  const baseArgs = {
+  const baseArgs = withIngestSecret({
     messageId: args.assistantMessageId as Id<"messages">,
     content: args.content,
     status: args.status,
-  };
+  });
 
   if (args.reasoningDetails === undefined) {
     return await convex.mutation(
@@ -1491,10 +1508,15 @@ const updateAssistantMessage = async (args: {
   }
 
   try {
-    return await convex.mutation(api.system.completeMessageIfProcessing, {
-      ...baseArgs,
-      reasoningDetails: args.reasoningDetails,
-    });
+    return await convex.mutation(
+      api.system.completeMessageIfProcessing,
+      withIngestSecret({
+        messageId: args.assistantMessageId as Id<"messages">,
+        content: args.content,
+        status: args.status,
+        reasoningDetails: args.reasoningDetails,
+      }),
+    );
   } catch (error) {
     if (!isReasoningDetailsValidatorMismatch(error)) {
       throw error;
@@ -1515,9 +1537,12 @@ const updateAssistantMessage = async (args: {
 };
 
 const isAssistantMessageCancelled = async (assistantMessageId: string) => {
-  const assistantMessage = await convex.query(api.system.getMessageById, {
-    messageId: assistantMessageId as Id<"messages">,
-  });
+  const assistantMessage = await convex.query(
+    api.system.getMessageById,
+    withIngestSecret({
+      messageId: assistantMessageId as Id<"messages">,
+    }),
+  );
 
   return assistantMessage?.status === "cancelled";
 };
@@ -1804,9 +1829,12 @@ export const conversationMessageRequested = inngest.createFunction(
 
     try {
       const conversation = await step.run("load-conversation", async () => {
-        return await convex.query(api.system.getConversationById, {
-          conversationId: conversationId as Id<"conversations">,
-        });
+        return await convex.query(
+          api.system.getConversationById,
+          withIngestSecret({
+            conversationId: conversationId as Id<"conversations">,
+          }),
+        );
       });
 
       if (!conversation) {
@@ -1828,16 +1856,22 @@ export const conversationMessageRequested = inngest.createFunction(
       const existingMessages = await step.run(
         "load-message-history",
         async () => {
-          return await convex.query(api.system.getMessagesByConversation, {
-            conversationId: conversationId as Id<"conversations">,
-          });
+          return await convex.query(
+            api.system.getMessagesByConversation,
+            withIngestSecret({
+              conversationId: conversationId as Id<"conversations">,
+            }),
+          );
         },
       );
 
       const projectFiles = await step.run("load-project-files", async () => {
-        return await convex.query(api.system.getProjectFiles, {
-          projectId: conversation.projectId,
-        });
+        return await convex.query(
+          api.system.getProjectFiles,
+          withIngestSecret({
+            projectId: conversation.projectId,
+          }),
+        );
       });
 
       const projectFileNodes: ProjectFileTreeNode[] = projectFiles.map(
@@ -1958,10 +1992,13 @@ export const conversationMessageRequested = inngest.createFunction(
       }) => {
         const streamAssistantProgress = async (content: string) => {
           try {
-            await convex.mutation(api.system.streamMessageProgress, {
-              messageId: assistantMessageId as Id<"messages">,
-              content,
-            });
+            await convex.mutation(
+              api.system.streamMessageProgress,
+              withIngestSecret({
+                messageId: assistantMessageId as Id<"messages">,
+                content,
+              }),
+            );
           } catch {
 
           }
@@ -1973,7 +2010,6 @@ export const conversationMessageRequested = inngest.createFunction(
           history: args?.history ?? conversationHistory,
           webContext: args?.webContext ?? webContext.markdown,
           projectFiles: conversationProjectFiles,
-          isCancelled: () => isAssistantMessageCancelled(assistantMessageId),
           executeFileOperation: async (operation) => {
             if (await isAssistantMessageCancelled(assistantMessageId)) {
               return {
@@ -2050,9 +2086,12 @@ export const conversationMessageRequested = inngest.createFunction(
               return conversationProjectFiles;
             }
 
-            const latestFiles = await convex.query(api.system.getProjectFiles, {
-              projectId: conversation.projectId,
-            });
+            const latestFiles = await convex.query(
+              api.system.getProjectFiles,
+              withIngestSecret({
+                projectId: conversation.projectId,
+              }),
+            );
 
             const latestFileNodes: ProjectFileTreeNode[] = latestFiles.map(
               (file) => ({
@@ -2192,10 +2231,13 @@ export const conversationMessageRequested = inngest.createFunction(
         const generatedTitle = await titlePromise;
         if (generatedTitle) {
           await step.run("save-conversation-title", async () => {
-            await convex.mutation(api.system.updateConversationTitle, {
-              conversationId: conversationId as Id<"conversations">,
-              title: generatedTitle,
-            });
+            await convex.mutation(
+              api.system.updateConversationTitle,
+              withIngestSecret({
+                conversationId: conversationId as Id<"conversations">,
+                title: generatedTitle,
+              }),
+            );
           });
         }
       }
@@ -2246,12 +2288,15 @@ export const conversationMessageRequested = inngest.createFunction(
     } finally {
 
       try {
-        await convex.mutation(api.system.completeMessageIfProcessing, {
-          messageId: assistantMessageId as Id<"messages">,
-          content:
-            "The AI pipeline encountered an unexpected issue. Please try again.",
-          status: "failed",
-        });
+        await convex.mutation(
+          api.system.completeMessageIfProcessing,
+          withIngestSecret({
+            messageId: assistantMessageId as Id<"messages">,
+            content:
+              "The AI pipeline encountered an unexpected issue. Please try again.",
+            status: "failed",
+          }),
+        );
       } catch {
 
       }

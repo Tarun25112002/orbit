@@ -28,6 +28,9 @@ export const ProjectIdLayout = ({
   projectId: Id<"projects">;
 }) => {
   const [badge, setBadge] = useState<ProjectHeaderBadgeState | null>(null);
+  const [liveAiConversationId, setLiveAiConversationId] = useState<
+    Id<"conversations"> | null
+  >(null);
   const project = useProject(projectId);
 
   if (project === undefined) {
@@ -67,7 +70,14 @@ export const ProjectIdLayout = ({
   }
 
   return (
-    <ProjectHeaderContext.Provider value={{ badge, setBadge }}>
+    <ProjectHeaderContext.Provider
+      value={{
+        badge,
+        setBadge,
+        liveAiConversationId,
+        setLiveAiConversationId,
+      }}
+    >
       <GitHubErrorHandler />
       <div className="flex h-screen flex-col overflow-hidden bg-background">
         <Navbar projectId={projectId} />

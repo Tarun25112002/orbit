@@ -2,7 +2,6 @@ import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
 import { inngest } from "@/inngest/client";
-import { convex } from "@/lib/convex-client";
 import { getClerkUserIdAndToken } from "@/lib/clerk-auth";
 import { classifyError } from "@/lib/errors";
 import { api } from "../../../../../convex/_generated/api";
@@ -41,7 +40,12 @@ export async function POST(request: NextRequest) {
 
     const { userId: resolvedUserId, convexToken } = authContext;
 
-    const assistantMessage = await convex.query(api.system.getMessageById, {
+    const userConvex = new ConvexHttpClient(
+      process.env.NEXT_PUBLIC_CONVEX_URL!,
+    );
+    userConvex.setAuth(convexToken);
+
+    const assistantMessage = await userConvex.query(api.system.getMessageById, {
       messageId: assistantMessageId as Id<"messages">,
     });
 
@@ -51,11 +55,6 @@ export async function POST(request: NextRequest) {
         { status: 404 },
       );
     }
-
-    const userConvex = new ConvexHttpClient(
-      process.env.NEXT_PUBLIC_CONVEX_URL!,
-    );
-    userConvex.setAuth(convexToken);
 
     await userConvex.query(api.conversations.getById, {
       id: assistantMessage.conversationId,

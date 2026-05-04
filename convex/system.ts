@@ -1,8 +1,71 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { mutation, query, type MutationCtx } from "./_generated/server";
+import {
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
+import { verifyAuth } from "./auth";
 
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
+
+function isIngestTrusted(secret?: string | null): boolean {
+  const expected = process.env.ORBIT_CONVEX_INGEST_SECRET?.trim();
+  if (!expected || !secret) return false;
+  return secret === expected;
+}
+
+async function requireProjectOwnerUnlessIngest(
+  ctx: MutationCtx | QueryCtx,
+  projectId: Id<"projects">,
+  ingestSecret?: string | null,
+) {
+  if (isIngestTrusted(ingestSecret)) return;
+  const identity = await verifyAuth(ctx);
+  const project = await ctx.db.get(projectId);
+  if (!project || project.ownerId !== identity.subject) {
+    throw new ConvexError("FORBIDDEN");
+  }
+}
+
+async function requireConversationViewerUnlessIngest(
+  ctx: QueryCtx | MutationCtx,
+  conversationId: Id<"conversations">,
+  ingestSecret?: string | null,
+) {
+  if (isIngestTrusted(ingestSecret)) return;
+  const identity = await verifyAuth(ctx);
+  const conversation = await ctx.db.get(conversationId);
+  if (!conversation) {
+    throw new ConvexError("NOT_FOUND");
+  }
+  const project = await ctx.db.get(conversation.projectId);
+  if (!project || project.ownerId !== identity.subject) {
+    throw new ConvexError("FORBIDDEN");
+  }
+}
+
+async function requireMessageViewerUnlessIngest(
+  ctx: QueryCtx | MutationCtx,
+  messageId: Id<"messages">,
+  ingestSecret?: string | null,
+) {
+  if (isIngestTrusted(ingestSecret)) return;
+  const identity = await verifyAuth(ctx);
+  const message = await ctx.db.get(messageId);
+  if (!message) {
+    throw new ConvexError("NOT_FOUND");
+  }
+  const conversation = await ctx.db.get(message.conversationId);
+  if (!conversation) {
+    throw new ConvexError("NOT_FOUND");
+  }
+  const project = await ctx.db.get(conversation.projectId);
+  if (!project || project.ownerId !== identity.subject) {
+    throw new ConvexError("FORBIDDEN");
+  }
+}
 
 const normalizePath = (rawPath: string, label: string) => {
   const trimmed = rawPath.trim();
@@ -244,8 +307,14 @@ const isFolderAncestor = async (args: {
 export const getConversationById = query({
   args: {
     conversationId: v.id("conversations"),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireConversationViewerUnlessIngest(
+      ctx,
+      args.conversationId,
+      args.ingestSecret,
+    );
     return await ctx.db.get(args.conversationId);
   },
 });
@@ -253,8 +322,14 @@ export const getConversationById = query({
 export const getMessagesByConversation = query({
   args: {
     conversationId: v.id("conversations"),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireConversationViewerUnlessIngest(
+      ctx,
+      args.conversationId,
+      args.ingestSecret,
+    );
     return await ctx.db
       .query("messages")
       .withIndex("by_conversation", (q) =>
@@ -268,8 +343,14 @@ export const getMessagesByConversation = query({
 export const getMessageById = query({
   args: {
     messageId: v.id("messages"),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireMessageViewerUnlessIngest(
+      ctx,
+      args.messageId,
+      args.ingestSecret,
+    );
     return await ctx.db.get(args.messageId);
   },
 });
@@ -277,8 +358,14 @@ export const getMessageById = query({
 export const getProjectFiles = query({
   args: {
     projectId: v.id("projects"),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireProjectOwnerUnlessIngest(
+      ctx,
+      args.projectId,
+      args.ingestSecret,
+    );
     return await ctx.db
       .query("files")
       .withIndex("by_project", (q) => q.eq("projectId", args.projectId))
@@ -292,8 +379,14 @@ export const updateMessageContent = mutation({
     content: v.string(),
     status: v.union(v.literal("completed"), v.literal("failed")),
     reasoningDetails: v.optional(v.any()),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireMessageViewerUnlessIngest(
+      ctx,
+      args.messageId,
+      args.ingestSecret,
+    );
     const patch: {
       content: string;
       status: "completed" | "failed";
@@ -317,8 +410,14 @@ export const completeMessageIfProcessing = mutation({
     content: v.string(),
     status: v.union(v.literal("completed"), v.literal("failed")),
     reasoningDetails: v.optional(v.any()),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireMessageViewerUnlessIngest(
+      ctx,
+      args.messageId,
+      args.ingestSecret,
+    );
     const message = await ctx.db.get(args.messageId);
     if (!message || message.status === "cancelled") {
       return false;
@@ -351,8 +450,14 @@ export const streamMessageProgress = mutation({
   args: {
     messageId: v.id("messages"),
     content: v.string(),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireMessageViewerUnlessIngest(
+      ctx,
+      args.messageId,
+      args.ingestSecret,
+    );
     const message = await ctx.db.get(args.messageId);
     if (!message) {
       return false;
@@ -373,8 +478,14 @@ export const streamMessageProgress = mutation({
 export const cancelMessage = mutation({
   args: {
     messageId: v.id("messages"),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireMessageViewerUnlessIngest(
+      ctx,
+      args.messageId,
+      args.ingestSecret,
+    );
     const message = await ctx.db.get(args.messageId);
     if (!message) {
       return false;
@@ -401,8 +512,14 @@ export const updateConversationTitle = mutation({
   args: {
     conversationId: v.id("conversations"),
     title: v.string(),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireConversationViewerUnlessIngest(
+      ctx,
+      args.conversationId,
+      args.ingestSecret,
+    );
     const title = args.title.trim();
     if (!title) {
       return false;
@@ -423,8 +540,14 @@ export const agentCreateFileByPath = mutation({
     path: v.string(),
     content: v.string(),
     overwrite: v.optional(v.boolean()),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireProjectOwnerUnlessIngest(
+      ctx,
+      args.projectId,
+      args.ingestSecret,
+    );
     const { segments, normalizedPath } = normalizePath(args.path, "File path");
     const fileName = segments.at(-1)!;
     const folderSegments = segments.slice(0, -1);
@@ -489,8 +612,14 @@ export const agentCreateFolderByPath = mutation({
   args: {
     projectId: v.id("projects"),
     path: v.string(),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireProjectOwnerUnlessIngest(
+      ctx,
+      args.projectId,
+      args.ingestSecret,
+    );
     const { segments, normalizedPath } = normalizePath(
       args.path,
       "Folder path",
@@ -523,8 +652,14 @@ export const agentUpdateFileByPath = mutation({
     path: v.string(),
     content: v.string(),
     createIfMissing: v.optional(v.boolean()),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireProjectOwnerUnlessIngest(
+      ctx,
+      args.projectId,
+      args.ingestSecret,
+    );
     const normalized = normalizePath(args.path, "File path");
     const resolved = await resolvePath({
       ctx,
@@ -615,8 +750,14 @@ export const agentDeletePath = mutation({
   args: {
     projectId: v.id("projects"),
     path: v.string(),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireProjectOwnerUnlessIngest(
+      ctx,
+      args.projectId,
+      args.ingestSecret,
+    );
     const { normalizedPath } = normalizePath(args.path, "Path");
     const resolved = await resolvePath({
       ctx,
@@ -650,8 +791,14 @@ export const agentRenamePath = mutation({
     path: v.string(),
     newPath: v.string(),
     createMissingParents: v.optional(v.boolean()),
+    ingestSecret: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await requireProjectOwnerUnlessIngest(
+      ctx,
+      args.projectId,
+      args.ingestSecret,
+    );
     const source = normalizePath(args.path, "Path");
     const target = normalizePath(args.newPath, "New path");
 

@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, query } from "./_generated/server";
 import { verifyAuth } from "./auth";
 
 export const getActive = query({
@@ -19,7 +19,7 @@ export const getActive = query({
   },
 });
 
-export const activate = mutation({
+export const activate = internalMutation({
   args: {
     ownerId: v.string(),
     tier: v.union(v.literal("basic"), v.literal("pro"), v.literal("advance")),

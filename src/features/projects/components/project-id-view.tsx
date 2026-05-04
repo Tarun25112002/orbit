@@ -45,6 +45,7 @@ import {
 import { buildProjectFilePathMap } from "@/features/editor/utils/codebase-context";
 import { EditorStatusBar } from "../../editor/components/editor-status-bar";
 import { WelcomeTab } from "../../editor/components/welcome-tab";
+import { EditorAiLivePanel } from "./editor-ai-live-panel";
 import { OrbitBuildingAnimation } from "../../editor/components/building-animation";
 import { useIsProjectProcessing } from "@/features/conversations/hooks/use-conversations";
 import type { CursorState } from "../../editor/store/use-editor-store";
@@ -1066,6 +1067,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   const [activeRuntimeTabKey, setActiveRuntimeTabKey] =
     useState(MAIN_RUNTIME_TAB_KEY);
   const [isRuntimeBusy, setIsRuntimeBusy] = useState(false);
+  /** User dismissed the editor live panel (e.g. clicked a file); reset when work finishes. */
+  const [hideEditorLivePanel, setHideEditorLivePanel] = useState(false);
   const [isRuntimeCommandRunning, setIsRuntimeCommandRunning] = useState(false);
   const [isPreviewBooting, setIsPreviewBooting] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -1107,6 +1110,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
   });
   const projectFiles = useProjectFiles({ projectId });
   const isProjectProcessing = useIsProjectProcessing(projectId);
+  useEffect(() => {
+    if (!isProjectProcessing && !isRuntimeBusy) {
+      setHideEditorLivePanel(false);
+    }
+  }, [isProjectProcessing, isRuntimeBusy]);
   const updateFile = useUpdateFile();
   const convex = useConvex();
   const connectionState = useConvexConnectionState();
@@ -1204,6 +1212,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     }
     setActive(fileId);
     fetchFileForTab(fileId);
+    setHideEditorLivePanel(true);
   };
 
   useEffect(() => {
@@ -1218,6 +1227,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
     openPermanent(fileId);
     fetchFileForTab(fileId);
+    setHideEditorLivePanel(true);
   };
 
   const handleCloseTab = (fileId: Id<"files">) => {
@@ -3131,11 +3141,12 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     syncProjectSnapshotToRuntime,
   ]);
 
-  const showEditorBuildOverlay =
+  const showEditorLiveOverlay =
     activeView === "editor" &&
     Boolean(selectedFileId) &&
     selectedFile?.type === "file" &&
-    (isProjectProcessing || isRuntimeBusy);
+    (isProjectProcessing || isRuntimeBusy) &&
+    !hideEditorLivePanel;
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -3195,6 +3206,8 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       }
                       return;
                     }
+
+                    setHideEditorLivePanel(true);
 
                     if (options?.pinned) {
                       openPermanent(fileId);
@@ -3261,10 +3274,14 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                           />
                         </div>
                       )}
-                      {showEditorBuildOverlay && (
+                      {showEditorLiveOverlay && (
                         <div className="absolute inset-0 z-30 flex items-stretch justify-stretch p-2 sm:p-3">
                           <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-lg border border-border/50 bg-background/82 shadow-2xl shadow-black/30 ring-1 ring-white/10 backdrop-blur-xl dark:bg-background/78 dark:shadow-black/55">
-                            <OrbitBuildingAnimation density="embed" />
+                            <EditorAiLivePanel
+                              isProjectProcessing={isProjectProcessing}
+                              isRuntimeBusy={isRuntimeBusy}
+                              runtimeLogs={runtimeLogs}
+                            />
                           </div>
                         </div>
                       )}

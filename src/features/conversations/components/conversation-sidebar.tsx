@@ -61,6 +61,7 @@ import {
   useSendMessage,
 } from "../hooks/use-conversations";
 import { useEditor } from "../../editor/hooks/use-editor";
+import { useProjectHeaderContext } from "../../projects/components/project-header-context";
 import { useProjectFiles } from "../../projects/hooks/use-files";
 import { buildProjectFilePathMap } from "@/features/editor/utils/codebase-context";
 
@@ -91,7 +92,7 @@ const describePipelineOperation = (
   return `${operation.type} ${operation.path}`;
 };
 
-const extractExecutionTrace = (reasoningDetails: unknown) => {
+export const extractExecutionTrace = (reasoningDetails: unknown) => {
   if (typeof reasoningDetails !== "object" || reasoningDetails === null) {
     return null;
   }
@@ -100,7 +101,7 @@ const extractExecutionTrace = (reasoningDetails: unknown) => {
   return parseAiExecutionTrace(record.executionTrace);
 };
 
-const inferAssistantPipelinePhase = (
+export const inferAssistantPipelinePhase = (
   content: string,
 ): "planning" | "executing" => {
   const t = content.trimStart();
@@ -138,7 +139,7 @@ const statusBadgeClasses = (
   return "border-amber-500/25 bg-amber-500/10 text-amber-800 dark:text-amber-400";
 };
 
-const ExecutionTimeline = ({ trace }: { trace: AiExecutionTrace }) => {
+export const ExecutionTimeline = ({ trace }: { trace: AiExecutionTrace }) => {
   if (trace.operationResults.length === 0) {
     return null;
   }
@@ -376,6 +377,7 @@ const ChatView = ({
   projectId: Id<"projects">;
   onBack: () => void;
 }) => {
+  const { setLiveAiConversationId } = useProjectHeaderContext();
   const conversation = useConversation(conversationId);
   const messages = useMessages(conversationId);
   const sendMessage = useSendMessage();
@@ -419,6 +421,13 @@ const ChatView = ({
 
     return activeFilePath.slice(0, separatorIndex);
   }, [activeFilePath]);
+
+  useEffect(() => {
+    setLiveAiConversationId(conversationId);
+    return () => {
+      setLiveAiConversationId(null);
+    };
+  }, [conversationId, setLiveAiConversationId]);
 
   const buildAuthHeaders = useCallback(async () => {
     const headers = new Headers({

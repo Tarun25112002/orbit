@@ -3,9 +3,16 @@ import {
   syncProjectToContainer,
   syncFileToContainer,
 } from "@/lib/docker/file-sync";
+import { getClerkUserId } from "@/lib/clerk-auth";
+import { assertSandboxSessionOwner } from "@/lib/docker/sandbox-session-auth";
 
 export async function POST(request: NextRequest) {
   try {
+    const userId = await getClerkUserId(request);
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = (await request.json()) as {
       sessionId?: string;
       filePath?: string;
@@ -18,6 +25,12 @@ export async function POST(request: NextRequest) {
         { error: "sessionId is required" },
         { status: 400 },
       );
+    }
+
+    try {
+      assertSandboxSessionOwner(body.sessionId, userId);
+    } catch {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     if (body.files && Array.isArray(body.files)) {

@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { NextRequest, NextResponse } from "next/server";
 import { ConvexHttpClient } from "convex/browser";
-import { convex } from "@/lib/convex-client";
 import { getClerkUserIdAndToken } from "@/lib/clerk-auth";
 import { api } from "../../../../../convex/_generated/api";
 import type { Id } from "../../../../../convex/_generated/dataModel";
@@ -40,7 +39,12 @@ export async function POST(request: NextRequest) {
 
     const { convexToken } = authContext;
 
-    const message = await convex.query(api.system.getMessageById, {
+    const userConvex = new ConvexHttpClient(
+      process.env.NEXT_PUBLIC_CONVEX_URL!,
+    );
+    userConvex.setAuth(convexToken);
+
+    const message = await userConvex.query(api.system.getMessageById, {
       messageId: parsed.data.messageId as Id<"messages">,
     });
 
@@ -51,16 +55,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const userConvex = new ConvexHttpClient(
-      process.env.NEXT_PUBLIC_CONVEX_URL!,
-    );
-    userConvex.setAuth(convexToken);
-
     await userConvex.query(api.conversations.getById, {
       id: message.conversationId,
     });
 
-    await convex.mutation(api.system.updateMessageContent, {
+    await userConvex.mutation(api.system.updateMessageContent, {
       messageId: parsed.data.messageId as Id<"messages">,
       content: parsed.data.content,
       status: parsed.data.status,

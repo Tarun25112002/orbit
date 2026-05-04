@@ -4,11 +4,18 @@ import {
   type SandboxRuntime,
 } from "@/lib/docker/session-manager";
 import { ensureCapacity } from "@/lib/docker/resource-guard";
+import { getClerkUserId } from "@/lib/clerk-auth";
+import { registerSandboxSession } from "@/lib/docker/sandbox-session-auth";
 
 const VALID_RUNTIMES = new Set<SandboxRuntime>(["node", "python", "bash"]);
 
 export async function POST(request: NextRequest) {
   try {
+    const userId = await getClerkUserId(request);
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = (await request.json()) as {
       sessionId?: string;
       runtime?: string;
@@ -47,6 +54,8 @@ export async function POST(request: NextRequest) {
     const result = await createSession(sessionId, runtime as SandboxRuntime, {
       projectKey: normalizedProjectKey,
     });
+
+    registerSandboxSession(result.sessionId, userId);
 
     return NextResponse.json(result);
   } catch (error) {

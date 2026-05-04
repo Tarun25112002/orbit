@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getMappedPort } from "@/lib/docker/session-manager";
+import { getClerkUserId } from "@/lib/clerk-auth";
+import { assertSandboxSessionOwner } from "@/lib/docker/sandbox-session-auth";
 
 const PREVIEW_PROXY_HEALTH_TIMEOUT_MS = 1_500;
 
@@ -41,6 +43,12 @@ export async function GET(request: NextRequest) {
         { error: "sessionId and port query params are required" },
         { status: 400 },
       );
+    }
+
+    try {
+      assertSandboxSessionOwner(sessionId, userId);
+    } catch {
+      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
     const containerPort = parseInt(port, 10);

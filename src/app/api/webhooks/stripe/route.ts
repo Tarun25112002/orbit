@@ -1,7 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import Stripe from "stripe";
 import { fetchMutation } from "convex/nextjs";
-import { api } from "../../../../../convex/_generated/api";
+import { internal } from "../../../../../convex/_generated/api";
 
 export async function POST(req: NextRequest) {
   const rawBody = await req.text();
@@ -49,15 +49,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing metadata" }, { status: 400 });
     }
 
-    await fetchMutation(api.subscriptions.activate, {
-      ownerId: userId,
-      tier,
-      stripeSessionId: session.id,
-      stripePaymentIntentId:
-        typeof session.payment_intent === "string"
-          ? session.payment_intent
-          : undefined,
-    });
+    const deployKey = process.env.CONVEX_DEPLOY_KEY?.trim();
+    if (!deployKey) {
+      console.error("[stripe/webhook] CONVEX_DEPLOY_KEY is not set");
+      return NextResponse.json(
+        { error: "Server configuration error" },
+        { status: 500 },
+      );
+    }
+
+    await fetchMutation(
+      internal.subscriptions.activate,
+      {
+        ownerId: userId,
+        tier,
+        stripeSessionId: session.id,
+        stripePaymentIntentId:
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : undefined,
+      },
+      { adminToken: deployKey },
+    );
   }
 
   return NextResponse.json({ received: true });

@@ -2,13 +2,16 @@ import { NextRequest, NextResponse } from "next/server";
 import Stripe from "stripe";
 import { getClerkUserId } from "@/lib/clerk-auth";
 import { fetchMutation } from "convex/nextjs";
-import { api } from "../../../../../convex/_generated/api";
+import { internal } from "../../../../../convex/_generated/api";
 
 const VALID_TIERS = new Set(["basic", "pro", "advance"]);
 
 export async function POST(request: NextRequest) {
   try {
     const userId = await getClerkUserId(request);
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
 
     let payload: { sessionId?: string } | null = null;
     try {
@@ -67,15 +70,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    await fetchMutation(api.subscriptions.activate, {
-      ownerId: metadataUserId,
-      tier: tier as "basic" | "pro" | "advance",
-      stripeSessionId: session.id,
-      stripePaymentIntentId:
-        typeof session.payment_intent === "string"
-          ? session.payment_intent
-          : undefined,
-    });
+    const deployKey = process.env.CONVEX_DEPLOY_KEY?.trim();
+    if (!deployKey) {
+      console.error("[stripe/sync-session] CONVEX_DEPLOY_KEY is not set");
+      return NextResponse.json(
+        { error: "Server configuration error" },
+        { status: 500 },
+      );
+    }
+
+    await fetchMutation(
+      internal.subscriptions.activate,
+      {
+        ownerId: metadataUserId,
+        tier: tier as "basic" | "pro" | "advance",
+        stripeSessionId: session.id,
+        stripePaymentIntentId:
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : undefined,
+      },
+      { adminToken: deployKey },
+    );
 
     return NextResponse.json({ status: "activated", tier });
   } catch (error) {

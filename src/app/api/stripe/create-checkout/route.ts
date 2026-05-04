@@ -72,8 +72,14 @@ export async function POST(req: NextRequest) {
     });
 
     return NextResponse.json({ url: session.url });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Stripe Checkout Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    const safeMessage =
+      process.env.NODE_ENV === "production"
+        ? "Unable to start checkout"
+        : error instanceof Error
+          ? error.message
+          : "Checkout failed";
+    return NextResponse.json({ error: safeMessage }, { status: 500 });
   }
 }

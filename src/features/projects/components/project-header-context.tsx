@@ -2,6 +2,7 @@
 
 import { createContext, useContext } from "react";
 
+import type { Id } from "../../../../convex/_generated/dataModel";
 import type { AutoSaveStatus } from "./auto-save-badge";
 
 export interface ProjectHeaderBadgeState {
@@ -12,6 +13,9 @@ export interface ProjectHeaderBadgeState {
 interface ProjectHeaderContextValue {
   badge: ProjectHeaderBadgeState | null;
   setBadge: (badge: ProjectHeaderBadgeState | null) => void;
+  /** Active AI chat thread (when user is inside a conversation). Drives editor live panel. */
+  liveAiConversationId: Id<"conversations"> | null;
+  setLiveAiConversationId: (id: Id<"conversations"> | null) => void;
 }
 
 export const ProjectHeaderContext =

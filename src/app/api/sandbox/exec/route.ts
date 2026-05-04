@@ -1,8 +1,18 @@
 import { NextRequest } from "next/server";
 import { getContainer, touchSession } from "@/lib/docker/session-manager";
+import { getClerkUserId } from "@/lib/clerk-auth";
+import { assertSandboxSessionOwner } from "@/lib/docker/sandbox-session-auth";
 
 export async function POST(request: NextRequest) {
   try {
+    const userId = await getClerkUserId(request);
+    if (!userId) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     const body = (await request.json()) as {
       sessionId?: string;
       command?: string;
@@ -16,6 +26,15 @@ export async function POST(request: NextRequest) {
         JSON.stringify({ error: "sessionId and command are required" }),
         { status: 400, headers: { "Content-Type": "application/json" } },
       );
+    }
+
+    try {
+      assertSandboxSessionOwner(sessionId, userId);
+    } catch {
+      return new Response(JSON.stringify({ error: "Forbidden" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     const container = getContainer(sessionId);
