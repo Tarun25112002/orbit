@@ -52,9 +52,9 @@ const SANDBOX_OUTPUT_MAX_BYTES = SANDBOX_MAX_OUTPUT_CHARS * 6;
 const SANDBOX_BACKGROUND_STARTUP_TIMEOUT_MS = Math.max(
   1_000,
   Number.parseInt(
-    process.env.CONVERSATION_BACKGROUND_STARTUP_TIMEOUT_MS ?? "8000",
+    process.env.CONVERSATION_BACKGROUND_STARTUP_TIMEOUT_MS ?? "12000",
     10,
-  ) || 8_000,
+  ) || 12_000,
 );
 const SANDBOX_INSTALL_TIMEOUT_MS = Math.max(
   SANDBOX_COMMAND_TIMEOUT_MS,
@@ -786,18 +786,27 @@ const runInstallWithRetries = async (args: {
 
 const ORBIT_VALIDATE_COMMAND = "orbit-validate";
 
+/**
+ * Pre-dev validation for the AI sandbox. Must stay lightweight: running
+ * `npm run build` or `vite build` here gates `start_background_command` for
+ * the dev server (`gatedOnPreviousSuccess`), and those builds often fail on
+ * WIP codegen even when `npm run dev` works — causing endless fixup loops.
+ */
 const buildSandboxValidationCommandScript = () =>
   [
     "if [ ! -f package.json ]; then echo 'No package.json found; skipping package validation.'; exit 0; fi",
-    "validation_target=$(node -e \"const pkg=require('./package.json'); const s=pkg.scripts||{}; if (s.build) process.stdout.write('build'); else if (s.typecheck) process.stdout.write('typecheck'); else if (s.check) process.stdout.write('check'); else process.stdout.write('auto');\")",
+    "validation_target=$(node -e \"const pkg=require('./package.json'); const s=pkg.scripts||{}; if (s.typecheck) process.stdout.write('typecheck'); else if (s.check) process.stdout.write('check'); else if (s.build) process.stdout.write('light'); else process.stdout.write('auto');\")",
     'case "$validation_target" in',
-    "  build) npm run build ;;",
     "  typecheck) npm run typecheck ;;",
     "  check) npm run check ;;",
+    "  light)",
+    "    echo '[orbit-validate] pre-dev: skipping full build (use CI or npm run build manually).';",
+    "    if [ -x node_modules/.bin/tsc ] && [ -f tsconfig.json ]; then node_modules/.bin/tsc --noEmit;",
+    "    else echo '[orbit-validate] no tsc/tsconfig; nothing to validate before dev.'; exit 0; fi",
+    "    ;;",
     "  auto)",
     "    if [ -x node_modules/.bin/tsc ] && [ -f tsconfig.json ]; then node_modules/.bin/tsc --noEmit;",
-    "    elif [ -x node_modules/.bin/vite ]; then node_modules/.bin/vite build;",
-    "    else echo 'No build, typecheck, check, tsc, or vite validation target found.'; fi",
+    "    else echo '[orbit-validate] auto: no tsc; skipping (dev server will surface runtime errors).'; exit 0; fi",
     "    ;;",
     '  *) echo "Unknown validation target: $validation_target"; exit 1 ;;',
     "esac",
