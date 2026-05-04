@@ -46,6 +46,7 @@ import { buildProjectFilePathMap } from "@/features/editor/utils/codebase-contex
 import { EditorStatusBar } from "../../editor/components/editor-status-bar";
 import { WelcomeTab } from "../../editor/components/welcome-tab";
 import { OrbitBuildingAnimation } from "../../editor/components/building-animation";
+import { useIsProjectProcessing } from "@/features/conversations/hooks/use-conversations";
 import type { CursorState } from "../../editor/store/use-editor-store";
 import { useProjectHeaderContext } from "./project-header-context";
 import { projectWebcontainerRuntime } from "../lib/docker-runtime";
@@ -641,10 +642,10 @@ const Tab = ({
       aria-selected={isActive}
       onClick={onClick}
       className={cn(
-        "inline-flex h-8 min-w-[5rem] items-center justify-center rounded-md px-3 text-xs font-medium transition-colors",
+        "inline-flex h-8 min-w-[5.25rem] items-center justify-center rounded-md px-3 text-xs font-semibold tracking-wide transition-all duration-200",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         isActive
-          ? "bg-primary text-primary-foreground shadow-sm"
+          ? "bg-primary text-primary-foreground shadow-md ring-1 ring-primary/30"
           : "text-muted-foreground hover:bg-muted/80 hover:text-foreground",
       )}
     >
@@ -761,7 +762,7 @@ const EditorTabStrip = ({
   }
 
   return (
-    <div className="relative z-20 flex h-9 items-center border-b border-border/60 bg-background">
+    <div className="relative z-20 flex h-10 items-center border-b border-border/50 bg-muted/25 shadow-[inset_0_-1px_0_rgb(0,0,0,0.06)] backdrop-blur-sm dark:bg-muted/15 dark:shadow-[inset_0_-1px_0_rgb(255,255,255,0.04)]">
       {canScrollLeft && (
         <button
           type="button"
@@ -789,10 +790,10 @@ const EditorTabStrip = ({
               onMouseDown={(e) => handleMouseDown(e, tab.id)}
               onContextMenu={(e) => handleContextMenu(e, tab.id)}
               className={cn(
-                "group relative flex h-full w-44 shrink-0 items-center gap-2 border-r border-b-2 border-r-border/45 border-b-transparent px-3",
+                "group relative flex h-full w-44 shrink-0 items-center gap-2 border-r border-b-[3px] border-r-border/40 border-b-transparent px-3 transition-colors",
                 isActive
-                  ? "border-b-primary bg-card text-foreground"
-                  : "bg-transparent text-muted-foreground hover:bg-muted/40",
+                  ? "border-b-primary bg-zinc-950/80 text-foreground shadow-[inset_0_1px_0_rgb(255,255,255,0.04)] dark:bg-zinc-950/90"
+                  : "bg-transparent text-muted-foreground hover:bg-muted/50",
               )}
             >
               <span className="shrink-0">
@@ -1024,7 +1025,7 @@ const BreadcrumbBar = ({
 
   return (
     <div
-      className="flex h-8 items-center gap-1 overflow-x-auto border-b border-border/50 bg-card/35 px-3 scrollbar-none"
+      className="flex h-9 items-center gap-1 overflow-x-auto border-b border-border/50 bg-muted/15 px-3 text-[13px] backdrop-blur-sm scrollbar-none"
       style={{ scrollbarWidth: "none" }}
     >
       {ancestors.map((ancestor, index) => {
@@ -1105,6 +1106,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     id: selectedFileId,
   });
   const projectFiles = useProjectFiles({ projectId });
+  const isProjectProcessing = useIsProjectProcessing(projectId);
   const updateFile = useUpdateFile();
   const convex = useConvex();
   const connectionState = useConvexConnectionState();
@@ -3129,14 +3131,20 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     syncProjectSnapshotToRuntime,
   ]);
 
+  const showEditorBuildOverlay =
+    activeView === "editor" &&
+    Boolean(selectedFileId) &&
+    selectedFile?.type === "file" &&
+    (isProjectProcessing || isRuntimeBusy);
+
   return (
     <div className="flex h-full flex-col bg-background">
       <nav
         aria-label="Workspace"
-        className="flex h-11 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/30 px-2.5 py-1.5 backdrop-blur-sm"
+        className="flex h-12 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/35 px-3 py-2 shadow-[0_1px_0_rgb(0,0,0,0.04)] backdrop-blur-md dark:shadow-[0_1px_0_rgb(255,255,255,0.04)]"
       >
         <div
-          className="inline-flex rounded-lg border border-border/60 bg-background/90 p-0.5 shadow-sm"
+          className="inline-flex rounded-lg border border-border/60 bg-background/95 p-0.5 shadow-sm ring-1 ring-black/[0.03] dark:ring-white/[0.06]"
           role="tablist"
         >
           <Tab
@@ -3198,7 +3206,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                 />
               </Allotment.Pane>
               <Allotment.Pane>
-                <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-background">
+                <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-border/40 bg-gradient-to-b from-background to-muted/20">
                   <div className="flex h-full min-h-0 flex-col">
                     <EditorTabStrip
                       tabs={editorTabs}
@@ -3220,7 +3228,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       />
                     )}
 
-                    <div className="min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
+                    <div className="relative min-h-0 flex-1 overflow-hidden bg-zinc-950 ring-1 ring-inset ring-white/[0.06] dark:bg-[#0c0c0f]">
                       {!selectedFileId && (
                         <WelcomeTab
                           projectId={projectId}
@@ -3251,6 +3259,13 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                             projectFiles={projectFiles ?? []}
                             inlineSuggestionsEnabled={inlineSuggestionsEnabled}
                           />
+                        </div>
+                      )}
+                      {showEditorBuildOverlay && (
+                        <div className="absolute inset-0 z-30 flex items-stretch justify-stretch p-2 sm:p-3">
+                          <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-lg border border-border/50 bg-background/82 shadow-2xl shadow-black/30 ring-1 ring-white/10 backdrop-blur-xl dark:bg-background/78 dark:shadow-black/55">
+                            <OrbitBuildingAnimation density="embed" />
+                          </div>
                         </div>
                       )}
                     </div>
