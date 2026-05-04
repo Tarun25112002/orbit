@@ -7,13 +7,19 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { verifyAuth } from "./auth";
+import { ORBIT_LOCAL_DEV_INGEST_SECRET } from "./ingestDevSecret";
 
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
 
 function isIngestTrusted(secret?: string | null): boolean {
+  if (!secret) return false;
   const expected = process.env.ORBIT_CONVEX_INGEST_SECRET?.trim();
-  if (!expected || !secret) return false;
-  return secret === expected;
+  if (expected) {
+    return secret === expected;
+  }
+  const allowLocal =
+    process.env.ORBIT_CONVEX_INGEST_ALLOW_LOCAL_DEV_INGEST?.trim() === "1";
+  return allowLocal && secret === ORBIT_LOCAL_DEV_INGEST_SECRET;
 }
 
 async function requireProjectOwnerUnlessIngest(
