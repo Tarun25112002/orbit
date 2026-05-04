@@ -80,6 +80,59 @@ const parsePositiveInt = (value: string | undefined, fallback: number) => {
   return parsed;
 };
 
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const MODEL_CALLS_PER_MINUTE = parsePositiveInt(
+  process.env.CONVERSATION_MODEL_CALLS_PER_MINUTE?.trim(),
+  10,
+);
+const MODEL_RATE_WINDOW_MS = 60_000;
+const modelCallWindowByModel = new Map<string, { startedAt: number; count: number }>();
+
+const acquireModelCallSlot = async (args: {
+  model: string;
+  onStatus?: (status: string) => void;
+}) => {
+  const model = args.model.trim() || "unknown-model";
+  if (MODEL_CALLS_PER_MINUTE <= 0) {
+    return;
+  }
+
+  for (;;) {
+    const now = Date.now();
+    const currentWindow = modelCallWindowByModel.get(model);
+    const isWindowExpired =
+      !currentWindow || now - currentWindow.startedAt >= MODEL_RATE_WINDOW_MS;
+
+    if (isWindowExpired) {
+      modelCallWindowByModel.set(model, {
+        startedAt: now,
+        count: 1,
+      });
+      return;
+    }
+
+    if (currentWindow.count < MODEL_CALLS_PER_MINUTE) {
+      currentWindow.count += 1;
+      modelCallWindowByModel.set(model, currentWindow);
+      return;
+    }
+
+    const retryAfterMs = Math.max(
+      1_000,
+      MODEL_RATE_WINDOW_MS - (now - currentWindow.startedAt),
+    );
+    const retryAfterSeconds = Math.ceil(retryAfterMs / 1_000);
+    args.onStatus?.(
+      `🧊 Cooling model \`${model}\` to respect rate limits (${retryAfterSeconds}s)...`,
+    );
+    await sleep(Math.min(retryAfterMs, 5_000));
+  }
+};
+
 const FILE_OPS_PLANNER_MIN_OUTPUT_TOKENS = 2_048;
 const FILE_OPS_PLANNER_MAX_OUTPUT_TOKENS = Math.max(
   FILE_OPS_PLANNER_MIN_OUTPUT_TOKENS,
@@ -140,9 +193,6 @@ const ENABLE_INSTALL_GATE = !/^(0|false)$/i.test(
 const ENABLE_AUTONOMOUS_VALIDATION = !/^(0|false)$/i.test(
   process.env.CONVERSATION_ENABLE_AUTONOMOUS_VALIDATION?.trim() ?? "true",
 );
-const ENABLE_TRACE_HISTORY = !/^(0|false)$/i.test(
-  process.env.CONVERSATION_ENABLE_TRACE_HISTORY?.trim() ?? "true",
-);
 const ORBIT_VALIDATE_COMMAND = "orbit-validate";
 const VITE_SCAFFOLD_INTENT_PATTERN =
   /\b(create|scaffold|setup|generate|starter|boilerplate|from scratch|new|build|make)\b/i;
@@ -166,8 +216,6 @@ const EXECUTION_FRUSTRATION_PATTERN =
   /\b(not\s+execut(?:e|ing)|just\s+giv(?:e|ing)\s+code|only\s+giv(?:e|ing)\s+code|plain\s+code(?:\s+only)?|only\s+plain\s+code|not\s+(?:making|creating|writing)\s+files?|not\s+generat(?:e|ing)\s+files?|not\s+updat(?:e|ing)\s+files?|not\s+just\s+code|dont\s+just\s+give\s+code|don't\s+just\s+give\s+code)\b/i;
 const FAST_EXECUTION_INTENT_PATTERN =
   /\b(immediate(?:ly)?|immediatly|immideately|right\s+away|asap|step\s*by\s*step|execute\s+now|start\s+execut(?:e|ing)|execute\s+pipeline|run\s+pipeline|pipeline\s+(?:first|execution))\b/i;
-const FRONTEND_PLANNER_STYLE_HINT_PATTERN =
-  /\b(ui|ux|frontend|front-end|react|vite|component|page|layout|css|tailwind|design|style|styling)\b/i;
 const STRICT_FILE_OPS_GATE_ENABLED = !/^(0|false)$/i.test(
   process.env.CONVERSATION_STRICT_FILE_OPS_GATE?.trim() ?? "true",
 );
@@ -363,6 +411,7 @@ type ConversationOrchestrationInput = {
   ) => Promise<void> | void;
 
   onPlanningProgress?: (status: string) => void;
+  onPipelineStatus?: (status: string) => void;
 };
 
 export type ConversationProjectFile = {
@@ -494,6 +543,7 @@ const IMPLEMENTATION_SYSTEM_PROMPT = [
   "You ONLY generate FRONTEND code using Vite + React + TypeScript.",
   "NEVER generate backend code, API routes, Express servers, database code, or server-side logic.",
   "For data needs use: mock data / hardcoded JSON arrays, localStorage, browser APIs, React state.",
+  "When asked for complex websites, default to multi-page apps with reusable architecture, strong routing, and modular components.",
   "",
   "═══════════════════════════════════════════════════",
   "DESIGN EXCELLENCE — NON-NEGOTIABLE",
@@ -691,6 +741,12 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "- localStorage / sessionStorage for persistence",
   "- Browser APIs (fetch to public APIs, geolocation, etc.)",
   "- React state (useState, useReducer, Context, Zustand)",
+  "",
+  "COMPLEX WEBSITE MANDATE:",
+  "- When the user asks for a complete/complex website, generate a multi-page architecture by default.",
+  "- Include routing, shared layout, reusable components, and clear folder structure.",
+  "- Prefer scalable patterns (feature folders, typed models, utility hooks, composition over duplication).",
+  "- Ensure every planned page is fully implemented with realistic mock content and responsive behavior.",
   "",
   "═══════════════════════════════════════════════════",
   "OPERATION TYPES",
@@ -971,6 +1027,7 @@ const runAgentTextWithFallback = async (args: {
   model: string;
   label: string;
   reasoningEffort?: "low" | "medium" | "high";
+  onStatus?: (status: string) => void;
 }) => {
   let primaryError: unknown;
   const targetModel = args.model.trim();
@@ -996,6 +1053,10 @@ const runAgentTextWithFallback = async (args: {
     }
   } else {
     try {
+      await acquireModelCallSlot({
+        model: targetModel,
+        onStatus: args.onStatus,
+      });
       const primaryResult = await args.agent.run(args.prompt);
       const primaryText = textFromAgentResult(primaryResult).trim();
       if (primaryText) {
@@ -1017,6 +1078,10 @@ const runAgentTextWithFallback = async (args: {
   }
 
   try {
+    await acquireModelCallSlot({
+      model: targetModel,
+      onStatus: args.onStatus,
+    });
     const fallback = await generateGeminiCompletion({
       model: targetModel,
       system: args.systemPrompt,
@@ -3253,36 +3318,6 @@ const buildFileOperationPlannerRetryPrompt = (
     .filter(Boolean)
     .join("\n");
 
-const buildStrictFileOperationPlannerPrompt = (
-  input: ConversationOrchestrationInput,
-  previousOutput: string,
-  issues: string[] = [],
-) =>
-  [
-    buildFileOperationPlannerPrompt(input),
-    "",
-    "STRICT EXECUTION MODE:",
-    "- You MUST return executable JSON operations only.",
-    "- For code_generation/code_update intents, operations MUST NOT be empty.",
-    "- Include create_folder operations for parent directories before create_file/update_file operations.",
-    "- If package.json is changed, include run_command install right after it.",
-    "- Do not return prose, markdown, or code-only response.",
-    "",
-    "Previous planner output:",
-    previousOutput || "(empty)",
-    "",
-    issues.length > 0
-      ? [
-          "Validation issues to fix:",
-          ...issues.map((issue) => `- ${issue}`),
-          "",
-        ].join("\n")
-      : "",
-    "Return ONLY valid JSON object with operations array and at least one operation.",
-  ]
-    .filter(Boolean)
-    .join("\n");
-
 const buildEmergencyFileOperationPlannerPrompt = (
   input: ConversationOrchestrationInput,
   previousOutput: string,
@@ -3460,102 +3495,6 @@ const shouldUseChunkedComplexBuildPlanning = (
   }
 
   return false;
-};
-
-const buildComplexBuildChunkPlannerPrompt = (
-  input: ConversationOrchestrationInput,
-) => {
-  const fileInventory = buildProjectFileInventory(input.projectFiles);
-
-  return [
-    "Break this implementation request into 2-4 executable build chunks.",
-    "Return JSON only.",
-    '{"chunks":[{"title":"short title","goal":"clear chunk goal"}]}',
-    "",
-    "Rules:",
-    "- Keep chunks sequential and non-overlapping.",
-    "- Chunk 1 should cover foundation/config/dependencies.",
-    "- Middle chunks should implement core features in small vertical slices.",
-    "- Final chunk should cover integration/polish/runtime command validation.",
-    "- Keep each chunk small enough for one focused planner call.",
-    "",
-    "User request:",
-    input.message,
-    "",
-    input.history
-      ? `Conversation history:\n${input.history.slice(0, MAX_PLANNER_HISTORY_CHARS)}`
-      : "",
-    "",
-    "Existing project files:",
-    fileInventory,
-    "",
-    "Project context:",
-    input.projectContext?.slice(0, MAX_PLANNER_PROJECT_CONTEXT_CHARS) ||
-      "(empty project)",
-  ]
-    .filter(Boolean)
-    .join("\n");
-};
-
-const parsePlannerChunks = (value: unknown): PlannerChunk[] => {
-  const rootRecord = toRecord(value);
-  const rawChunks =
-    (Array.isArray(value)
-      ? value
-      : Array.isArray(rootRecord?.chunks)
-        ? rootRecord.chunks
-        : Array.isArray(rootRecord?.plan)
-          ? rootRecord.plan
-          : []) ?? [];
-
-  const chunks: PlannerChunk[] = [];
-
-  for (const rawChunk of rawChunks) {
-    const record = toRecord(rawChunk);
-    if (!record) {
-      continue;
-    }
-
-    const goal = getStringField(record, [
-      "goal",
-      "task",
-      "objective",
-      "description",
-      "scope",
-    ]);
-
-    if (!goal) {
-      continue;
-    }
-
-    const title =
-      getStringField(record, ["title", "name", "chunk", "step"]) ??
-      `Chunk ${chunks.length + 1}`;
-
-    chunks.push({
-      title: title.slice(0, 120),
-      goal: goal.slice(0, 700),
-    });
-
-    if (chunks.length >= MAX_COMPLEX_BUILD_CHUNKS) {
-      break;
-    }
-  }
-
-  return chunks;
-};
-
-const extractPlannerChunks = (output: string): PlannerChunk[] => {
-  const plannerJson = extractJsonObject(output.trim());
-  if (!plannerJson) {
-    return [];
-  }
-
-  try {
-    return parsePlannerChunks(safeJsonParse(plannerJson) as unknown);
-  } catch {
-    return [];
-  }
 };
 
 const applyOperationsToProjectSnapshot = (
@@ -3786,6 +3725,7 @@ const runFileOpsPlannerDirect = async (
     callBudget?: PlannerCallBudget;
     fastMode?: boolean;
     onPlanningProgress?: (status: string) => void;
+    onStatus?: (status: string) => void;
   },
 ): Promise<string> => {
   const callBudget = args?.callBudget;
@@ -3811,6 +3751,11 @@ const runFileOpsPlannerDirect = async (
     plannerCallsUsed: callBudget?.used,
     plannerCallsMax: callBudget?.max,
     fastMode: args?.fastMode === true,
+  });
+
+  await acquireModelCallSlot({
+    model: targetModel,
+    onStatus: args?.onStatus,
   });
 
   const result = await generateGeminiCompletion({
@@ -3852,6 +3797,7 @@ const runFileOpsPlannerDirect = async (
 const planConversationFileOperations = async (
   input: ConversationOrchestrationInput,
 ): Promise<PlannedFileOperationBatch> => {
+  input.onPipelineStatus?.("🧭 Planning executable file operations...");
   const requiresExecutablePlan = shouldRequireExecutableFileOperations(input);
   const fastExecutionMode = shouldUseFastPlannerMode(input);
   const plannerCallBudgetMax = fastExecutionMode
@@ -3921,6 +3867,7 @@ const planConversationFileOperations = async (
           callBudget: plannerCallBudget,
           fastMode: fastExecutionMode,
           onPlanningProgress: input.onPlanningProgress,
+          onStatus: input.onPipelineStatus,
         });
       } catch (error) {
         lastError = error;
@@ -5137,10 +5084,16 @@ const buildSynthesisPrompt = (
 export const runConversationAgentOrchestration = async (
   input: ConversationOrchestrationInput,
 ) => {
+  input.onPipelineStatus?.("🧠 Understanding request and preparing execution plan...");
   const intent = inferConversationIntent(input.message);
   const fileOperationPlan = await planConversationFileOperations(input);
   let plannerCallsUsed = fileOperationPlan.plannerCallCount;
   let allOperations = fileOperationPlan.operations;
+  if (allOperations.length > 0) {
+    input.onPipelineStatus?.(
+      `🚀 Starting execution pipeline (${allOperations.length} planned operations)...`,
+    );
+  }
   let operationResults = await executePlannedFileOperations(
     allOperations,
     input.executeFileOperation,
@@ -5165,6 +5118,9 @@ export const runConversationAgentOrchestration = async (
     plannerCallsUsed < MAX_PLANNER_CALLS_PER_REQUEST;
     fixupIteration += 1
   ) {
+    input.onPipelineStatus?.(
+      `🛠️ Running fixup pipeline (attempt ${fixupIteration}/${MAX_FIXUP_ITERATIONS})...`,
+    );
     console.info("conversation.planner.fixup.iteration", {
       iteration: fixupIteration,
       maxIterations: MAX_FIXUP_ITERATIONS,
@@ -5275,6 +5231,7 @@ export const runConversationAgentOrchestration = async (
           preferredModel: fixupModel,
           callBudget: fixupCallBudget,
           fastMode: shouldUseFastPlannerMode(input),
+          onStatus: input.onPipelineStatus,
         },
       );
       plannerCallsUsed = fixupCallBudget.used;
@@ -5377,6 +5334,7 @@ export const runConversationAgentOrchestration = async (
     !devServerWasSuccessfullyStarted &&
     input.executeFileOperation
   ) {
+    input.onPipelineStatus?.("♻️ Retrying dev server startup after fixes...");
     console.info("conversation.planner.post-fixup-dev-server-restart", {
       reason: "dev-server was skipped/failed, attempting restart after fixups",
     });
@@ -5548,6 +5506,7 @@ export const runConversationAgentOrchestration = async (
       ],
     };
   } else {
+    input.onPipelineStatus?.("🤖 Coordinating specialist agents...");
     try {
       supervisorText = await runAgentTextWithFallback({
         agent: supervisorAgent,
@@ -5556,6 +5515,7 @@ export const runConversationAgentOrchestration = async (
         model: SUPERVISOR_MODEL,
         label: "supervisor",
         reasoningEffort: "low",
+        onStatus: input.onPipelineStatus,
       });
       supervisorJson = extractJsonObject(supervisorText);
 
@@ -5589,6 +5549,9 @@ export const runConversationAgentOrchestration = async (
 
     for (let attempt = 0; attempt <= SPECIALIST_TASK_MAX_RETRIES; attempt += 1) {
       try {
+      input.onPipelineStatus?.(
+        `🧩 Specialist \`${assignment.agent}\` is working${attempt > 0 ? ` (retry ${attempt})` : ""}...`,
+      );
         const content = await runAgentTextWithFallback({
           agent,
           prompt: buildSpecialistPrompt(input, assignment),
@@ -5596,6 +5559,7 @@ export const runConversationAgentOrchestration = async (
           model: SPECIALIST_MODEL,
           label: `specialist:${assignment.agent}${attempt > 0 ? `.retry-${attempt}` : ""}`,
           reasoningEffort: "medium",
+        onStatus: input.onPipelineStatus,
         });
         return {
           agent: assignment.agent,
@@ -5666,6 +5630,7 @@ export const runConversationAgentOrchestration = async (
         : reducedContent || "Generated response under provider cooldown mode.";
   } else {
     try {
+      input.onPipelineStatus?.("📝 Synthesizing final response...");
       content = await runAgentTextWithFallback({
         agent: synthesisAgent,
         prompt: buildSynthesisPrompt(input, reports, operationResults),
@@ -5673,6 +5638,7 @@ export const runConversationAgentOrchestration = async (
         model: SYNTHESIS_MODEL,
         label: "synthesis",
         reasoningEffort: "medium",
+        onStatus: input.onPipelineStatus,
       });
     } catch (error) {
       const classified = classifyError(error);

@@ -238,6 +238,7 @@ const buildDevServerCommand = (
   options?: {
     useHostnameFlag?: boolean;
     preferDirectNextCommand?: boolean;
+    appendNetworkArgs?: boolean;
   },
 ) => {
   if (options?.preferDirectNextCommand) {
@@ -302,18 +303,16 @@ const buildDevServerCommand = (
     };
   }
 
+  const appendNetworkArgs = options?.appendNetworkArgs !== false;
   const hostFlag = options?.useHostnameFlag ? "--hostname" : "--host";
+  const networkArgs = appendNetworkArgs
+    ? [hostFlag, "0.0.0.0", "--port", String(RUNTIME_DEV_SERVER_PORT)]
+    : [];
 
   if (packageManager === "yarn") {
     return {
       command: "yarn",
-      commandArgs: [
-        "dev",
-        hostFlag,
-        "0.0.0.0",
-        "--port",
-        String(RUNTIME_DEV_SERVER_PORT),
-      ],
+      commandArgs: ["dev", ...networkArgs],
       label: "yarn dev",
     };
   }
@@ -321,15 +320,9 @@ const buildDevServerCommand = (
   if (packageManager === "pnpm") {
     return {
       command: "pnpm",
-      commandArgs: [
-        "run",
-        "dev",
-        "--",
-        hostFlag,
-        "0.0.0.0",
-        "--port",
-        String(RUNTIME_DEV_SERVER_PORT),
-      ],
+      commandArgs: appendNetworkArgs
+        ? ["run", "dev", "--", ...networkArgs]
+        : ["run", "dev"],
       label: "pnpm run dev",
     };
   }
@@ -337,30 +330,18 @@ const buildDevServerCommand = (
   if (packageManager === "bun") {
     return {
       command: "bun",
-      commandArgs: [
-        "run",
-        "dev",
-        "--",
-        hostFlag,
-        "0.0.0.0",
-        "--port",
-        String(RUNTIME_DEV_SERVER_PORT),
-      ],
+      commandArgs: appendNetworkArgs
+        ? ["run", "dev", "--", ...networkArgs]
+        : ["run", "dev"],
       label: "bun run dev",
     };
   }
 
   return {
     command: "npm",
-    commandArgs: [
-      "run",
-      "dev",
-      "--",
-      hostFlag,
-      "0.0.0.0",
-      "--port",
-      String(RUNTIME_DEV_SERVER_PORT),
-    ],
+    commandArgs: appendNetworkArgs
+      ? ["run", "dev", "--", ...networkArgs]
+      : ["run", "dev"],
     label: "npm run dev",
   };
 };
@@ -2405,6 +2386,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
     let hasDevScript = false;
     let useHostnameFlag = false;
+    let appendNetworkArgs = true;
     let preferDirectNextCommand = false;
     try {
       const parsed = JSON.parse(packageJson) as {
@@ -2417,10 +2399,11 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
 
       const devScriptLower = (devScript ?? "").toLowerCase();
       const isNextDevScript = devScriptLower.includes("next dev");
-      const hasNextDependency =
-        typeof parsed.dependencies?.next === "string" ||
-        typeof parsed.devDependencies?.next === "string";
-      useHostnameFlag = isNextDevScript || hasNextDependency;
+      const hasExplicitNetworkArgs =
+        /(?:^|\s)--host(?:name)?(?:\s|=|$)/.test(devScriptLower) ||
+        /(?:^|\s)--port(?:\s|=|$)/.test(devScriptLower);
+      useHostnameFlag = isNextDevScript;
+      appendNetworkArgs = !hasExplicitNetworkArgs;
       preferDirectNextCommand =
         isNextDevScript && devScriptLower.includes("--host");
     } catch {
@@ -2485,6 +2468,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
     const devCommand = buildDevServerCommand(packageManager, {
       useHostnameFlag,
       preferDirectNextCommand,
+      appendNetworkArgs,
     });
 
     appendRuntimeLog(
@@ -2507,6 +2491,46 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       });
 
     if (earlyExit) {
+      const canRetryWithPlainDevCommand =
+        appendNetworkArgs || preferDirectNextCommand;
+      if (canRetryWithPlainDevCommand) {
+        appendRuntimeLog(
+          "Dev server exited early. Retrying with plain dev script command...",
+        );
+        const retryCommand = buildDevServerCommand(packageManager, {
+          useHostnameFlag: false,
+          preferDirectNextCommand: false,
+          appendNetworkArgs: false,
+        });
+        await projectWebcontainerRuntime.startBackgroundCommand({
+          key: RUNTIME_DEV_SERVER_KEY,
+          command: retryCommand.command,
+          commandArgs: retryCommand.commandArgs,
+          log: appendRuntimeLog,
+        });
+        runtimeDevServerStartedRef.current = true;
+
+        const retryEarlyExit =
+          await projectWebcontainerRuntime.waitForBackgroundCommandExit({
+            key: RUNTIME_DEV_SERVER_KEY,
+            timeoutMs: RUNTIME_DEV_SERVER_EARLY_EXIT_TIMEOUT_MS,
+          });
+        if (!retryEarlyExit) {
+          // Continue into standard server readiness detection flow.
+        } else {
+          runtimeDevServerStartedRef.current = false;
+          projectWebcontainerRuntime.clearServerReadyState();
+          setRuntimePreviewUrl("");
+
+          const retryExitDetails = retryEarlyExit.errorMessage
+            ? retryEarlyExit.errorMessage
+            : `exit code ${retryEarlyExit.code}`;
+          recordRuntimeDevServerFailure(
+            `Preview dev server exited before startup completed (${retryExitDetails}).`,
+          );
+          return false;
+        }
+      } else {
       runtimeDevServerStartedRef.current = false;
       projectWebcontainerRuntime.clearServerReadyState();
       setRuntimePreviewUrl("");
@@ -2518,6 +2542,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
         `Preview dev server exited before startup completed (${exitDetails}).`,
       );
       return false;
+      }
     }
 
     try {

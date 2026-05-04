@@ -1955,8 +1955,19 @@ export const conversationMessageRequested = inngest.createFunction(
         projectContext?: string;
         history?: string;
         webContext?: string;
-      }) =>
-        runConversationAgentOrchestration({
+      }) => {
+        const streamAssistantProgress = async (content: string) => {
+          try {
+            await convex.mutation(api.system.streamMessageProgress, {
+              messageId: assistantMessageId as Id<"messages">,
+              content,
+            });
+          } catch {
+
+          }
+        };
+
+        return runConversationAgentOrchestration({
           message: args?.message ?? plannerMessage,
           projectContext: args?.projectContext ?? systemContext,
           history: args?.history ?? conversationHistory,
@@ -1985,14 +1996,10 @@ export const conversationMessageRequested = inngest.createFunction(
             });
           },
           onPlanningProgress: async (status: string) => {
-            try {
-              await convex.mutation(api.system.streamMessageProgress, {
-                messageId: assistantMessageId as Id<"messages">,
-                content: status,
-              });
-            } catch {
-
-            }
+            await streamAssistantProgress(status);
+          },
+          onPipelineStatus: async (status: string) => {
+            await streamAssistantProgress(status);
           },
           onOperationProgress: async (completedResults, totalOps) => {
 
@@ -2035,14 +2042,7 @@ export const conversationMessageRequested = inngest.createFunction(
 
             const progressContent = lines.join("\n");
 
-            try {
-              await convex.mutation(api.system.streamMessageProgress, {
-                messageId: assistantMessageId as Id<"messages">,
-                content: progressContent,
-              });
-            } catch {
-
-            }
+            await streamAssistantProgress(progressContent);
           },
           loadProjectFilesAfterOperations: async () => {
             if (await isAssistantMessageCancelled(assistantMessageId)) {
@@ -2066,6 +2066,7 @@ export const conversationMessageRequested = inngest.createFunction(
             return buildConversationProjectFiles(latestFileNodes);
           },
         });
+      };
 
       const orchestration = await (async () => {
         try {
