@@ -422,6 +422,11 @@ const RUNTIME_NON_INTERACTIVE_ENV: Record<string, string> = {
   npm_config_yes: "true",
 };
 
+const buildRuntimeDevServerEnv = (): Record<string, string> => ({
+  ...RUNTIME_NON_INTERACTIVE_ENV,
+  PORT: String(RUNTIME_DEV_SERVER_PORT),
+});
+
 const isCommandLikelyMissing = (message: string, exitCode?: number | null) => {
   if (exitCode === 126 || exitCode === 127) {
     return true;
@@ -2497,6 +2502,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
       command: devCommand.command,
       commandArgs: devCommand.commandArgs,
       log: appendRuntimeLog,
+      env: buildRuntimeDevServerEnv(),
     });
 
     runtimeDevServerStartedRef.current = true;
@@ -2524,6 +2530,7 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           command: retryCommand.command,
           commandArgs: retryCommand.commandArgs,
           log: appendRuntimeLog,
+          env: buildRuntimeDevServerEnv(),
         });
         runtimeDevServerStartedRef.current = true;
 
@@ -2981,7 +2988,6 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
           }
         }
       } catch (error) {
-        runtimeExecutedMessagesRef.current.delete(detail.assistantMessageId);
         appendRuntimeLog(
           `Execution pipeline failed: ${
             error instanceof Error ? error.message : String(error ?? "unknown")

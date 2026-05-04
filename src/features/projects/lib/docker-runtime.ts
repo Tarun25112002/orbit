@@ -136,6 +136,16 @@ function detectPortFromLine(line: string): number | null {
   return null;
 }
 
+/** We start dev with `--port <orbitPort>`, but Vite often still logs 5173 (nested scripts / config). */
+function isAcceptablePreviewReadyPort(
+  expected: number | undefined,
+  actual: number,
+): boolean {
+  if (expected === undefined) return true;
+  if (actual === expected) return true;
+  return actual === 5173 && expected !== 5173;
+}
+
 class ProjectDockerRuntime {
   private sessionId: string | null = null;
   private projectKey: string | null = null;
@@ -281,7 +291,7 @@ class ProjectDockerRuntime {
     const cached = this.lastServerReady;
     if (
       cached &&
-      (expectedPort === undefined || cached.port === expectedPort)
+      isAcceptablePreviewReadyPort(expectedPort, cached.port)
     ) {
       return cached;
     }
@@ -298,7 +308,7 @@ class ProjectDockerRuntime {
       };
 
       const unsubscribe = this.onServerReady((ready) => {
-        if (expectedPort !== undefined && ready.port !== expectedPort) {
+        if (!isAcceptablePreviewReadyPort(expectedPort, ready.port)) {
           return;
         }
         cleanup();

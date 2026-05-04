@@ -34,6 +34,11 @@ const isPreviewProxyReachable = async (proxyBase: string) => {
 
 export async function GET(request: NextRequest) {
   try {
+    const userId = await getClerkUserId(request);
+    if (!userId) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const { searchParams } = request.nextUrl;
     const sessionId = searchParams.get("sessionId");
     const port = searchParams.get("port");
