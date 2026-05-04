@@ -3276,12 +3276,17 @@ export const ProjectIdView = ({ projectId }: { projectId: Id<"projects"> }) => {
                       )}
                       {showEditorLiveOverlay && (
                         <div className="absolute inset-0 z-30 flex items-stretch justify-stretch p-2 sm:p-3">
-                          <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-lg border border-border/50 bg-background/82 shadow-2xl shadow-black/30 ring-1 ring-white/10 backdrop-blur-xl dark:bg-background/78 dark:shadow-black/55">
-                            <EditorAiLivePanel
-                              isProjectProcessing={isProjectProcessing}
-                              isRuntimeBusy={isRuntimeBusy}
-                              runtimeLogs={runtimeLogs}
-                            />
+                          <div className="relative flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden rounded-lg border border-border/50 shadow-2xl shadow-black/30 ring-1 ring-white/10 dark:shadow-black/55">
+                            <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden rounded-[inherit]">
+                              <OrbitBuildingAnimation density="embed" />
+                            </div>
+                            <div className="relative z-10 flex h-full min-h-0 flex-col overflow-hidden rounded-[inherit] bg-background/80 shadow-inner backdrop-blur-md dark:bg-background/74">
+                              <EditorAiLivePanel
+                                isProjectProcessing={isProjectProcessing}
+                                isRuntimeBusy={isRuntimeBusy}
+                                runtimeLogs={runtimeLogs}
+                              />
+                            </div>
                           </div>
                         </div>
                       )}

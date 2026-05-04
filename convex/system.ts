@@ -18,7 +18,7 @@ function isIngestTrusted(secret?: string | null): boolean {
     return secret === expected;
   }
   const allowLocal =
-    process.env.ORBIT_CONVEX_INGEST_ALLOW_LOCAL_DEV_INGEST?.trim() === "1";
+    process.env.ORBIT_CONVEX_INGEST_DEV_OK?.trim() === "1";
   return allowLocal && secret === ORBIT_LOCAL_DEV_INGEST_SECRET;
 }
 

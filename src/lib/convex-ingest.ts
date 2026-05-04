@@ -9,7 +9,7 @@ let warnedDevIngest = false;
  *
  * In **non-production** Node, if that variable is unset, a fixed local-dev token
  * is used; the Convex deployment must allow it with
- * `ORBIT_CONVEX_INGEST_ALLOW_LOCAL_DEV_INGEST=1` (dev only — never in prod).
+ * `ORBIT_CONVEX_INGEST_DEV_OK=1` (dev only — never in prod).
  */
 export function withIngestSecret<T extends Record<string, unknown>>(
   args: T,
@@ -23,7 +23,7 @@ export function withIngestSecret<T extends Record<string, unknown>>(
 
   if (!ingestSecret) {
     throw new Error(
-      "ORBIT_CONVEX_INGEST_SECRET is not set. Set it on this server and in Convex (same value) for Inngest and other server jobs. For local dev without a secret, run Next in non-production and set ORBIT_CONVEX_INGEST_ALLOW_LOCAL_DEV_INGEST=1 on your Convex dev deployment.",
+      "ORBIT_CONVEX_INGEST_SECRET is not set. Set it on this server and in Convex (same value) for Inngest and other server jobs. For local dev without a secret, run Next in non-production and set ORBIT_CONVEX_INGEST_DEV_OK=1 on your Convex dev deployment.",
     );
   }
 
@@ -31,7 +31,7 @@ export function withIngestSecret<T extends Record<string, unknown>>(
     if (!warnedDevIngest) {
       warnedDevIngest = true;
       console.warn(
-        "[orbit] ORBIT_CONVEX_INGEST_SECRET unset — using local dev ingest token. Convex must allow it: npx convex env set ORBIT_CONVEX_INGEST_ALLOW_LOCAL_DEV_INGEST 1",
+        "[orbit] ORBIT_CONVEX_INGEST_SECRET unset — using local dev ingest token. Convex must allow it: npx convex env set ORBIT_CONVEX_INGEST_DEV_OK 1",
       );
     }
   }
