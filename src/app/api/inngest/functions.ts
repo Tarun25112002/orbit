@@ -1,7 +1,7 @@
 import { inngest } from "@/inngest/client";
 import { convex } from "@/lib/convex-client";
 import { suggestionRuntime } from "@/lib/completion-runtime";
-import { generateGeminiCompletion, GEMINI_MODEL_DEFAULT } from "@/lib/gemini";
+import { generateGeminiCompletion, GEMINI_MODEL_PREFERRED } from "@/lib/gemini";
 import { classifyError } from "@/lib/errors";
 import { buildWebContextFromText } from "@/lib/web-context";
 import {
@@ -34,7 +34,7 @@ import type { SuggestionMode } from "@/lib/code-suggestion";
 import { api } from "../../../../convex/_generated/api";
 import type { Id } from "../../../../convex/_generated/dataModel";
 
-const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
+const GEMINI_MODEL = GEMINI_MODEL_PREFERRED;
 const MAX_FILE_CONTEXT_CHARS = 30_000;
 const MAX_FILE_CONTEXT_CHARS_PER_FILE = 8_000;
 const MAX_CONTEXT_FILES = 20;
@@ -2301,11 +2301,36 @@ export const codeCompletionRequested = inngest.createFunction(
 
       return generation;
     } catch (error) {
+      const classified = classifyError(error);
       suggestionRuntime.fail({
         requestId,
-        error,
+        error: Object.assign(
+          new Error(classified.message),
+          {
+            statusCode:
+              classified.category === "rate_limit" ||
+              classified.category === "quota_exceeded"
+                ? 429
+                : classified.category === "auth"
+                  ? 401
+                  : classified.category === "validation"
+                    ? 400
+                    : classified.category === "timeout"
+                      ? 504
+                      : classified.category === "ai_unavailable"
+                        ? 503
+                        : 500,
+            retryAfterSeconds: classified.retryAfterSeconds,
+          },
+        ),
       });
-      throw error;
+      return {
+        status: "failed" as const,
+        requestId,
+        error: classified.message,
+        retryable: classified.retryable,
+        retryAfterSeconds: classified.retryAfterSeconds ?? null,
+      };
     }
   },
 );

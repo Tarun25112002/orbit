@@ -1,8 +1,7 @@
 import { GoogleGenAI } from "@google/genai";
-import { createGroq } from "@ai-sdk/groq";
-import { generateText, streamText } from "ai";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { classifyError } from "@/lib/errors";
 
 const LOCAL_ENV_PATH = resolve(process.cwd(), ".env.local");
 let cachedLocalEnvMtimeMs: number | null = null;
@@ -83,6 +82,19 @@ const parseOptionalPositiveInt = (value: string) => {
   return parsed;
 };
 
+const parseOptionalNonNegativeInt = (value: string) => {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value.trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+
+  return parsed;
+};
+
 const applyAttemptCap = <T>(items: T[], maxItems: number | null) => {
   if (typeof maxItems !== "number") {
     return items;
@@ -91,266 +103,18 @@ const applyAttemptCap = <T>(items: T[], maxItems: number | null) => {
   return items.slice(0, maxItems);
 };
 
+const jitterMs = (baseMs: number) => {
+  const jitterRange = Math.max(50, Math.floor(baseMs * 0.2));
+  return Math.floor(Math.random() * jitterRange);
+};
+
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 const getGeminiApiKey = () =>
   getRuntimeEnvValue("GEMINI_API_KEY") || getRuntimeEnvValue("GOOGLE_API_KEY");
-
-const getAllGroqApiKeys = (): string[] => {
-  const commaKeys = getRuntimeEnvValue("GROQ_API_KEYS");
-  if (commaKeys) {
-    const keys = commaKeys.split(",").map((k) => k.trim()).filter(Boolean);
-    if (keys.length > 0) return keys;
-  }
-  const indexed: string[] = [];
-  for (let i = 1; i <= 8; i += 1) {
-    const key = getRuntimeEnvValue(`GROQ_API_KEY_${i}`);
-    if (key) indexed.push(key);
-  }
-  if (indexed.length > 0) return indexed;
-  const single = getRuntimeEnvValue("GROQ_API_KEY");
-  return single ? [single] : [];
-};
-
-let cachedGroqKeys: string[] | null = null;
-const getGroqKeys = (): string[] => {
-  if (cachedGroqKeys === null) cachedGroqKeys = getAllGroqApiKeys();
-  return cachedGroqKeys;
-};
-
-const getGroqApiKey = () => {
-  const keys = getGroqKeys();
-  return keys.length > 0 ? keys[0]! : "";
-};
-
-const isGroqEnabled = () => getGroqKeys().length > 0;
-
-const GROQ_CALL_TIMEOUT_MS = 90_000;
-const groqKeyCooldownUntilMs = new Map<string, number>();
-let groqKeyRoundRobinIndex = 0;
-
-const setGroqKeyCooldown = (apiKey: string, seconds: number) => {
-  groqKeyCooldownUntilMs.set(apiKey, Date.now() + Math.max(1, seconds) * 1000);
-};
-
-const isGroqKeyCoolingDown = (apiKey: string): boolean => {
-  const until = groqKeyCooldownUntilMs.get(apiKey);
-  if (!until) return false;
-  if (Date.now() >= until) { groqKeyCooldownUntilMs.delete(apiKey); return false; }
-  return true;
-};
-
-const GROQ_MIN_DELAY_BETWEEN_REQUESTS_MS = 2_500;
-const GROQ_MAX_COOLDOWN_WAIT_MS = 25_000;
-
-const groqKeyLastRequestMs = new Map<string, number>();
-
-const getGroqKeyTimeSinceLastRequest = (apiKey: string): number => {
-  const last = groqKeyLastRequestMs.get(apiKey);
-  if (!last) return Infinity;
-  return Date.now() - last;
-};
-
-const markGroqKeyUsed = (apiKey: string) => {
-  groqKeyLastRequestMs.set(apiKey, Date.now());
-};
-
-const getGroqKeyReadyInMs = (apiKey: string): number => {
-  const cooldownUntil = groqKeyCooldownUntilMs.get(apiKey);
-  const cooldownRemaining = cooldownUntil ? Math.max(0, cooldownUntil - Date.now()) : 0;
-
-  const timeSinceLast = getGroqKeyTimeSinceLastRequest(apiKey);
-  const spacingRemaining = Math.max(0, GROQ_MIN_DELAY_BETWEEN_REQUESTS_MS - timeSinceLast);
-
-  return Math.max(cooldownRemaining, spacingRemaining);
-};
-
-const pickAvailableGroqKey = (): { key: string; index: number } | null => {
-  const keys = getGroqKeys();
-  if (keys.length === 0) return null;
-
-  let bestPick: { key: string; index: number; readyIn: number } | null = null;
-
-  for (let offset = 0; offset < keys.length; offset += 1) {
-    const index = (groqKeyRoundRobinIndex + offset) % keys.length;
-    const key = keys[index]!;
-    const readyIn = getGroqKeyReadyInMs(key);
-
-    if (readyIn === 0) {
-      groqKeyRoundRobinIndex = (index + 1) % keys.length;
-      return { key, index };
-    }
-
-    if (!bestPick || readyIn < bestPick.readyIn) {
-      bestPick = { key, index, readyIn };
-    }
-  }
-
-  if (bestPick) {
-    groqKeyRoundRobinIndex = (bestPick.index + 1) % keys.length;
-    return { key: bestPick.key, index: bestPick.index };
-  }
-
-  return null;
-};
-
-const waitForGroqKeyReady = async (apiKey: string): Promise<void> => {
-  const readyIn = getGroqKeyReadyInMs(apiKey);
-  if (readyIn <= 0) return;
-
-  const waitMs = Math.min(readyIn, GROQ_MAX_COOLDOWN_WAIT_MS);
-  if (waitMs > 0) {
-    console.info("groq.rate-limiter.waiting", {
-      keySlice: apiKey.slice(-6),
-      waitMs,
-      reason: readyIn > GROQ_MIN_DELAY_BETWEEN_REQUESTS_MS ? "cooldown" : "spacing",
-    });
-    await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
-  }
-};
-
-const getGroqModel = () =>
-  getRuntimeEnvValue("GROQ_MODEL") || "openai/gpt-oss-120b";
-const getGroqTpmBudget = () =>
-  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_TPM_BUDGET")) ?? 131_000;
-const getGroqTokenSafetyMargin = () =>
-  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_TOKEN_SAFETY_MARGIN")) ??
-  500;
-const getGroqDefaultMaxOutputTokens = () =>
-  parseOptionalPositiveInt(
-    getRuntimeEnvValue("GROQ_DEFAULT_MAX_OUTPUT_TOKENS"),
-  ) ?? 32_768;
-const getGroqMinOutputTokens = () =>
-  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_MIN_OUTPUT_TOKENS")) ??
-  4_096;
-const getGroqMaxCompactionAttempts = () =>
-  parseOptionalPositiveInt(
-    getRuntimeEnvValue("GROQ_MAX_COMPACTION_ATTEMPTS"),
-  ) ?? 4;
-const getGroqMaxInputChars = () =>
-  parseOptionalPositiveInt(getRuntimeEnvValue("GROQ_MAX_INPUT_CHARS")) ??
-  80_000;
-const GROQ_TRUNCATION_MARKER = "\n...[truncated for token budget]...\n";
-
-type GroqAiMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
-
-const estimateTokensFromGroqPayload = (args: {
-  system?: string;
-  messages: GroqAiMessage[];
-}) => {
-  const systemChars = args.system?.length ?? 0;
-  const messageChars = args.messages.reduce(
-    (sum, message) => sum + message.content.length,
-    0,
-  );
-
-  return Math.ceil((systemChars + messageChars) / 4);
-};
-
-const truncateTextKeepingEdges = (value: string, maxChars: number) => {
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  if (maxChars <= GROQ_TRUNCATION_MARKER.length + 24) {
-    return value.slice(value.length - maxChars);
-  }
-
-  const contentBudget = maxChars - GROQ_TRUNCATION_MARKER.length;
-  const headLength = Math.max(24, Math.floor(contentBudget * 0.65));
-  const tailLength = Math.max(24, contentBudget - headLength);
-
-  return `${value.slice(0, headLength)}${GROQ_TRUNCATION_MARKER}${value.slice(value.length - tailLength)}`;
-};
-
-const compactGroqPayloadByChars = (args: {
-  system?: string;
-  messages: GroqAiMessage[];
-  maxChars: number;
-}) => {
-  const normalizedMaxChars = Math.max(800, args.maxChars);
-  const system = args.system?.trim();
-
-  const systemBudget = system
-    ? Math.min(
-        Math.max(400, Math.floor(normalizedMaxChars * 0.40)),
-        Math.floor(normalizedMaxChars * 0.55),
-      )
-    : 0;
-
-  const compactSystem = system
-    ? truncateTextKeepingEdges(system, systemBudget)
-    : undefined;
-
-  const messageBudget = Math.max(
-    400,
-    normalizedMaxChars - (compactSystem?.length ?? 0),
-  );
-  const compactMessages: GroqAiMessage[] = [];
-  let remaining = messageBudget;
-
-  for (let index = args.messages.length - 1; index >= 0; index -= 1) {
-    const message = args.messages[index]!;
-
-    if (remaining <= 0) {
-      break;
-    }
-
-    if (message.content.length <= remaining) {
-      compactMessages.unshift(message);
-      remaining -= message.content.length;
-      continue;
-    }
-
-    compactMessages.unshift({
-      ...message,
-      content: truncateTextKeepingEdges(message.content, remaining),
-    });
-    remaining = 0;
-  }
-
-  if (compactMessages.length === 0 && args.messages.length > 0) {
-    const last = args.messages[args.messages.length - 1]!;
-    compactMessages.push({
-      ...last,
-      content: truncateTextKeepingEdges(last.content, messageBudget),
-    });
-  }
-
-  return {
-    system: compactSystem,
-    messages: compactMessages,
-  };
-};
-
-const isGroqRequestTooLargeError = (message: string) =>
-  /request too large|tokens per minute|\bTPM\b|requested\s+\d+/i.test(message);
-
-const buildGroqTokenPlan = (args: {
-  requestedMaxOutputTokens?: number;
-  promptTokens: number;
-}) => {
-  const requestedOutputTokens =
-    args.requestedMaxOutputTokens ?? getGroqDefaultMaxOutputTokens();
-  const availableOutputTokens =
-    getGroqTpmBudget() - getGroqTokenSafetyMargin() - args.promptTokens;
-
-  if (availableOutputTokens >= getGroqMinOutputTokens()) {
-    return {
-      maxOutputTokens: Math.max(
-        getGroqMinOutputTokens(),
-        Math.min(requestedOutputTokens, availableOutputTokens),
-      ),
-      requiresCompaction: false,
-    };
-  }
-
-  return {
-    maxOutputTokens: getGroqMinOutputTokens(),
-    requiresCompaction: true,
-  };
-};
 
 const getGeminiKeyScope = (apiKey: string) => {
   const trimmed = apiKey.trim();
@@ -384,11 +148,131 @@ const getGeminiFallbackModels = () => {
 const getGeminiModelCandidates = (preferredModel: string) =>
   Array.from(new Set([preferredModel, ...getGeminiFallbackModels()]));
 
-const getRequestAttemptBudget = () => ({
+type GeminiExecutionPolicy = {
+  maxGeminiModels: number | null;
+  maxRetriesPerModel: number;
+  backoffBaseMs: number;
+  backoffMaxMs: number;
+  tokenWindowMs: number;
+  requestsPerWindow: number | null;
+  tokensPerWindow: number | null;
+};
+
+const getGeminiExecutionPolicy = (): GeminiExecutionPolicy => ({
   maxGeminiModels: parseOptionalPositiveInt(
     getRuntimeEnvValue("AI_MAX_GEMINI_MODELS_PER_REQUEST"),
   ),
+  maxRetriesPerModel:
+    parseOptionalNonNegativeInt(
+      getRuntimeEnvValue("AI_GEMINI_MAX_RETRIES_PER_MODEL"),
+    ) ?? 1,
+  backoffBaseMs:
+    parseOptionalPositiveInt(getRuntimeEnvValue("AI_GEMINI_BACKOFF_BASE_MS")) ??
+    750,
+  backoffMaxMs:
+    parseOptionalPositiveInt(getRuntimeEnvValue("AI_GEMINI_BACKOFF_MAX_MS")) ??
+    20_000,
+  tokenWindowMs:
+    parseOptionalPositiveInt(getRuntimeEnvValue("AI_GEMINI_WINDOW_MS")) ??
+    60_000,
+  requestsPerWindow: parseOptionalPositiveInt(
+    getRuntimeEnvValue("AI_GEMINI_RPM_LIMIT"),
+  ),
+  tokensPerWindow: parseOptionalPositiveInt(
+    getRuntimeEnvValue("AI_GEMINI_TPM_LIMIT"),
+  ),
 });
+
+type GeminiWindowUsage = {
+  timestamps: number[];
+  tokenEvents: Array<{ atMs: number; tokens: number }>;
+};
+
+const geminiUsageWindowByKey = new Map<string, GeminiWindowUsage>();
+
+const getGeminiUsageWindowKey = (model: string, apiKey: string) =>
+  `${model}::${getGeminiKeyScope(apiKey)}`;
+
+export type GeminiChatMessage = {
+  role: "user" | "model";
+  content: string;
+  reasoning_details?: unknown;
+};
+
+const estimateGeminiPromptTokens = (args: {
+  system?: string;
+  messages: GeminiChatMessage[];
+}) => {
+  const systemChars = args.system?.length ?? 0;
+  const messageChars = args.messages.reduce(
+    (sum, message) => sum + message.content.length,
+    0,
+  );
+
+  return Math.max(1, Math.ceil((systemChars + messageChars) / 4));
+};
+
+const consumeGeminiWindowBudget = (args: {
+  model: string;
+  apiKey: string;
+  promptTokens: number;
+  policy: GeminiExecutionPolicy;
+}) => {
+  if (
+    typeof args.policy.requestsPerWindow !== "number" &&
+    typeof args.policy.tokensPerWindow !== "number"
+  ) {
+    return { allowed: true as const };
+  }
+
+  const key = getGeminiUsageWindowKey(args.model, args.apiKey);
+  const now = Date.now();
+  const windowStart = now - args.policy.tokenWindowMs;
+  const usage = geminiUsageWindowByKey.get(key) ?? {
+    timestamps: [],
+    tokenEvents: [],
+  };
+
+  usage.timestamps = usage.timestamps.filter(
+    (timestamp) => timestamp >= windowStart,
+  );
+  usage.tokenEvents = usage.tokenEvents.filter(
+    (event) => event.atMs >= windowStart,
+  );
+
+  if (
+    typeof args.policy.requestsPerWindow === "number" &&
+    usage.timestamps.length >= args.policy.requestsPerWindow
+  ) {
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((usage.timestamps[0]! + args.policy.tokenWindowMs - now) / 1_000),
+    );
+    geminiUsageWindowByKey.set(key, usage);
+    return { allowed: false as const, retryAfterSeconds };
+  }
+
+  if (typeof args.policy.tokensPerWindow === "number") {
+    const usedTokens = usage.tokenEvents.reduce(
+      (sum, event) => sum + event.tokens,
+      0,
+    );
+    if (usedTokens + args.promptTokens > args.policy.tokensPerWindow) {
+      const earliestTokenEvent = usage.tokenEvents[0]?.atMs ?? now;
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((earliestTokenEvent + args.policy.tokenWindowMs - now) / 1_000),
+      );
+      geminiUsageWindowByKey.set(key, usage);
+      return { allowed: false as const, retryAfterSeconds };
+    }
+  }
+
+  usage.timestamps.push(now);
+  usage.tokenEvents.push({ atMs: now, tokens: args.promptTokens });
+  geminiUsageWindowByKey.set(key, usage);
+  return { allowed: true as const };
+};
 
 const parseRetryAfterSeconds = (value: string) => {
   const retryInMatch = value.match(/retry\s*(?:in|after)\s+([\d.]+)\s*s/i);
@@ -624,7 +508,7 @@ const getModelCooldownSeconds = (model: string, apiKey?: string) => {
   }
 
   const remainingMs = until - Date.now();
-  return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
+  return remainingMs > 0 ? Math.ceil(remainingMs / 1_000) : 0;
 };
 
 const setModelCooldown = (
@@ -637,7 +521,7 @@ const setModelCooldown = (
     retryAfterSeconds && retryAfterSeconds > 0 ? retryAfterSeconds : 10;
   geminiModelCooldownUntilMs.set(
     toModelCooldownKey(model, resolvedApiKey),
-    Date.now() + seconds * 1000,
+    Date.now() + seconds * 1_000,
   );
 };
 
@@ -654,15 +538,9 @@ export const markGeminiModelRateLimited = (
   setModelCooldown(model, retryAfterSeconds ?? null);
 };
 
-export const GEMINI_MODEL_DEFAULT = isGroqEnabled()
-  ? getGroqModel()
-  : getRuntimeEnvValue("GEMINI_MODEL") || GEMINI_FREE_FALLBACK_CHAIN[0];
-
-export type GeminiChatMessage = {
-  role: "user" | "model";
-  content: string;
-  reasoning_details?: unknown;
-};
+export const GEMINI_MODEL_PREFERRED =
+  getRuntimeEnvValue("GEMINI_MODEL") || GEMINI_FREE_FALLBACK_CHAIN[0];
+export const GEMINI_MODEL_DEFAULT = GEMINI_MODEL_PREFERRED;
 
 export type GeminiCompletionResult = {
   content: string;
@@ -692,184 +570,6 @@ const getClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-const getGroqClientForKey = (apiKey: string) => {
-  if (!apiKey) {
-    throw new GeminiRequestError({ message: "GROQ_API_KEY is not configured", status: 500 });
-  }
-  return createGroq({ apiKey });
-};
-
-const getGroqClient = () => {
-  const picked = pickAvailableGroqKey();
-  if (!picked) {
-    throw new GeminiRequestError({ message: "No Groq API keys are configured", status: 500 });
-  }
-  return createGroq({ apiKey: picked.key });
-};
-
-const generateGroqCompletionWithKey = async (args: {
-  apiKey: string;
-  keyIndex: number;
-  model?: string;
-  messages: GeminiChatMessage[];
-  maxTokens?: number;
-  temperature?: number;
-  system?: string;
-  reasoningEffort?: "low" | "medium" | "high";
-  onStreamChunk?: (chunk: string, fullText: string) => void;
-}): Promise<GeminiCompletionResult> => {
-  const groq = getGroqClientForKey(args.apiKey);
-  const modelId = args.model ?? getGroqModel();
-  const originalMessages: GroqAiMessage[] = args.messages.map((msg) => ({
-    role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
-    content: msg.content,
-  }));
-
-  const maxAttempts = Math.max(1, getGroqMaxCompactionAttempts());
-  let charBudget = getGroqMaxInputChars();
-  let lastError: unknown = null;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const compactPayload = compactGroqPayloadByChars({
-      system: args.system, messages: originalMessages, maxChars: charBudget,
-    });
-    const promptTokens = estimateTokensFromGroqPayload(compactPayload);
-    const tokenPlan = buildGroqTokenPlan({ requestedMaxOutputTokens: args.maxTokens, promptTokens });
-
-    if (tokenPlan.requiresCompaction) {
-      const promptTokenBudget = Math.max(500, getGroqTpmBudget() - getGroqTokenSafetyMargin() - getGroqMinOutputTokens());
-      charBudget = Math.max(1_000, Math.min(charBudget, Math.floor(promptTokenBudget * 4)));
-    }
-
-    const retryPayload = compactGroqPayloadByChars({
-      system: args.system, messages: originalMessages, maxChars: charBudget,
-    });
-
-    try {
-      const result = await streamText({
-        model: groq(modelId),
-        ...(retryPayload.system ? { system: retryPayload.system } : {}),
-        messages: retryPayload.messages,
-        maxOutputTokens: tokenPlan.maxOutputTokens,
-        temperature: args.temperature ?? 0.2,
-        maxRetries: 0,
-        ...(args.reasoningEffort
-          ? { providerOptions: { groq: { reasoningEffort: args.reasoningEffort } } }
-          : {}),
-        abortSignal: AbortSignal.timeout(GROQ_CALL_TIMEOUT_MS),
-      });
-
-      let text = "";
-      for await (const chunk of result.textStream) {
-        text += chunk;
-        args.onStreamChunk?.(chunk, text);
-      }
-      text = text.trim();
-
-      if (!text) {
-        throw new GeminiRequestError({ message: "Groq response did not include any content", status: 502 });
-      }
-      return { content: text, model: `groq:${modelId}` };
-    } catch (error) {
-      if (error instanceof GeminiRequestError) throw error;
-
-      const rawMessage = extractRawErrorMessage(error);
-      const structuredStatusCode = extractStructuredStatusCode(error);
-
-      const looksLikeRateLimit = isRateLimitedGeminiError({ statusCode: structuredStatusCode, message: rawMessage });
-      const looksLikeTooLarge = isGroqRequestTooLargeError(rawMessage) || structuredStatusCode === 413;
-
-      if (attempt < maxAttempts && looksLikeRateLimit && looksLikeTooLarge) {
-        charBudget = Math.max(1_000, Math.floor(charBudget * 0.65));
-        lastError = error;
-        continue;
-      }
-
-      if (looksLikeTooLarge) {
-        setGroqKeyCooldown(args.apiKey, 60);
-        throw new GeminiRequestError({ message: `Groq payload too large for key #${args.keyIndex + 1} (${rawMessage.slice(0, 120)}). Rotating.`, status: 429 });
-      }
-
-      if (looksLikeRateLimit) {
-        const retrySeconds = parseRetryAfterSeconds(rawMessage) ?? extractStructuredRetryAfterSeconds(error) ?? 30;
-        setGroqKeyCooldown(args.apiKey, retrySeconds);
-        console.warn("groq.key-rate-limited", { keyIndex: args.keyIndex, keySlice: args.apiKey.slice(-6), retrySeconds, model: modelId });
-        throw new GeminiRequestError({ message: `Groq key #${args.keyIndex + 1} rate-limited for ${retrySeconds}s. ${rawMessage.slice(0, 120)}`, status: 429 });
-      }
-
-      if (/ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed|abort/i.test(rawMessage)) {
-        throw new GeminiRequestError({ message: "Unable to reach Groq. Please check your internet connection.", status: 503 });
-      }
-
-      if (/api.?key|permission.?denied|forbidden|unauthorized/i.test(rawMessage)) {
-        setGroqKeyCooldown(args.apiKey, 600);
-        throw new GeminiRequestError({ message: `Groq API key #${args.keyIndex + 1} is invalid. Cooling down for 10 min.`, status: 401 });
-      }
-
-      if (/looping content|loop detection/i.test(rawMessage)) {
-        setGroqKeyCooldown(args.apiKey, 5);
-        console.warn("groq.loop-detection", { keyIndex: args.keyIndex, keySlice: args.apiKey.slice(-6), model: modelId });
-        throw new GeminiRequestError({ message: `Groq loop detection triggered on key #${args.keyIndex + 1}. Rotating.`, status: 429 });
-      }
-
-      throw new GeminiRequestError({ message: rawMessage || "Groq service encountered an error. Please try again.", status: structuredStatusCode ?? 500 });
-    }
-  }
-
-  const fallbackMessage = extractRawErrorMessage(lastError);
-  throw new GeminiRequestError({ message: fallbackMessage || "Groq service encountered an error. Please try again.", status: extractStructuredStatusCode(lastError) ?? 429 });
-};
-
-const generateGroqCompletion = async (args: {
-  model?: string;
-  messages: GeminiChatMessage[];
-  maxTokens?: number;
-  temperature?: number;
-  system?: string;
-  reasoningEffort?: "low" | "medium" | "high";
-  onStreamChunk?: (chunk: string, fullText: string) => void;
-}): Promise<GeminiCompletionResult> => {
-  const keys = getGroqKeys();
-  if (keys.length === 0) {
-    throw new GeminiRequestError({ message: "No Groq API keys configured", status: 500 });
-  }
-
-  const triedKeyIndices = new Set<number>();
-  let lastKeyError: GeminiRequestError | null = null;
-
-  for (let round = 0; round < keys.length; round += 1) {
-    const picked = pickAvailableGroqKey();
-    if (!picked || triedKeyIndices.has(picked.index)) continue;
-    triedKeyIndices.add(picked.index);
-
-    await waitForGroqKeyReady(picked.key);
-    markGroqKeyUsed(picked.key);
-
-    console.info("groq.multi-key.attempt", { round: round + 1, totalKeys: keys.length, keyIndex: picked.index, keySlice: picked.key.slice(-6) });
-
-    try {
-      return await generateGroqCompletionWithKey({ ...args, apiKey: picked.key, keyIndex: picked.index });
-    } catch (error) {
-      if (!(error instanceof GeminiRequestError)) throw error;
-      lastKeyError = error;
-
-      if (error.status === 429) {
-        console.warn("groq.multi-key.rotate", { failedKeyIndex: picked.index, status: error.status, message: error.message.slice(0, 120), remainingKeys: keys.length - triedKeyIndices.size });
-        continue;
-      }
-      if (error.status === 502 || error.status === 503) {
-        setGroqKeyCooldown(picked.key, 8);
-        console.warn("groq.multi-key.service-error-rotate", { failedKeyIndex: picked.index, status: error.status, remainingKeys: keys.length - triedKeyIndices.size });
-        continue;
-      }
-      throw error;
-    }
-  }
-
-  if (lastKeyError) throw lastKeyError;
-  throw new GeminiRequestError({ message: "All Groq API keys exhausted. Falling back.", status: 429 });
-};
-
 export const generateGeminiCompletion = async (args: {
   model?: string;
   messages: GeminiChatMessage[];
@@ -879,58 +579,19 @@ export const generateGeminiCompletion = async (args: {
   system?: string;
   reasoningEffort?: "low" | "medium" | "high";
   onStreamChunk?: (chunk: string, fullText: string) => void;
+  onAttempt?: (payload: {
+    attempt: number;
+    model: string;
+    error: GeminiRequestError;
+    willRetry: boolean;
+    retryAfterSeconds?: number | null;
+  }) => void;
 }): Promise<GeminiCompletionResult> => {
   const modelName = (args.model ?? GEMINI_MODEL_DEFAULT).trim();
-  const isExplicitGeminiModel = modelName.toLowerCase().startsWith("gemini-");
-  const shouldUseGroq = isGroqEnabled() && !isExplicitGeminiModel;
-
-  if (shouldUseGroq) {
-
-    const estimatedPayloadTokens = estimateTokensFromGroqPayload({
-      system: args.system,
-      messages: args.messages.map((msg) => ({
-        role: msg.role === "user" ? ("user" as const) : ("assistant" as const),
-        content: msg.content,
-      })),
-    });
-    const tpmBudget = getGroqTpmBudget();
-    const payloadExceedsBudget =
-      estimatedPayloadTokens + getGroqMinOutputTokens() > tpmBudget;
-
-    if (payloadExceedsBudget && getGeminiApiKey()) {
-      console.warn("groq.skip-payload-too-large", {
-        estimatedTokens: estimatedPayloadTokens,
-        tpmBudget,
-        minOutputTokens: getGroqMinOutputTokens(),
-        reason: "Payload exceeds TPM budget, skipping to Gemini",
-      });
-
-    } else {
-      try {
-        return await generateGroqCompletion({ ...args, model: modelName });
-      } catch (error) {
-        if (error instanceof GeminiRequestError && error.status === 401) {
-          throw error;
-        }
-        const geminiKey = getGeminiApiKey();
-        if (geminiKey && error instanceof GeminiRequestError) {
-          console.warn("groq.all-keys-exhausted-fallback-to-gemini", {
-            groqError: error.message,
-            status: error.status,
-            totalKeys: getGroqKeys().length,
-          });
-        } else if (!geminiKey) {
-          throw error;
-        }
-      }
-    }
-  }
-
-  const attemptBudget = getRequestAttemptBudget();
-
+  const policy = getGeminiExecutionPolicy();
   const modelCandidates = applyAttemptCap(
     getGeminiModelCandidates(modelName),
-    attemptBudget.maxGeminiModels,
+    policy.maxGeminiModels,
   );
   const activeGeminiApiKey = getGeminiApiKey();
 
@@ -943,6 +604,11 @@ export const generateGeminiCompletion = async (args: {
     role: msg.role === "user" ? ("user" as const) : ("model" as const),
     parts: [{ text: msg.content }],
   }));
+  let globalAttempt = 0;
+  const promptTokens = estimateGeminiPromptTokens({
+    system: args.system,
+    messages: args.messages,
+  });
 
   for (const candidateModel of modelCandidates) {
     const cooldownSeconds = getModelCooldownSeconds(
@@ -958,146 +624,206 @@ export const generateGeminiCompletion = async (args: {
       continue;
     }
 
-    try {
-      ai ??= getClient();
-      const config: {
-        maxOutputTokens?: number;
-        temperature?: number;
-        responseMimeType?: string;
-      } = {
-        maxOutputTokens: args.maxTokens,
-        temperature: args.temperature,
-      };
-
-      if (args.responseMimeType) {
-        config.responseMimeType = args.responseMimeType;
-      }
-
-      const responseStream = await ai.models.generateContentStream({
+    for (
+      let attemptForModel = 0;
+      attemptForModel <= policy.maxRetriesPerModel;
+      attemptForModel += 1
+    ) {
+      globalAttempt += 1;
+      const budgetCheck = consumeGeminiWindowBudget({
         model: candidateModel,
-        contents,
-        config,
+        apiKey: activeGeminiApiKey,
+        promptTokens,
+        policy,
       });
-
-      let text = "";
-      for await (const chunk of responseStream) {
-        if (chunk.text) {
-          text += chunk.text;
-          args.onStreamChunk?.(chunk.text, text);
-        }
-      }
-
-      text = text.trim();
-
-      if (!text) {
-        throw new GeminiRequestError({
-          message: "Gemini response did not include any content",
-          status: 502,
-        });
-      }
-
-      return {
-        content: text,
-        model: candidateModel,
-      };
-    } catch (error) {
-      if (error instanceof GeminiRequestError) {
-        throw error;
-      }
-
-      const rawMessage = extractRawErrorMessage(error);
-      const structuredStatusCode = extractStructuredStatusCode(error);
-      const retryAfterSeconds =
-        parseRetryAfterSeconds(rawMessage) ??
-        extractStructuredRetryAfterSeconds(error);
-
-      const isRateLimited = isRateLimitedGeminiError({
-        statusCode: structuredStatusCode,
-        message: rawMessage,
-      });
-
-      const isModelCompatibilityIssue =
-        structuredStatusCode === 404 ||
-        /model.*not.*found/i.test(rawMessage) ||
-        /not supported for generatecontent/i.test(rawMessage) ||
-        /invalid model|unknown model/i.test(rawMessage);
-
-      if (isModelCompatibilityIssue) {
-        lastModelCompatibilityError = new GeminiRequestError({
-          message: `Model ${candidateModel} is unavailable for this API key/version.`,
-          status: 400,
-        });
-        continue;
-      }
-
-      if (isRateLimited) {
-        setModelCooldown(candidateModel, retryAfterSeconds, activeGeminiApiKey);
-
-        const cooldownForMessage =
-          retryAfterSeconds ??
-          getModelCooldownSeconds(candidateModel, activeGeminiApiKey) ??
-          10;
-
+      if (!budgetCheck.allowed) {
+        setModelCooldown(
+          candidateModel,
+          budgetCheck.retryAfterSeconds,
+          activeGeminiApiKey,
+        );
         lastRateLimitError = new GeminiRequestError({
-          message: `AI model ${candidateModel} is rate-limited. Retry in ${cooldownForMessage}s.`,
+          message: `AI model ${candidateModel} reached configured token/request limits. Retry in ${budgetCheck.retryAfterSeconds}s.`,
           status: 429,
         });
-        continue;
-      }
-
-      const isServiceUnavailableError =
-        structuredStatusCode === 500 ||
-        structuredStatusCode === 502 ||
-        structuredStatusCode === 503 ||
-        /service\.?unavailable/i.test(rawMessage) ||
-        /bad\.?gateway/i.test(rawMessage) ||
-        /internal\.?error/i.test(rawMessage) ||
-        /overloaded|capacity/i.test(rawMessage);
-
-      if (isServiceUnavailableError) {
-
-        setModelCooldown(candidateModel, 8, activeGeminiApiKey);
-
-        lastServiceUnavailableError = new GeminiRequestError({
-          message: `AI model ${candidateModel} is temporarily unavailable.`,
-          status: structuredStatusCode ?? 503,
+        (
+          lastRateLimitError as GeminiRequestError & {
+            retryAfterSeconds?: number;
+          }
+        ).retryAfterSeconds = budgetCheck.retryAfterSeconds;
+        args.onAttempt?.({
+          attempt: globalAttempt,
+          model: candidateModel,
+          error: lastRateLimitError,
+          willRetry: false,
+          retryAfterSeconds: budgetCheck.retryAfterSeconds,
         });
-        continue;
+        break;
       }
 
-      if (
-        /ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed/i.test(
-          rawMessage,
-        )
-      ) {
-        throw new GeminiRequestError({
+      try {
+        ai ??= getClient();
+        const config: {
+          maxOutputTokens?: number;
+          temperature?: number;
+          responseMimeType?: string;
+        } = {
+          maxOutputTokens: args.maxTokens,
+          temperature: args.temperature,
+        };
+
+        if (args.responseMimeType) {
+          config.responseMimeType = args.responseMimeType;
+        }
+
+        const responseStream = await ai.models.generateContentStream({
+          model: candidateModel,
+          contents,
+          config,
+        });
+
+        let text = "";
+        for await (const chunk of responseStream) {
+          if (chunk.text) {
+            text += chunk.text;
+            args.onStreamChunk?.(chunk.text, text);
+          }
+        }
+
+        text = text.trim();
+        if (!text) {
+          throw new GeminiRequestError({
+            message: "Gemini response did not include any content",
+            status: 502,
+          });
+        }
+
+        return {
+          content: text,
+          model: candidateModel,
+        };
+      } catch (error) {
+        if (error instanceof GeminiRequestError) {
+          throw error;
+        }
+
+        const rawMessage = extractRawErrorMessage(error);
+        const structuredStatusCode = extractStructuredStatusCode(error);
+        const retryAfterSeconds =
+          parseRetryAfterSeconds(rawMessage) ??
+          extractStructuredRetryAfterSeconds(error);
+
+        const isRateLimited = isRateLimitedGeminiError({
+          statusCode: structuredStatusCode,
+          message: rawMessage,
+        });
+
+        const isModelCompatibilityIssue =
+          structuredStatusCode === 404 ||
+          /model.*not.*found/i.test(rawMessage) ||
+          /not supported for generatecontent/i.test(rawMessage) ||
+          /invalid model|unknown model/i.test(rawMessage);
+
+        if (isModelCompatibilityIssue) {
+          lastModelCompatibilityError = new GeminiRequestError({
+            message: `Model ${candidateModel} is unavailable for this API key/version.`,
+            status: 400,
+          });
+          args.onAttempt?.({
+            attempt: globalAttempt,
+            model: candidateModel,
+            error: lastModelCompatibilityError,
+            willRetry: false,
+          });
+          break;
+        }
+
+        if (isRateLimited) {
+          setModelCooldown(candidateModel, retryAfterSeconds, activeGeminiApiKey);
+
+          const cooldownForMessage =
+            retryAfterSeconds ??
+            getModelCooldownSeconds(candidateModel, activeGeminiApiKey) ??
+            10;
+
+          lastRateLimitError = new GeminiRequestError({
+            message: `AI model ${candidateModel} is rate-limited. Retry in ${cooldownForMessage}s.`,
+            status: 429,
+          });
+          (
+            lastRateLimitError as GeminiRequestError & {
+              retryAfterSeconds?: number;
+            }
+          ).retryAfterSeconds = cooldownForMessage;
+          args.onAttempt?.({
+            attempt: globalAttempt,
+            model: candidateModel,
+            error: lastRateLimitError,
+            willRetry: false,
+            retryAfterSeconds: cooldownForMessage,
+          });
+          break;
+        }
+
+        const classified = classifyError(error);
+        const shouldRetrySameModel =
+          classified.retryable && attemptForModel < policy.maxRetriesPerModel;
+        const wrappedError = new GeminiRequestError({
           message:
-            "Unable to reach the AI service. Please check your internet connection.",
-          status: 503,
+            rawMessage || "AI service encountered an error. Please try again.",
+          status: structuredStatusCode ?? 500,
         });
-      }
+        (
+          wrappedError as GeminiRequestError & {
+            retryAfterSeconds?: number;
+          }
+        ).retryAfterSeconds = classified.retryAfterSeconds;
 
-      if (/api.?key|permission.?denied|forbidden/i.test(rawMessage)) {
-        throw new GeminiRequestError({
-          message:
-            "AI API key is invalid or missing. Please check your configuration.",
-          status: 401,
+        args.onAttempt?.({
+          attempt: globalAttempt,
+          model: candidateModel,
+          error: wrappedError,
+          willRetry: shouldRetrySameModel,
+          retryAfterSeconds: classified.retryAfterSeconds ?? null,
         });
-      }
 
-      if (structuredStatusCode === 401 || structuredStatusCode === 403) {
-        throw new GeminiRequestError({
-          message:
-            "AI API key is invalid or missing. Please check your configuration.",
-          status: 401,
-        });
-      }
+        if (shouldRetrySameModel) {
+          const backoffMs = Math.min(
+            policy.backoffMaxMs,
+            policy.backoffBaseMs * 2 ** attemptForModel,
+          );
+          await sleep(backoffMs + jitterMs(backoffMs));
+          continue;
+        }
 
-      throw new GeminiRequestError({
-        message:
-          rawMessage || "AI service encountered an error. Please try again.",
-        status: structuredStatusCode ?? 500,
-      });
+        const isServiceUnavailableError =
+          structuredStatusCode === 500 ||
+          structuredStatusCode === 502 ||
+          structuredStatusCode === 503 ||
+          /service\.?unavailable/i.test(rawMessage) ||
+          /bad\.?gateway/i.test(rawMessage) ||
+          /internal\.?error/i.test(rawMessage) ||
+          /overloaded|capacity/i.test(rawMessage);
+
+        if (isServiceUnavailableError || classified.category === "network") {
+          setModelCooldown(candidateModel, 8, activeGeminiApiKey);
+          lastServiceUnavailableError = new GeminiRequestError({
+            message: `AI model ${candidateModel} is temporarily unavailable.`,
+            status: structuredStatusCode ?? 503,
+          });
+          continue;
+        }
+
+        if (structuredStatusCode === 401 || structuredStatusCode === 403) {
+          throw new GeminiRequestError({
+            message:
+              "AI API key is invalid or missing. Please check your configuration.",
+            status: 401,
+          });
+        }
+
+        throw wrappedError;
+      }
     }
   }
 

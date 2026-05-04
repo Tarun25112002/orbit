@@ -6,7 +6,7 @@ import type {
   SuggestionRequestBody,
 } from "@/lib/code-suggestion";
 import {
-  GEMINI_MODEL_DEFAULT,
+  GEMINI_MODEL_PREFERRED,
   GeminiRequestError,
   generateGeminiCompletion,
   type GeminiChatMessage,
@@ -31,15 +31,7 @@ const MAX_AUTOCOMPLETE_SUGGESTION_CHARS = 1_200;
 const MAX_TRANSFORM_SUGGESTION_CHARS = MAX_SOURCE_CODE_CHARS;
 const TRANSFORM_SELECTION_START_MARKER = "<orbit-selection-start>";
 const TRANSFORM_SELECTION_END_MARKER = "<orbit-selection-end>";
-const GEMINI_MODEL = GEMINI_MODEL_DEFAULT;
-const GENERATION_MAX_ATTEMPTS = Number.parseInt(
-  process.env.SUGGESTION_GENERATION_ATTEMPTS ?? "1",
-  10,
-);
-const GENERATION_BASE_BACKOFF_MS = Number.parseInt(
-  process.env.SUGGESTION_GENERATION_BACKOFF_MS ?? "500",
-  10,
-);
+const GEMINI_MODEL = GEMINI_MODEL_PREFERRED;
 const AUTOCOMPLETE_WEB_CONTEXT_ENABLED = /^(1|true)$/i.test(
   process.env.SUGGESTION_AUTOCOMPLETE_WEB_CONTEXT_ENABLED?.trim() ?? "",
 );
@@ -457,9 +449,6 @@ const isRateLimitedError = (message: string) =>
     message,
   );
 
-const isProviderWideFreeModelRateLimit = (message: string) =>
-  /\bfree-models-per-(?:min|minute|day)\b/i.test(message);
-
 const parseRetryAfterSeconds = (message: string) => {
   const retryInMatch = message.match(/retry in\s+([\d.]+)s/i);
   if (retryInMatch?.[1]) {
@@ -497,11 +486,6 @@ const buildContinuationMessages = (
 
   return messages;
 };
-
-const wait = (ms: number) =>
-  new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
 
 const sanitizeSuggestionRequestBody = (input: ParsedSuggestionInput) => {
   const code = input.code.slice(0, MAX_SOURCE_CODE_CHARS);
@@ -616,19 +600,6 @@ const buildSuggestionWebContextSeed = (
   ].join("\n");
 };
 
-const shouldRetryGeneration = (error: unknown) => {
-  if (error instanceof SuggestionGenerationError) {
-    return error.retryable;
-  }
-
-  if (error instanceof GeminiRequestError) {
-    return error.status === 429 || error.status >= 500;
-  }
-
-  const message = getErrorMessage(error);
-  return isRateLimitedError(message);
-};
-
 const normalizeGenerationError = (error: unknown) => {
   if (error instanceof SuggestionGenerationError) {
     return error;
@@ -704,15 +675,42 @@ export async function generateSuggestion(
   });
   const isAutocomplete = mode === "autocomplete";
   const startedAt = Date.now();
+  let attempts = 0;
 
-  try {
-    const response = await generateGeminiCompletion({
+  const generateWithTracking = async (messages: GeminiChatMessage[]) => {
+    return await generateGeminiCompletion({
       model: GEMINI_MODEL,
-      messages: [{ role: "user", content: execution.llmPrompt }],
+      messages,
       ...(isAutocomplete
         ? { maxTokens: MAX_AUTOCOMPLETE_TOKENS, temperature: 0.2 }
         : { temperature: 0.4 }),
+      onAttempt: ({ attempt, model, error, willRetry, retryAfterSeconds }) => {
+        attempts = Math.max(attempts, attempt);
+        if (!willRetry) {
+          return;
+        }
+
+        const retryError = normalizeGenerationError(
+          Object.assign(new Error(error.message), {
+            status: error.status,
+            statusCode: error.status,
+            retryAfterSeconds: retryAfterSeconds ?? undefined,
+          }),
+        );
+        options?.onRetry?.({
+          attempt,
+          model,
+          error: retryError,
+        });
+      },
     });
+  };
+
+  try {
+    const response = await generateWithTracking([
+      { role: "user", content: execution.llmPrompt },
+    ]);
+    attempts = Math.max(attempts, 1);
 
     let suggestion = normalizeSuggestion(
       response.content,
@@ -722,10 +720,9 @@ export async function generateSuggestion(
     );
 
     if (!isAutocomplete && !suggestion.trim()) {
-      const continuationResponse = await generateGeminiCompletion({
-        model: GEMINI_MODEL,
-        messages: buildContinuationMessages(execution.llmPrompt, response),
-      });
+      const continuationResponse = await generateWithTracking(
+        buildContinuationMessages(execution.llmPrompt, response),
+      );
 
       suggestion = normalizeSuggestion(
         continuationResponse.content,
@@ -738,7 +735,7 @@ export async function generateSuggestion(
     return {
       modelName: response.model,
       suggestion,
-      attempts: 1,
+      attempts,
       latencyMs: Date.now() - startedAt,
     };
   } catch (error) {

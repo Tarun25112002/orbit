@@ -1,6 +1,6 @@
 import { createAgent, gemini, type AgentResult } from "@inngest/agent-kit";
 import {
-  GEMINI_MODEL_DEFAULT,
+  GEMINI_MODEL_PREFERRED,
   generateGeminiCompletion,
   getGeminiModelCooldownSeconds,
   getGeminiRateLimitMetadata,
@@ -15,13 +15,13 @@ const GEMINI_API_KEY =
   undefined;
 
 const SUPERVISOR_MODEL =
-  process.env.CONVERSATION_SUPERVISOR_MODEL?.trim() || GEMINI_MODEL_DEFAULT;
+  process.env.CONVERSATION_SUPERVISOR_MODEL?.trim() || GEMINI_MODEL_PREFERRED;
 const SPECIALIST_MODEL =
   process.env.CONVERSATION_SPECIALIST_MODEL?.trim() ||
   process.env.CONVERSATION_FAST_MODEL?.trim() ||
-  GEMINI_MODEL_DEFAULT;
+  GEMINI_MODEL_PREFERRED;
 const SYNTHESIS_MODEL =
-  process.env.CONVERSATION_SYNTHESIS_MODEL?.trim() || GEMINI_MODEL_DEFAULT;
+  process.env.CONVERSATION_SYNTHESIS_MODEL?.trim() || GEMINI_MODEL_PREFERRED;
 const FILE_OPS_MODEL =
   process.env.CONVERSATION_FILE_OPS_MODEL?.trim() || SPECIALIST_MODEL;
 const FILE_OPS_FAST_MODEL =
@@ -964,9 +964,6 @@ const textFromAgentResult = (result: AgentResult) =>
     .join("\n")
     .trim();
 
-const buildFallbackAgentPrompt = (systemPrompt: string, prompt: string) =>
-  [systemPrompt, "", "Task input:", prompt].join("\n");
-
 const runAgentTextWithFallback = async (args: {
   agent: { run: (prompt: string) => Promise<AgentResult> };
   prompt: string;
@@ -1019,83 +1016,73 @@ const runAgentTextWithFallback = async (args: {
     }
   }
 
-  const AGENT_FALLBACK_MAX_RETRIES = 2;
-  const AGENT_FALLBACK_RETRY_DELAY_MS = 30_000;
-
-  for (let fallbackAttempt = 0; fallbackAttempt < AGENT_FALLBACK_MAX_RETRIES; fallbackAttempt += 1) {
-    try {
-      const fallback = await generateGeminiCompletion({
-        model: targetModel,
-        system: args.systemPrompt,
-        messages: [
-          {
-            role: "user",
-            content: args.prompt,
-          },
-        ],
-        ...(args.reasoningEffort
-          ? { reasoningEffort: args.reasoningEffort }
-          : {}),
-      });
-
-      const fallbackText = fallback.content.trim();
-      if (fallbackText) {
-        return fallbackText;
-      }
-
-      throw new Error("Fallback model returned empty content.");
-    } catch (fallbackError) {
-      const isRateLimit =
-        (fallbackError instanceof Error && /rate.?limit|429|too many|quota|TPM|TPD/i.test(fallbackError.message)) ||
-        (typeof (fallbackError as { status?: number }).status === "number" && (fallbackError as { status: number }).status === 429);
-
-      if (isRateLimit && fallbackAttempt < AGENT_FALLBACK_MAX_RETRIES - 1) {
+  try {
+    const fallback = await generateGeminiCompletion({
+      model: targetModel,
+      system: args.systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: args.prompt,
+        },
+      ],
+      ...(args.reasoningEffort
+        ? { reasoningEffort: args.reasoningEffort }
+        : {}),
+      onAttempt: ({ attempt, model, error, willRetry, retryAfterSeconds }) => {
+        if (!willRetry) {
+          return;
+        }
         console.warn("conversation.agent.fallback-retry", {
           label: args.label,
-          attempt: fallbackAttempt + 1,
-          waitMs: AGENT_FALLBACK_RETRY_DELAY_MS,
-          error: fallbackError instanceof Error ? fallbackError.message.slice(0, 120) : "unknown",
+          attempt,
+          model,
+          retryAfterSeconds: retryAfterSeconds ?? undefined,
+          error: error.message.slice(0, 120),
         });
-        await new Promise<void>((resolve) => setTimeout(resolve, AGENT_FALLBACK_RETRY_DELAY_MS));
-        continue;
-      }
+      },
+    });
 
-      const primaryMessage =
-        primaryError instanceof Error
-          ? primaryError.message
-          : String(primaryError ?? "unknown");
-      const fallbackMessage =
-        fallbackError instanceof Error
-          ? fallbackError.message
-          : String(fallbackError);
-
-      const wrapped = new Error(
-        `${args.label} failed. primary=${primaryMessage}; fallback=${fallbackMessage}`,
-      );
-
-      if (typeof fallbackError === "object" && fallbackError !== null) {
-        const fallbackRecord = fallbackError as Record<string, unknown>;
-
-        if (typeof fallbackRecord.status === "number") {
-          (wrapped as Error & { status?: number }).status = fallbackRecord.status;
-        }
-
-        if (typeof fallbackRecord.statusCode === "number") {
-          (wrapped as Error & { statusCode?: number }).statusCode =
-            fallbackRecord.statusCode;
-        }
-
-        if (typeof fallbackRecord.retryAfterSeconds === "number") {
-          (wrapped as Error & { retryAfterSeconds?: number }).retryAfterSeconds =
-            fallbackRecord.retryAfterSeconds;
-        }
-      }
-
-      throw wrapped;
+    const fallbackText = fallback.content.trim();
+    if (fallbackText) {
+      return fallbackText;
     }
-  }
 
-  throw new Error(`${args.label} exhausted all fallback retry attempts`);
+    throw new Error("Fallback model returned empty content.");
+  } catch (fallbackError) {
+    const primaryMessage =
+      primaryError instanceof Error
+        ? primaryError.message
+        : String(primaryError ?? "unknown");
+    const fallbackMessage =
+      fallbackError instanceof Error
+        ? fallbackError.message
+        : String(fallbackError);
+
+    const wrapped = new Error(
+      `${args.label} failed. primary=${primaryMessage}; fallback=${fallbackMessage}`,
+    );
+
+    if (typeof fallbackError === "object" && fallbackError !== null) {
+      const fallbackRecord = fallbackError as Record<string, unknown>;
+
+      if (typeof fallbackRecord.status === "number") {
+        (wrapped as Error & { status?: number }).status = fallbackRecord.status;
+      }
+
+      if (typeof fallbackRecord.statusCode === "number") {
+        (wrapped as Error & { statusCode?: number }).statusCode =
+          fallbackRecord.statusCode;
+      }
+
+      if (typeof fallbackRecord.retryAfterSeconds === "number") {
+        (wrapped as Error & { retryAfterSeconds?: number }).retryAfterSeconds =
+          fallbackRecord.retryAfterSeconds;
+      }
+    }
+
+    throw wrapped;
+  }
 };
 
 const extractJsonObject = (value: string) => {

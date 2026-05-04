@@ -76,10 +76,13 @@ const buildSuggestionErrorResponse = (error: unknown) => {
     normalized.statusCode === 429
       ? "Suggestion service is rate-limited right now."
       : normalized.message;
+  const classified = classifyError(error);
 
   return NextResponse.json(
     {
       error: errorMessage,
+      category: classified.category,
+      retryable: normalized.retryable,
       retryAfterSeconds,
     },
     {
