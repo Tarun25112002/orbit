@@ -380,6 +380,10 @@ export const cancelMessage = mutation({
       return false;
     }
 
+    if (message.status === "cancelled") {
+      return true;
+    }
+
     if (message.status !== "processing") {
       return false;
     }

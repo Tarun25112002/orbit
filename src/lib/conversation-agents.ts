@@ -412,6 +412,9 @@ type ConversationOrchestrationInput = {
 
   onPlanningProgress?: (status: string) => void;
   onPipelineStatus?: (status: string) => void;
+
+  /** When true, orchestration should stop and avoid further model calls. */
+  isCancelled?: () => Promise<boolean>;
 };
 
 export type ConversationProjectFile = {
@@ -3794,6 +3797,9 @@ const runFileOpsPlannerDirect = async (
   return result.content;
 };
 
+const ORBIT_PLANNING_CANCELLED_SIGNAL = "ORBIT_PLANNING_CANCELLED";
+const ORBIT_USER_CANCELLED_PLAN_MARKER = "__orbit:user-cancelled__";
+
 const planConversationFileOperations = async (
   input: ConversationOrchestrationInput,
 ): Promise<PlannedFileOperationBatch> => {
@@ -3857,6 +3863,9 @@ const planConversationFileOperations = async (
     let lastError: unknown = null;
 
     for (let attempt = 0; attempt <= PLANNER_TASK_MAX_RETRIES; attempt += 1) {
+      if (input.isCancelled && (await input.isCancelled())) {
+        throw new Error(ORBIT_PLANNING_CANCELLED_SIGNAL);
+      }
       try {
         const model = attempt === 0
           ? args.preferredModel
@@ -3998,6 +4007,10 @@ const planConversationFileOperations = async (
       requiresExecutablePlan,
     });
 
+    if (input.isCancelled && (await input.isCancelled())) {
+      return toPlanResult([], ORBIT_USER_CANCELLED_PLAN_MARKER);
+    }
+
     let chunkedPlannerOutput = "";
 
     if (shouldUseChunkedComplexBuildPlanning(input)) {
@@ -4024,6 +4037,9 @@ const planConversationFileOperations = async (
           : FILE_OPS_PLANNER_CHUNK_MAX_RETRIES;
 
       for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+        if (input.isCancelled && (await input.isCancelled())) {
+          throw new Error(ORBIT_PLANNING_CANCELLED_SIGNAL);
+        }
         const chunk = chunks[chunkIndex]!;
         const rotatedCandidate =
           PLANNER_MODEL_ROTATION[chunkIndex % PLANNER_MODEL_ROTATION.length] ??
@@ -4411,6 +4427,13 @@ const planConversationFileOperations = async (
           ),
     );
   } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message === ORBIT_PLANNING_CANCELLED_SIGNAL
+    ) {
+      console.info("conversation.planner.cancelled");
+      return toPlanResult([], ORBIT_USER_CANCELLED_PLAN_MARKER);
+    }
     console.error("conversation.planner.error", {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack?.slice(0, 500) : undefined,
@@ -4431,6 +4454,7 @@ const executePlannedFileOperations = async (
     completed: ConversationFileOperationResult[],
     total: number,
   ) => Promise<void> | void,
+  shouldCancel?: () => Promise<boolean>,
 ): Promise<ConversationFileOperationResult[]> => {
   if (operations.length === 0) {
     return [];
@@ -4440,6 +4464,19 @@ const executePlannedFileOperations = async (
   const totalOps = operations.length;
 
   for (const operation of operations) {
+    if (shouldCancel && (await shouldCancel())) {
+      results.push({
+        operation,
+        status: "skipped",
+        message: "Skipped because the response was cancelled.",
+      });
+      try {
+        await onOperationProgress?.(results, totalOps);
+      } catch {
+
+      }
+      continue;
+    }
 
     const isGated =
       (operation.type === "run_command" ||
@@ -5084,11 +5121,66 @@ const buildSynthesisPrompt = (
 export const runConversationAgentOrchestration = async (
   input: ConversationOrchestrationInput,
 ) => {
+  const isOrchestrationCancelled = async () =>
+    Boolean(input.isCancelled && (await input.isCancelled()));
+
+  const buildCancelledResult = (args: {
+    operations: ConversationFileOperation[];
+    operationResults: ConversationFileOperationResult[];
+    plannerOutput: string;
+    plannerCallsUsed: number;
+  }) => ({
+    content: "",
+    assignments: [] as AgentAssignment[],
+    reports: [] as SpecialistReport[],
+    supervisorPlan: "cancelled",
+    operations: args.operations,
+    operationResults: args.operationResults,
+    fileOperationPlannerOutput: args.plannerOutput,
+    plannerCallsUsed: args.plannerCallsUsed,
+  });
+
+  const snapshotIfCancelled = async (args: {
+    operations: ConversationFileOperation[];
+    operationResults: ConversationFileOperationResult[];
+    plannerOutput: string;
+    plannerCallsUsed: number;
+  }) => {
+    if (!(await isOrchestrationCancelled())) {
+      return null;
+    }
+    return buildCancelledResult(args);
+  };
+
+  const shouldCancelFileOps = input.isCancelled
+    ? input.isCancelled
+    : undefined;
+
   input.onPipelineStatus?.("🧠 Understanding request and preparing execution plan...");
   const intent = inferConversationIntent(input.message);
   const fileOperationPlan = await planConversationFileOperations(input);
   let plannerCallsUsed = fileOperationPlan.plannerCallCount;
   let allOperations = fileOperationPlan.operations;
+
+  if (fileOperationPlan.plannerOutput === ORBIT_USER_CANCELLED_PLAN_MARKER) {
+    return buildCancelledResult({
+      operations: allOperations,
+      operationResults: [],
+      plannerOutput: fileOperationPlan.plannerOutput,
+      plannerCallsUsed,
+    });
+  }
+
+  const cancelledAfterPlan = await snapshotIfCancelled({
+    operations: allOperations,
+    operationResults: [],
+    plannerOutput: fileOperationPlan.plannerOutput,
+    plannerCallsUsed,
+  });
+  if (cancelledAfterPlan) {
+    return cancelledAfterPlan;
+  }
+
   if (allOperations.length > 0) {
     input.onPipelineStatus?.(
       `🚀 Starting execution pipeline (${allOperations.length} planned operations)...`,
@@ -5098,7 +5190,18 @@ export const runConversationAgentOrchestration = async (
     allOperations,
     input.executeFileOperation,
     input.onOperationProgress,
+    shouldCancelFileOps,
   );
+
+  const cancelledAfterExec = await snapshotIfCancelled({
+    operations: allOperations,
+    operationResults,
+    plannerOutput: fileOperationPlan.plannerOutput,
+    plannerCallsUsed,
+  });
+  if (cancelledAfterExec) {
+    return cancelledAfterExec;
+  }
 
   const collectFailures = (results: ConversationFileOperationResult[]) =>
     results.filter(
@@ -5118,6 +5221,16 @@ export const runConversationAgentOrchestration = async (
     plannerCallsUsed < MAX_PLANNER_CALLS_PER_REQUEST;
     fixupIteration += 1
   ) {
+    const cancelledBeforeFixupIteration = await snapshotIfCancelled({
+      operations: allOperations,
+      operationResults,
+      plannerOutput: fileOperationPlan.plannerOutput,
+      plannerCallsUsed,
+    });
+    if (cancelledBeforeFixupIteration) {
+      return cancelledBeforeFixupIteration;
+    }
+
     input.onPipelineStatus?.(
       `🛠️ Running fixup pipeline (attempt ${fixupIteration}/${MAX_FIXUP_ITERATIONS})...`,
     );
@@ -5216,6 +5329,16 @@ export const runConversationAgentOrchestration = async (
       .join("\n");
 
     try {
+      const cancelledBeforeFixupPlanner = await snapshotIfCancelled({
+        operations: allOperations,
+        operationResults,
+        plannerOutput: fileOperationPlan.plannerOutput,
+        plannerCallsUsed,
+      });
+      if (cancelledBeforeFixupPlanner) {
+        return cancelledBeforeFixupPlanner;
+      }
+
       const fixupModel = pickPlannerModelForAttempt(
         FILE_OPS_MODEL,
         fixupIteration,
@@ -5265,6 +5388,7 @@ export const runConversationAgentOrchestration = async (
             executableFixupOps,
             input.executeFileOperation,
             input.onOperationProgress,
+            shouldCancelFileOps,
           );
 
           allOperations = [...allOperations, ...executableFixupOps];
@@ -5334,6 +5458,16 @@ export const runConversationAgentOrchestration = async (
     !devServerWasSuccessfullyStarted &&
     input.executeFileOperation
   ) {
+    const cancelledBeforeDevRestart = await snapshotIfCancelled({
+      operations: allOperations,
+      operationResults,
+      plannerOutput: fileOperationPlan.plannerOutput,
+      plannerCallsUsed,
+    });
+    if (cancelledBeforeDevRestart) {
+      return cancelledBeforeDevRestart;
+    }
+
     input.onPipelineStatus?.("♻️ Retrying dev server startup after fixes...");
     console.info("conversation.planner.post-fixup-dev-server-restart", {
       reason: "dev-server was skipped/failed, attempting restart after fixups",
@@ -5358,6 +5492,7 @@ export const runConversationAgentOrchestration = async (
       restartOps,
       input.executeFileOperation,
       input.onOperationProgress,
+      shouldCancelFileOps,
     );
 
     allOperations = [...allOperations, ...restartOps];
@@ -5392,6 +5527,16 @@ export const runConversationAgentOrchestration = async (
     } catch {
       postOperationProjectFiles = input.projectFiles ?? [];
     }
+  }
+
+  const cancelledBeforeStructured = await snapshotIfCancelled({
+    operations: allOperations,
+    operationResults,
+    plannerOutput: fileOperationPlan.plannerOutput,
+    plannerCallsUsed,
+  });
+  if (cancelledBeforeStructured) {
+    return cancelledBeforeStructured;
   }
 
   if (
@@ -5470,6 +5615,16 @@ export const runConversationAgentOrchestration = async (
     };
   }
 
+  const cancelledBeforeSupervisorPath = await snapshotIfCancelled({
+    operations: allOperations,
+    operationResults,
+    plannerOutput: fileOperationPlan.plannerOutput,
+    plannerCallsUsed,
+  });
+  if (cancelledBeforeSupervisorPath) {
+    return cancelledBeforeSupervisorPath;
+  }
+
   const plannerCallBudgetNearLimit = plannerCallsUsed >= 2;
 
   const useReducedAgentPlan =
@@ -5506,6 +5661,16 @@ export const runConversationAgentOrchestration = async (
       ],
     };
   } else {
+    const cancelledBeforeSupervisorModel = await snapshotIfCancelled({
+      operations: allOperations,
+      operationResults,
+      plannerOutput: fileOperationPlan.plannerOutput,
+      plannerCallsUsed,
+    });
+    if (cancelledBeforeSupervisorModel) {
+      return cancelledBeforeSupervisorModel;
+    }
+
     input.onPipelineStatus?.("🤖 Coordinating specialist agents...");
     try {
       supervisorText = await runAgentTextWithFallback({
@@ -5549,6 +5714,14 @@ export const runConversationAgentOrchestration = async (
 
     for (let attempt = 0; attempt <= SPECIALIST_TASK_MAX_RETRIES; attempt += 1) {
       try {
+        if (await isOrchestrationCancelled()) {
+          return {
+            agent: assignment.agent,
+            task: assignment.task,
+            content: "",
+          };
+        }
+
       input.onPipelineStatus?.(
         `🧩 Specialist \`${assignment.agent}\` is working${attempt > 0 ? ` (retry ${attempt})` : ""}...`,
       );
@@ -5580,6 +5753,13 @@ export const runConversationAgentOrchestration = async (
             error: error instanceof Error ? error.message.slice(0, 120) : "unknown",
           });
           await new Promise<void>((resolve) => setTimeout(resolve, SPECIALIST_RETRY_DELAY_MS));
+          if (await isOrchestrationCancelled()) {
+            return {
+              agent: assignment.agent,
+              task: assignment.task,
+              content: "",
+            };
+          }
           continue;
         }
 
@@ -5590,10 +5770,34 @@ export const runConversationAgentOrchestration = async (
     throw lastError ?? new Error("Specialist exhausted retries");
   };
 
+  const cancelledBeforeSpecialists = await snapshotIfCancelled({
+    operations: allOperations,
+    operationResults,
+    plannerOutput: fileOperationPlan.plannerOutput,
+    plannerCallsUsed,
+  });
+  if (cancelledBeforeSpecialists) {
+    return cancelledBeforeSpecialists;
+  }
+
   const specialistResults = await Promise.allSettled(
     assignments.map(async (assignment, idx) => {
+      if (await isOrchestrationCancelled()) {
+        return {
+          agent: assignment.agent,
+          task: assignment.task,
+          content: "",
+        };
+      }
       if (idx > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, idx * SPECIALIST_STAGGER_MS));
+      }
+      if (await isOrchestrationCancelled()) {
+        return {
+          agent: assignment.agent,
+          task: assignment.task,
+          content: "",
+        };
       }
       return runSpecialistWithRetry(assignment);
     }),
@@ -5610,6 +5814,16 @@ export const runConversationAgentOrchestration = async (
         content: `specialist-error: ${error instanceof Error ? error.message : "unknown error"}`,
       });
     }
+  }
+
+  const cancelledAfterSpecialists = await snapshotIfCancelled({
+    operations: allOperations,
+    operationResults,
+    plannerOutput: fileOperationPlan.plannerOutput,
+    plannerCallsUsed,
+  });
+  if (cancelledAfterSpecialists) {
+    return cancelledAfterSpecialists;
   }
 
   let content = "";
@@ -5629,6 +5843,16 @@ export const runConversationAgentOrchestration = async (
             .join("\n")
         : reducedContent || "Generated response under provider cooldown mode.";
   } else {
+    const cancelledBeforeSynthesis = await snapshotIfCancelled({
+      operations: allOperations,
+      operationResults,
+      plannerOutput: fileOperationPlan.plannerOutput,
+      plannerCallsUsed,
+    });
+    if (cancelledBeforeSynthesis) {
+      return cancelledBeforeSynthesis;
+    }
+
     try {
       input.onPipelineStatus?.("📝 Synthesizing final response...");
       content = await runAgentTextWithFallback({

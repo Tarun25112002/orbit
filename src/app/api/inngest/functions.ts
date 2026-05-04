@@ -1973,6 +1973,7 @@ export const conversationMessageRequested = inngest.createFunction(
           history: args?.history ?? conversationHistory,
           webContext: args?.webContext ?? webContext.markdown,
           projectFiles: conversationProjectFiles,
+          isCancelled: () => isAssistantMessageCancelled(assistantMessageId),
           executeFileOperation: async (operation) => {
             if (await isAssistantMessageCancelled(assistantMessageId)) {
               return {

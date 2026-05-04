@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
       id: assistantMessage.conversationId,
     });
 
-    const cancelled = await convex.mutation(api.system.cancelMessage, {
+    const cancelled = await userConvex.mutation(api.system.cancelMessage, {
       messageId: assistantMessageId as Id<"messages">,
     });
 
