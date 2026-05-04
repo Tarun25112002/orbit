@@ -5534,9 +5534,9 @@ export const runConversationAgentOrchestration = async (
 
   const reports: SpecialistReport[] = [];
 
-  for (const assignment of assignments) {
-    const agent = specialistAgents[assignment.agent];
-    try {
+  const specialistResults = await Promise.allSettled(
+    assignments.map(async (assignment) => {
+      const agent = specialistAgents[assignment.agent];
       const content = await runAgentTextWithFallback({
         agent,
         prompt: buildSpecialistPrompt(input, assignment),
@@ -5545,16 +5545,22 @@ export const runConversationAgentOrchestration = async (
         label: `specialist:${assignment.agent}`,
         reasoningEffort: "medium",
       });
-
-      reports.push({
+      return {
         agent: assignment.agent,
         task: assignment.task,
         content,
-      });
-    } catch (error) {
+      } satisfies SpecialistReport;
+    }),
+  );
+
+  for (const result of specialistResults) {
+    if (result.status === "fulfilled") {
+      reports.push(result.value);
+    } else {
+      const error = result.reason;
       reports.push({
-        agent: assignment.agent ?? "implementation",
-        task: assignment.task ?? "Provide practical implementation guidance.",
+        agent: "implementation",
+        task: "Provide practical implementation guidance.",
         content: `specialist-error: ${error instanceof Error ? error.message : "unknown error"}`,
       });
     }
