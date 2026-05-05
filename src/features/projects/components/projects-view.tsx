@@ -20,6 +20,7 @@ import {
   useReducedMotion,
   useScroll,
   useTransform,
+  Variants,
 } from "framer-motion";
 import {
   adjectives,
@@ -43,14 +44,14 @@ import { toast } from "sonner";
 
 const FREE_PROJECT_LIMIT = 3;
 
-const container = {
+const container: Variants = {
   hidden: {},
   visible: {
     transition: { staggerChildren: 0.06, delayChildren: 0.04 },
   },
 };
 
-const item = {
+const item: Variants = {
   hidden: { opacity: 0, y: 18 },
   visible: {
     opacity: 1,

@@ -20,6 +20,7 @@ import {
   useReducedMotion,
   useScroll,
   useTransform,
+  Variants,
 } from "framer-motion";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -92,7 +93,7 @@ const bentoItems = [
   },
 ] as const;
 
-const heroVariants = {
+const heroVariants: Variants = {
   hidden: {},
   visible: {
     transition: {
@@ -102,7 +103,7 @@ const heroVariants = {
   },
 };
 
-const heroItem = {
+const heroItem: Variants = {
   hidden: { opacity: 0, y: 22 },
   visible: {
     opacity: 1,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
@@ -17,7 +17,7 @@ import {
   Sparkles,
   Zap,
 } from "lucide-react";
-import { motion, useReducedMotion } from "framer-motion";
+import { motion, useReducedMotion, Variants } from "framer-motion";
 import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { toast } from "sonner";
@@ -32,6 +32,7 @@ const TIERS = [
     price: "₹1,000",
     description: "Perfect for solo builders and hobby projects.",
     icon: Sparkles,
+    popular: false,
     features: [
       "10 AI projects",
       "Standard model access",
@@ -61,6 +62,7 @@ const TIERS = [
     price: "₹5,000",
     description: "Scale your team with enterprise-grade features.",
     icon: Shield,
+    popular: false,
     features: [
       "Unlimited AI projects",
       "All models unlocked",
@@ -93,19 +95,19 @@ const FAQ = [
   },
 ] as const;
 
-const tierList = {
+const tierList: Variants = {
   hidden: {},
   visible: {
     transition: { staggerChildren: 0.08, delayChildren: 0.06 },
   },
 };
 
-const tierItem = {
+const tierItem: Variants = {
   hidden: { opacity: 0, y: 22 },
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] as const },
+    transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] },
   },
 };
 
@@ -419,4 +421,12 @@ const PricingPage = () => {
   );
 };
 
-export default PricingPage;
+const PricingPageWrapper = () => {
+  return (
+    <Suspense fallback={<div className="flex h-screen items-center justify-center"><div className="size-8 animate-spin rounded-full border-4 border-primary border-t-transparent" /></div>}>
+      <PricingPage />
+    </Suspense>
+  );
+};
+
+export default PricingPageWrapper;
