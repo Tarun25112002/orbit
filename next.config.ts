@@ -1,7 +1,10 @@
 import { withSentryConfig } from "@sentry/nextjs";
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {};
+const nextConfig: NextConfig = {
+  // Tells Vercel's bundler to skip these native Docker/SSH packages
+  serverExternalPackages: ["dockerode", "ssh2"],
+};
 
 export default withSentryConfig(nextConfig, {
   org: "student-aki",
