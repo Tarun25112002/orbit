@@ -4,7 +4,7 @@ Orbit is an **agentic workspace for frontend teams**, designed to orchestrate pl
 
 ---
 
-## 🌟 Key Features
+##  Key Features
 
 - **Multi-Agent Orchestration**: Specialized AI agents (Supervisor, Specialist, File Ops, Synthesis) working in concert using Gemini to plan, generate, and refine code.
 - **Docker-Backed Runtime**: Deterministic and secure Docker isolation for executing builds, installs, and live preview environments (`orbit-node` & `orbit-python`).
@@ -16,7 +16,7 @@ Orbit is an **agentic workspace for frontend teams**, designed to orchestrate pl
 
 ---
 
-## 🏗 System Architecture
+##  System Architecture
 
 Orbit relies on a decoupled, scalable architecture. The Next.js client interacts with Convex for real-time state and Inngest for background job processing, delegating heavy AI orchestration and isolated sandboxing away from the main thread.
 
@@ -49,7 +49,7 @@ graph TD
 
 ---
 
-## 🧠 Multi-Agent AI Pipeline
+##  Multi-Agent AI Pipeline
 
 Orbit's core intelligence comes from a meticulously designed sequential agent pipeline. Instead of relying on a single zero-shot LLM, tasks are broken down and handed off to specialized agents.
 
@@ -98,7 +98,7 @@ sequenceDiagram
 
 ---
 
-## 📦 Data Modeling (Convex)
+##  Data Modeling (Convex)
 
 Orbit's data layer ensures strict relational integrity between workspaces, subscriptions, and AI execution traces.
 
@@ -152,7 +152,7 @@ erDiagram
 
 ---
 
-## 🚀 Docker Sandbox Runtime
+##  Docker Sandbox Runtime
 
 To ensure secure, isolated, and deterministic code execution, Orbit spins up per-project Docker containers (`orbit-node`, `orbit-python`). This runtime handles:
 - **Dependency Installation**: `npm install` runs securely outside the host OS.
@@ -161,7 +161,7 @@ To ensure secure, isolated, and deterministic code execution, Orbit spins up per
 
 ---
 
-## 🛠 Tech Stack
+##  Tech Stack
 
 - **Framework**: Next.js 16.2 (App Router) + React 19
 - **Styling**: Tailwind CSS v4, Framer Motion, Radix UI
@@ -175,7 +175,7 @@ To ensure secure, isolated, and deterministic code execution, Orbit spins up per
 
 ---
 
-## 🚦 Getting Started
+##  Getting Started
 
 ### Prerequisites
 - Node.js 20+
