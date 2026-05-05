@@ -59,6 +59,7 @@ export async function POST(req: NextRequest) {
     }
 
     await fetchMutation(
+      // @ts-expect-error - internal mutation with admin token
       internal.subscriptions.activate,
       {
         ownerId: userId,
