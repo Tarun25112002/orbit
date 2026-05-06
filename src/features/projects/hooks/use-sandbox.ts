@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const SANDBOX_API_BASE = process.env.NEXT_PUBLIC_EXECUTION_URL || "";
-
 interface UseSandboxOptions {
   runtime?: "node" | "python" | "bash";
   autoCreate?: boolean;
@@ -44,7 +42,7 @@ export function useSandbox(options: UseSandboxOptions = {}) {
     setState((s) => ({ ...s, isBooting: true, error: null }));
 
     try {
-      const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/create`, {
+      const response = await fetch("/api/sandbox/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, runtime }),
@@ -82,7 +80,7 @@ export function useSandbox(options: UseSandboxOptions = {}) {
     if (!sid) return;
 
     try {
-      await fetch(`${SANDBOX_API_BASE}/api/sandbox/kill`, {
+      await fetch("/api/sandbox/kill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: sid }),
@@ -108,7 +106,7 @@ export function useSandbox(options: UseSandboxOptions = {}) {
       const sid = sessionIdRef.current;
       if (!sid) return;
 
-      await fetch(`${SANDBOX_API_BASE}/api/sandbox/files/write`, {
+      await fetch("/api/sandbox/files/write", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: sid, files }),
@@ -122,7 +120,7 @@ export function useSandbox(options: UseSandboxOptions = {}) {
       const sid = sessionIdRef.current;
       if (!sid) return 1;
 
-      const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/exec`, {
+      const response = await fetch("/api/sandbox/exec", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: sid, command }),
@@ -178,7 +176,7 @@ export function useSandbox(options: UseSandboxOptions = {}) {
     return () => {
       const sid = sessionIdRef.current;
       if (sid) {
-        void fetch(`${SANDBOX_API_BASE}/api/sandbox/kill`, {
+        void fetch("/api/sandbox/kill", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ sessionId: sid }),

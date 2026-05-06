@@ -2,8 +2,6 @@
 
 import type { AiPipelineOperation } from "@/lib/ai-execution";
 
-const SANDBOX_API_BASE = process.env.NEXT_PUBLIC_EXECUTION_URL || "";
-
 type RuntimeLogWriter = (line: string) => void;
 
 type ServerReadyHandler = (args: { port: number; url: string }) => void;
@@ -203,7 +201,7 @@ class ProjectDockerRuntime {
         this.sessionId = this.sessionId || generateSessionId();
         log?.("Starting Docker sandbox...");
 
-        const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/create`, {
+        const response = await fetch("/api/sandbox/create", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -372,7 +370,7 @@ class ProjectDockerRuntime {
     files: Array<{ path: string; content: string }>;
     fallbackMessage: string;
   }): Promise<void> {
-    const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/files/write`, {
+    const response = await fetch("/api/sandbox/files/write", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -459,7 +457,7 @@ class ProjectDockerRuntime {
         return;
       }
 
-      const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/files/write`, {
+      const response = await fetch("/api/sandbox/files/write", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -582,7 +580,7 @@ class ProjectDockerRuntime {
 
             for (const file of batch) {
               const singleFileResponse = await fetch(
-                `${SANDBOX_API_BASE}/api/sandbox/files/write`,
+                "/api/sandbox/files/write",
                 {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -632,7 +630,7 @@ class ProjectDockerRuntime {
         actionLabel: `reading ${normalizedPath}`,
         execute: async (sessionId) => {
           const response = await fetch(
-            `${SANDBOX_API_BASE}/api/sandbox/files/read?sessionId=${encodeURIComponent(sessionId)}&filePath=${encodeURIComponent(normalizedPath)}`,
+            `/api/sandbox/files/read?sessionId=${encodeURIComponent(sessionId)}&filePath=${encodeURIComponent(normalizedPath)}`,
           );
 
           if (response.status === 404) {
@@ -679,7 +677,7 @@ class ProjectDockerRuntime {
       actionLabel: `writing ${normalizedPath}`,
       log: args.log,
       execute: async (sessionId) => {
-        const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/files/write`, {
+        const response = await fetch("/api/sandbox/files/write", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -722,7 +720,7 @@ class ProjectDockerRuntime {
         }
 
         try {
-          const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/exec`, {
+          const response = await fetch("/api/sandbox/exec", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -795,7 +793,7 @@ class ProjectDockerRuntime {
               running.sessionId = sessionId;
             }
 
-            const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/exec`, {
+            const response = await fetch("/api/sandbox/exec", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
@@ -909,7 +907,7 @@ class ProjectDockerRuntime {
     const command = `if kill -0 ${args.pid} 2>/dev/null; then kill ${args.pid} 2>/dev/null || true; fi`;
 
     try {
-      const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/exec`, {
+      const response = await fetch("/api/sandbox/exec", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -990,7 +988,7 @@ class ProjectDockerRuntime {
       await this.executeWithSessionRetry({
         actionLabel: `deleting ${normalizePath(operation.path)}`,
         execute: async (sessionId) => {
-          const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/exec`, {
+          const response = await fetch("/api/sandbox/exec", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1027,7 +1025,7 @@ class ProjectDockerRuntime {
       await this.executeWithSessionRetry({
         actionLabel: `renaming ${source} to ${target}`,
         execute: async (sessionId) => {
-          const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/exec`, {
+          const response = await fetch("/api/sandbox/exec", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -1059,7 +1057,7 @@ class ProjectDockerRuntime {
     await this.executeWithSessionRetry({
       actionLabel: `writing ${normalizedPath}`,
       execute: async (sessionId) => {
-        const response = await fetch(`${SANDBOX_API_BASE}/api/sandbox/files/write`, {
+        const response = await fetch("/api/sandbox/files/write", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1098,7 +1096,7 @@ class ProjectDockerRuntime {
 
     if (this.sessionId) {
       const sessionId = this.sessionId;
-      void fetch(`${SANDBOX_API_BASE}/api/sandbox/kill`, {
+      void fetch("/api/sandbox/kill", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId }),
