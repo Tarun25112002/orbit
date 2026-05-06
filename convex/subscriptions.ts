@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { internalMutation, query } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { verifyAuth } from "./auth";
 
 export const getActive = query({
@@ -19,14 +19,20 @@ export const getActive = query({
   },
 });
 
-export const activate = internalMutation({
+export const activate = mutation({
   args: {
     ownerId: v.string(),
     tier: v.union(v.literal("basic"), v.literal("pro"), v.literal("advance")),
     stripeSessionId: v.string(),
     stripePaymentIntentId: v.optional(v.string()),
+    callerSecret: v.string(),
   },
   handler: async (ctx, args) => {
+    const expectedSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!expectedSecret || args.callerSecret !== expectedSecret) {
+      throw new Error("Unauthorized: invalid caller secret");
+    }
+
     const byOwner = () =>
       ctx.db
         .query("subscriptions")
