@@ -990,9 +990,19 @@ const executeConversationFileOperation = async (args: {
       operation.type === "start_background_command"
     ) {
       const installCommandSpec = normalizeInstallCommandSpec(operation);
+      const normalizedCommandSpec =
+        operation.type === "run_command" &&
+        operation.command.trim().toLowerCase() === "npm" &&
+        operation.commandArgs?.[0]?.trim().toLowerCase() === "run" &&
+        operation.commandArgs?.[1]?.trim().toLowerCase() === "vite"
+          ? {
+              command: "npm",
+              commandArgs: ["run", "dev"],
+            }
+          : null;
       const commandSpec = installCommandSpec ?? {
-        command: operation.command,
-        commandArgs: operation.commandArgs,
+        command: normalizedCommandSpec?.command ?? operation.command,
+        commandArgs: normalizedCommandSpec?.commandArgs ?? operation.commandArgs,
       };
       const displayCommand = [
         commandSpec.command,

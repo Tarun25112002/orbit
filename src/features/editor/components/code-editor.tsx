@@ -70,7 +70,6 @@ const INLINE_SUGGESTION_PROVIDER_RATE_LIMIT_PATTERN =
 const MONACO_TRANSIENT_LEFT_ERROR_PATTERN =
   /cannot read properties of null \(reading 'left'\)/i;
 const MONACO_SOURCE_HINT_PATTERN = /monaco-editor|editor\.api/i;
-
 type MonacoErrorGuardWindow = Window & {
   __orbit_monaco_left_error_guard_installed__?: boolean;
 };
@@ -137,12 +136,12 @@ const installMonacoTransientErrorGuard = () => {
   window.setTimeout = (function (
     handler: TimerHandler,
     timeout?: number,
-    ...args: any[]
+    ...args: unknown[]
   ): number {
     if (typeof handler === "function") {
-      const wrappedHandler = function (...innerArgs: any[]) {
+      const wrappedHandler = function (...innerArgs: unknown[]) {
         try {
-          return handler(...innerArgs);
+          return (handler as (...cbArgs: unknown[]) => unknown)(...innerArgs);
         } catch (error) {
           const errorStack = error instanceof Error ? (error.stack ?? "") : "";
           const errorMessage =
@@ -164,10 +163,14 @@ const installMonacoTransientErrorGuard = () => {
         }
       };
 
-      return originalSetTimeout(wrappedHandler as any, timeout, ...args);
+      return originalSetTimeout(
+        wrappedHandler as TimerHandler,
+        timeout,
+        ...args,
+      );
     }
     return originalSetTimeout(handler, timeout, ...args);
-  }) as any;
+  }) as unknown as typeof window.setTimeout;
 
   window.addEventListener(
     "error",

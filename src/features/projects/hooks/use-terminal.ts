@@ -21,6 +21,7 @@ export function useTerminal(options: UseTerminalOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const connectRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -92,7 +93,7 @@ export function useTerminal(options: UseTerminalOptions) {
         if (sessionId) {
           reconnectTimerRef.current = setTimeout(() => {
             if (mountedRef.current && sessionId) {
-              connect();
+              connectRef.current?.();
             }
           }, 2000);
         }
@@ -107,6 +108,10 @@ export function useTerminal(options: UseTerminalOptions) {
     };
   }, [sessionId, disconnect, onOutput]);
 
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
+
   const sendInput = useCallback((data: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "input", data }));
@@ -120,11 +125,17 @@ export function useTerminal(options: UseTerminalOptions) {
   }, []);
 
   useEffect(() => {
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
     if (autoConnect && sessionId) {
-      connect();
+      connectTimer = setTimeout(() => {
+        connect();
+      }, 0);
     }
 
     return () => {
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+      }
       disconnect();
     };
   }, [autoConnect, sessionId, connect, disconnect]);

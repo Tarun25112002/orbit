@@ -371,15 +371,13 @@ export const CodeBlockContent = ({
   );
 
   const [asyncTokens, setAsyncTokens] = useState<TokenizedCode | null>(null);
-  const asyncKeyRef = useRef({ code, language });
 
-  if (
-    asyncKeyRef.current.code !== code ||
-    asyncKeyRef.current.language !== language
-  ) {
-    asyncKeyRef.current = { code, language };
-    setAsyncTokens(null);
-  }
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setAsyncTokens(null);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [code, language]);
 
   useEffect(() => {
     let cancelled = false;

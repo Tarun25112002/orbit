@@ -744,9 +744,12 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "",
   "COMPLEX WEBSITE MANDATE:",
   "- When the user asks for a complete/complex website, generate a multi-page architecture by default.",
+  "- Even with short prompts (e.g. 'build food app', 'make ecommerce site'), infer a complete end-to-end frontend scope instead of a toy scaffold.",
   "- Include routing, shared layout, reusable components, and clear folder structure.",
   "- Prefer scalable patterns (feature folders, typed models, utility hooks, composition over duplication).",
   "- Ensure every planned page is fully implemented with realistic mock content and responsive behavior.",
+  "- NEVER stop at a single hero section + 2 buttons unless the user explicitly asks for a minimal landing page.",
+  "- For marketplace/dashboard/SaaS prompts, include complete user flow screens (browse/list/detail/actions/history/settings) with connected navigation.",
   "",
   "═══════════════════════════════════════════════════",
   "OPERATION TYPES",
@@ -867,6 +870,16 @@ const FILE_OPS_PLANNER_SYSTEM_PROMPT = [
   "   Container: max-w-7xl mx-auto px-4 sm:px-6 lg:px-8",
   "   Typography: text-3xl sm:text-4xl lg:text-5xl xl:text-6xl (scale up with breakpoints)",
   "   Navigation: mobile hamburger menu + desktop horizontal nav",
+  "",
+  "9. UX DEPTH — REQUIRED FOR NON-TRIVIAL APPS:",
+  "   Include loading states, empty states, error states, filters/search/sort where relevant, and obvious primary CTAs.",
+  "   Add meaningful section spacing rhythm (8/12/16/24/32 scale), clear card hierarchy, and consistent icon usage.",
+  "",
+  "10. SELF-CHECK BEFORE JSON OUTPUT (MANDATORY):",
+  "   - Would this look like a Dribbble-quality MVP, not a starter template?",
+  "   - Are there at least 5-8 meaningful UI sections/components for a medium app request?",
+  "   - Are labels/content realistic (no 'Item 1', 'Lorem ipsum', 'TODO')?",
+  "   - Can a user complete a realistic end-to-end flow from this UI alone?",
   "",
   "═══════════════════════════════════════════════════",
   "CODE QUALITY & TYPESCRIPT",
@@ -3052,6 +3065,48 @@ const validateViteScaffoldPlan = (args: {
   ];
 };
 
+const validateUiIntentPlan = (args: {
+  input: ConversationOrchestrationInput;
+  operations: ConversationFileOperation[];
+}) => {
+  const message = args.input.message.toLowerCase();
+
+  // Heuristic: when user intent is a store/ecommerce, ensure required screens
+  // exist so App.tsx imports won't fail at runtime/build.
+  const looksLikeCommerce =
+    /\b(e-?commerce|shop|store|marketplace)\b/i.test(message) ||
+    ((/\b(cart|checkout)\b/i.test(message) || /\bproducts?\b/i.test(message)) &&
+      (/\b(login|signup|sign up)\b/i.test(message) || /\b(product detail|listing|detail)\b/i.test(message)));
+
+  if (!looksLikeCommerce) return [] as string[];
+
+  const plannedPaths = collectPlannedPathSet(
+    args.operations,
+    args.input.projectFiles ?? [],
+  );
+
+  const requiredFiles = [
+    // Layout
+    "src/components/layout/Header.tsx",
+    "src/components/layout/Footer.tsx",
+
+    // Pages
+    "src/pages/HomePage.tsx",
+    "src/pages/ProductListingPage.tsx",
+    "src/pages/ProductDetailPage.tsx",
+    "src/pages/CartPage.tsx",
+    "src/pages/LoginPage.tsx",
+    "src/pages/SignupPage.tsx",
+  ];
+
+  const missing = requiredFiles.filter((path) => !plannedPaths.has(path));
+  if (missing.length === 0) return [] as string[];
+
+  return [
+    `UI plan is missing required commerce files: ${missing.join(", ")}.`,
+  ];
+};
+
 const inferConversationIntent = (message: string): ConversationIntent => {
   const hasGenerationIntent = CODE_GENERATION_INTENT_PATTERN.test(message);
   const hasUpdateIntent = CODE_UPDATE_INTENT_PATTERN.test(message);
@@ -3656,6 +3711,35 @@ const commandOperationSignature = (operation: ConversationFileOperation) => {
     : `${operation.type}\u0000${operation.command}\u0000${args}`;
 };
 
+const isPlannerRelevantFixupFailure = (
+  result: ConversationFileOperationResult,
+) => {
+  if (!isCommandOperation(result.operation)) {
+    return true;
+  }
+
+  if (result.operation.type === "run_command") {
+    if (isPlainDependencyInstallCommand(result.operation)) {
+      return true;
+    }
+
+    if (result.operation.command.trim().toLowerCase() === ORBIT_VALIDATE_COMMAND) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const buildFailureFingerprint = (failures: ConversationFileOperationResult[]) =>
+  failures
+    .map(
+      (failure) =>
+        `${describeFileOperation(failure.operation)}|${failure.status}|${failure.commandExitCode ?? "na"}|${failure.message.slice(0, 160)}`,
+    )
+    .sort()
+    .join("||");
+
 const buildRecoveryCommandOperations = (args: {
   failures: ConversationFileOperationResult[];
   plannedOperations: ConversationFileOperation[];
@@ -3983,6 +4067,10 @@ const planConversationFileOperations = async (
       new Set([
         ...validateFileOperationPlan(operations),
         ...validateViteScaffoldPlan({
+          input: validationInput,
+          operations,
+        }),
+        ...validateUiIntentPlan({
           input: validationInput,
           operations,
         }),
@@ -5122,6 +5210,7 @@ export const runConversationAgentOrchestration = async (
     );
 
   let currentFailures = collectFailures(operationResults);
+  const seenFailureFingerprints = new Set<string>();
 
   for (
     let fixupIteration = 1;
@@ -5131,14 +5220,34 @@ export const runConversationAgentOrchestration = async (
     plannerCallsUsed < MAX_PLANNER_CALLS_PER_REQUEST;
     fixupIteration += 1
   ) {
+    const failureFingerprint = buildFailureFingerprint(currentFailures);
+    if (seenFailureFingerprints.has(failureFingerprint)) {
+      console.warn("conversation.planner.fixup.stagnant-failures", {
+        iteration: fixupIteration,
+        failureCount: currentFailures.length,
+      });
+      break;
+    }
+    seenFailureFingerprints.add(failureFingerprint);
+
+    const plannerFailures = currentFailures.filter(isPlannerRelevantFixupFailure);
+    if (plannerFailures.length === 0) {
+      console.info("conversation.planner.fixup.skip", {
+        reason: "command-only-failures",
+        iteration: fixupIteration,
+        failureCount: currentFailures.length,
+      });
+      break;
+    }
+
     input.onPipelineStatus?.(
       `🛠️ Running fixup pipeline (attempt ${fixupIteration}/${MAX_FIXUP_ITERATIONS})...`,
     );
     console.info("conversation.planner.fixup.iteration", {
       iteration: fixupIteration,
       maxIterations: MAX_FIXUP_ITERATIONS,
-      failureCount: currentFailures.length,
-      failures: currentFailures.map((f) => ({
+      failureCount: plannerFailures.length,
+      failures: plannerFailures.map((f) => ({
         op: describeFileOperation(f.operation),
         msg: f.message.slice(0, 200),
         exitCode: f.commandExitCode,
@@ -5146,7 +5255,7 @@ export const runConversationAgentOrchestration = async (
       })),
     });
 
-    const failureSummary = currentFailures
+    const failureSummary = plannerFailures
       .map((r) => {
         const parts = [
           `- ${describeFileOperation(r.operation)}: ${r.message.slice(0, 300)}`,
@@ -5220,6 +5329,7 @@ export const runConversationAgentOrchestration = async (
       "IMPORTANT RULES:",
       "- Return ONLY corrective operations (fix package.json, add missing config, fix import paths).",
       "- Do NOT recreate files that already exist and are correct.",
+      "- Do NOT regress UI quality while fixing runtime/build errors. Preserve visual hierarchy and spacing.",
       "- If package.json needs fixing, include the COMPLETE updated package.json content.",
       "- After fixing package.json, include a run_command for npm install.",
       "- After fixing files or dependencies, retry the failed terminal command(s) so the pipeline can confirm the app now runs.",
@@ -5299,8 +5409,11 @@ export const runConversationAgentOrchestration = async (
           });
 
           currentFailures = collectFailures(fixupResults);
+          const remainingPlannerFailures = currentFailures.filter(
+            isPlannerRelevantFixupFailure,
+          );
 
-          if (currentFailures.length === 0) {
+          if (remainingPlannerFailures.length === 0) {
             console.info("conversation.planner.fixup.resolved", {
               iteration: fixupIteration,
             });

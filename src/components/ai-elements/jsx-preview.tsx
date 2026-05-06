@@ -143,7 +143,10 @@ export const JSXPreview = memo(
     const [error, setError] = useState<Error | null>(null);
 
     useEffect(() => {
-      setError(null);
+      const timer = setTimeout(() => {
+        setError(null);
+      }, 0);
+      return () => clearTimeout(timer);
     }, [jsx]);
 
     const processedJsx = useMemo(
@@ -190,12 +193,15 @@ export const JSXPreviewContent = memo(
       onErrorProp,
     } = useJSXPreview();
     const errorReportedRef = useRef<string | null>(null);
-    const lastGoodJsxRef = useRef("");
+    const [lastGoodJsx, setLastGoodJsx] = useState("");
     const [hadError, setHadError] = useState(false);
 
     useEffect(() => {
       errorReportedRef.current = null;
-      setHadError(false);
+      const timer = setTimeout(() => {
+        setHadError(false);
+      }, 0);
+      return () => clearTimeout(timer);
     }, [processedJsx]);
 
     const handleError = useCallback(
@@ -219,12 +225,15 @@ export const JSXPreviewContent = memo(
 
     useEffect(() => {
       if (!errorReportedRef.current) {
-        lastGoodJsxRef.current = processedJsx;
+        const timer = setTimeout(() => {
+          setLastGoodJsx(processedJsx);
+        }, 0);
+        return () => clearTimeout(timer);
       }
+      return undefined;
     }, [processedJsx]);
 
-    const displayJsx =
-      isStreaming && hadError ? lastGoodJsxRef.current : processedJsx;
+    const displayJsx = isStreaming && hadError ? lastGoodJsx : processedJsx;
 
     return (
       <div className={cn("jsx-preview-content", className)} {...props}>
